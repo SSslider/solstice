@@ -45,6 +45,12 @@ jobs:
     env:
       OS_NAME: windows
       VSCODE_ARCH: x64
+      # CI_BUILD=no makes build.sh run the packaging gulp task + CLI build
+      # in-process (upstream CI packages in a separate job we don't have).
+      CI_BUILD: no
+      SHOULD_BUILD_MSI: no
+      SHOULD_BUILD_MSI_NOUP: no
+      SHOULD_BUILD_EXE_SYS: no
     steps:
       - uses: actions/checkout@v6
         with:
@@ -126,6 +132,7 @@ jobs:
     env:
       OS_NAME: linux
       VSCODE_ARCH: x64
+      CI_BUILD: no
     steps:
       - uses: actions/checkout@v6
         with:
