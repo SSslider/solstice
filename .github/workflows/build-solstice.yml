@@ -1,4 +1,4 @@
-name: Build Solstice (win32-x64 + darwin-arm64)
+name: Build Solstice (win32-x64 + darwin-arm64 + linux-x64)
 
 # Manual trigger only — each full matrix run costs ~$6-8 on a private repo
 # (Windows 2x + macOS 10x minute multipliers). Never build installers on the
@@ -14,6 +14,10 @@ on:
         type: boolean
         default: true
         description: Build darwin-arm64 zip+dmg
+      build_linux:
+        type: boolean
+        default: true
+        description: Build linux-x64 (server-side run + screenshots)
 
 env:
   APP_NAME: Solstice
@@ -112,4 +116,46 @@ jobs:
         with:
           name: solstice-darwin-arm64
           path: assets/
+          retention-days: 7
+
+  linux:
+    if: ${{ inputs.build_linux }}
+    runs-on: ubuntu-22.04
+    env:
+      OS_NAME: linux
+      VSCODE_ARCH: x64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install build deps
+        run: sudo apt-get update -y && sudo apt-get install -y libkrb5-dev
+
+      - name: Clone VSCode repo (pinned MS_TAG)
+        run: ./get_repo.sh
+
+      - name: Build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./build.sh
+
+      - name: Verify native modules match linux
+        run: bash scripts/verify-build-target-natives.sh ../VSCode-linux-x64 linux
+
+      - name: Tarball app dir
+        run: tar -czf solstice-linux-x64.tar.gz -C .. VSCode-linux-x64
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: solstice-linux-x64
+          path: solstice-linux-x64.tar.gz
           retention-days: 7
