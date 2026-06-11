@@ -141,6 +141,8 @@ jobs:
       OS_NAME: linux
       VSCODE_ARCH: x64
       CI_BUILD: no
+      # 7GB runner — 8192 heap OOMs the VM mid-bundle (twice: runs 27370768408-prior, 27380199425)
+      SOLSTICE_NODE_HEAP: "5120"
     steps:
       - uses: actions/checkout@v6
         with:
