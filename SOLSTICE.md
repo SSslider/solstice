@@ -54,7 +54,13 @@ and `Julius-cc-x/agents/orion/deliverables/antigravity_clone_master_plan_2026-06
    all notifications routed by threadId (sidebar = its thread only, manager =
    all). User messages render from server item replay (no local echo).
    Verified under Xvfb: dental landing page built end-to-end in the manager.
-4. Browser computer-use sub-agent + self-verify loop (port from Forge) +
-   visual polish beyond Antigravity.
+4. ◐ Visual polish slice DONE (12/06 night): XSS-safe markdown renderer
+   (media/md.js — DOM/textContent only, no innerHTML: fenced code, headings,
+   lists, inline code/bold/italic/links) wired into both webviews
+   (agentMessage bubbles in sidebar + manager). Walkthrough artifact card in
+   the manager: on turn/completed renders Files touched, Commands (✓/✗ +
+   exit status), and the agent's final Summary as markdown. Verified under
+   Xvfb (dental landing page run). REMAINING for Phase 4: browser
+   computer-use sub-agent + self-verify loop (port from Forge).
 5. Fleet agents bridge (web-building agents first) + Atrium per-client
    integration (Falcon audit cards).

@@ -46,7 +46,11 @@
 					<div id="diffStat"></div>
 					<button id="diffBtn" class="btn small">Open diff in editor</button>
 				</div>
-				<div id="noArt" class="empty">Plan and diffs of the selected thread appear here.</div>
+				<div id="wtCard" class="art hidden">
+					<div class="artTitle">Walkthrough</div>
+					<div id="wtBody"></div>
+				</div>
+				<div id="noArt" class="empty">Plan, diffs and walkthrough of the selected thread appear here.</div>
 			</div>
 		</div>
 		<div id="loginOverlay" class="hidden">
@@ -61,6 +65,8 @@
 	const messagesEl = $("messages"), inputEl = $("input"), sendBtn = $("sendBtn"), stopBtn = $("stopBtn");
 	const threadListEl = $("threadList"), quotaEl = $("quota"), workTitleEl = $("workTitle");
 	const planCard = $("planCard"), planBody = $("planBody"), diffCard = $("diffCard"), diffStat = $("diffStat"), noArt = $("noArt");
+	const wtCard = $("wtCard"), wtBody = $("wtBody");
+	let walk = null; // current-turn walkthrough: {commands:[], files:Set, message:""}
 
 	function el(tag, cls, text) {
 		const e = document.createElement(tag);
@@ -115,6 +121,7 @@
 		messagesEl.appendChild(el("div", "empty", "Select a thread or start a new one."));
 		planCard.classList.add("hidden");
 		diffCard.classList.add("hidden");
+		resetWalkthrough();
 		noArt.classList.remove("hidden");
 		setBusy(false);
 	}
@@ -174,7 +181,9 @@
 			case "userMessage": addUserMessage(userText(item.content)); return;
 			case "agentMessage": {
 				const m = el("div", "msg agent");
-				m.appendChild(el("div", "bubble mdtext", item.text || ""));
+				const b = el("div", "bubble mdtext");
+				b.appendChild(window.mdRender(item.text || ""));
+				m.appendChild(b);
 				messagesEl.appendChild(m);
 				return;
 			}
@@ -266,6 +275,7 @@
 	}
 
 	function completeItem(item) {
+		trackForWalkthrough(item);
 		const entry = live.get(item.id);
 		if (!entry) {
 			if (item.type === "agentMessage" && item.text) renderCompleteItem(item);
@@ -274,7 +284,8 @@
 		}
 		if (item.type === "agentMessage" && item.text) {
 			entry.text = item.text;
-			entry.el.textContent = item.text;
+			entry.el.textContent = "";
+			entry.el.appendChild(window.mdRender(item.text));
 		}
 		if (item.type === "reasoning" && entry.root) {
 			entry.root.querySelector("summary").textContent = "Thought";
@@ -329,8 +340,59 @@
 	}
 
 	function updateNoArt() {
-		const any = !planCard.classList.contains("hidden") || !diffCard.classList.contains("hidden");
+		const any = !planCard.classList.contains("hidden") || !diffCard.classList.contains("hidden") || !wtCard.classList.contains("hidden");
 		noArt.classList.toggle("hidden", any);
+	}
+
+	// ---------- walkthrough ----------
+	function trackForWalkthrough(item) {
+		if (!walk || !item) return;
+		if (item.type === "commandExecution") {
+			walk.commands.push({ command: item.command || "", exitCode: item.exitCode });
+		} else if (item.type === "fileChange") {
+			for (const c of item.changes || []) {
+				const p = c.path || c.file;
+				if (p) walk.files.add(p);
+			}
+		} else if (item.type === "agentMessage" && item.text) {
+			walk.message = item.text;
+		}
+	}
+
+	function resetWalkthrough() {
+		walk = null;
+		wtCard.classList.add("hidden");
+		updateNoArt();
+	}
+
+	function renderWalkthrough() {
+		if (!walk || (!walk.commands.length && !walk.files.size && !walk.message)) { resetWalkthrough(); return; }
+		wtBody.innerHTML = "";
+		if (walk.files.size) {
+			wtBody.appendChild(el("div", "wtSection", "Files"));
+			for (const f of [...walk.files].slice(0, 10)) {
+				const base = f.split("/").pop();
+				wtBody.appendChild(el("div", "wtFile", "✎ " + base));
+			}
+		}
+		if (walk.commands.length) {
+			wtBody.appendChild(el("div", "wtSection", "Commands"));
+			for (const c of walk.commands.slice(0, 8)) {
+				const ok = c.exitCode === 0 || c.exitCode === null || c.exitCode === undefined;
+				const row = el("div", "wtCmd " + (ok ? "ok" : "fail"));
+				row.appendChild(el("span", "wtMark", ok ? "✓" : "✗"));
+				row.appendChild(el("span", "wtCmdText", c.command.replace(/^\/bin\/bash -lc /, "").slice(0, 80)));
+				wtBody.appendChild(row);
+			}
+		}
+		if (walk.message) {
+			wtBody.appendChild(el("div", "wtSection", "Summary"));
+			const s = el("div", "wtMsg");
+			s.appendChild(window.mdRender(walk.message.length > 400 ? walk.message.slice(0, 400) + "…" : walk.message));
+			wtBody.appendChild(s);
+		}
+		wtCard.classList.remove("hidden");
+		updateNoArt();
 	}
 
 	// ---------- approvals ----------
@@ -391,6 +453,7 @@
 				messagesEl.innerHTML = "";
 				renderPlan(null);
 				renderDiff("");
+				resetWalkthrough();
 				pendingSelect = null;
 				renderThreads();
 				if (pendingPrompt) {
@@ -412,6 +475,7 @@
 				setBusy(!!activeTurnId);
 				renderPlan(msg.plan);
 				renderDiff(msg.diff);
+				resetWalkthrough();
 				scroll();
 				break;
 			}
@@ -447,10 +511,16 @@
 		const mine = tid && tid === selectedId;
 		switch (method) {
 			case "turn/started":
-				if (mine) { activeTurnId = params.turn && params.turn.id; setBusy(true); }
+				if (mine) {
+					activeTurnId = params.turn && params.turn.id;
+					setBusy(true);
+					walk = { commands: [], files: new Set(), message: "" };
+					wtCard.classList.add("hidden");
+					updateNoArt();
+				}
 				break;
 			case "turn/completed":
-				if (mine) { activeTurnId = null; setBusy(false); }
+				if (mine) { activeTurnId = null; setBusy(false); renderWalkthrough(); }
 				break;
 			case "item/started": if (mine) startItem(params.item); break;
 			case "item/completed": if (mine) completeItem(params.item); break;

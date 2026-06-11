@@ -150,15 +150,22 @@
 	}
 
 	function completeItem(item) {
-		const entry = items.get(item.id);
+		let entry = items.get(item.id);
 		if (!entry) {
 			// item finished without a start/delta we rendered — render final state
-			if (item.type === "agentMessage" && item.text) startItem(item);
+			if (item.type === "agentMessage" && item.text) {
+				entry = startItem(item);
+				if (entry) {
+					entry.el.textContent = "";
+					entry.el.appendChild(window.mdRender(item.text));
+				}
+			}
 			return;
 		}
 		if (item.type === "agentMessage" && item.text) {
 			entry.text = item.text;
-			entry.el.textContent = item.text;
+			entry.el.textContent = "";
+			entry.el.appendChild(window.mdRender(item.text));
 		}
 		if (item.type === "reasoning" && entry.root) {
 			entry.root.querySelector("summary").textContent = "Thought";

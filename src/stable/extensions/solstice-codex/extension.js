@@ -375,6 +375,7 @@ function mediaHtml(webview, extensionUri, scriptFile, styleFile) {
 </head>
 <body>
 <div id="app"></div>
+<script nonce="${nonce}" src="${media("md.js")}"></script>
 <script nonce="${nonce}" src="${media(scriptFile)}"></script>
 </body>
 </html>`;
