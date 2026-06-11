@@ -69,7 +69,7 @@ jobs:
       # MANDATORY GATE — fails the job if any .node inside the output is not a
       # Windows PE binary (lesson: 4x false-positive cross-builds, 17-22/05).
       - name: Verify native modules match win32
-        run: bash scripts/verify-build-target-natives.sh ../VSCode-win32-x64 win32
+        run: bash scripts/verify-build-target-natives.sh ./VSCode-win32-x64 win32
 
       - name: Prepare assets (installer + zip)
         run: ./prepare_assets.sh
@@ -104,12 +104,12 @@ jobs:
         run: ./build.sh
 
       - name: Verify native modules match darwin
-        run: bash scripts/verify-build-target-natives.sh ../VSCode-darwin-arm64 darwin
+        run: bash scripts/verify-build-target-natives.sh ./VSCode-darwin-arm64 darwin
 
       # Ad-hoc signing is REQUIRED on Apple Silicon (kernel kills unsigned
       # arm64 code). Must be the LAST mutation of the .app before zipping.
       - name: Ad-hoc codesign
-        run: codesign --force --deep -s - "../VSCode-darwin-arm64/${APP_NAME}.app"
+        run: codesign --force --deep -s - "./VSCode-darwin-arm64/${APP_NAME}.app"
 
       - name: Prepare assets (zip + dmg)
         run: ./prepare_assets.sh
@@ -151,10 +151,10 @@ jobs:
         run: ./build.sh
 
       - name: Verify native modules match linux
-        run: bash scripts/verify-build-target-natives.sh ../VSCode-linux-x64 linux
+        run: bash scripts/verify-build-target-natives.sh ./VSCode-linux-x64 linux
 
       - name: Tarball app dir
-        run: tar -czf solstice-linux-x64.tar.gz -C .. VSCode-linux-x64
+        run: tar -czf solstice-linux-x64.tar.gz VSCode-linux-x64
 
       - uses: actions/upload-artifact@v7
         with:
