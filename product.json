@@ -640,5 +640,31 @@
     "gruntfuggly.todo-tree": {
       "default": false
     }
-  }
+  },
+  "nameShort": "Anvil",
+  "nameLong": "Anvil",
+  "applicationName": "anvil",
+  "dataFolderName": ".anvil",
+  "serverApplicationName": "anvil-server",
+  "serverDataFolderName": ".anvil-server",
+  "urlProtocol": "anvil",
+  "linuxIconName": "anvil",
+  "darwinBundleIdentifier": "com.thomas.anvil",
+  "win32AppUserModelId": "Thomas.Anvil",
+  "win32DirName": "Anvil",
+  "win32MutexName": "anvil",
+  "win32NameVersion": "Anvil",
+  "win32RegValueName": "Anvil",
+  "win32ShellNameShort": "Anvil",
+  "win32SetupExeBasename": "AnvilSetup",
+  "win32AppId": "{{CEE0E461-638F-4250-832B-B25A9AB4201F}",
+  "win32x64AppId": "{{9FEDF083-1ED3-4651-B15F-BA690F561EBB}",
+  "win32arm64AppId": "{{A2145876-6781-4ABE-9ECD-1D605C1E5584}",
+  "win32UserAppId": "{{D2D15CA7-2A41-4651-89B6-E1FA4219B6D8}",
+  "win32x64UserAppId": "{{B3137DA7-04D4-432B-859A-6D166A21980D}",
+  "win32arm64UserAppId": "{{C2103798-BD33-4D28-A490-0F0A7A029F7E}",
+  "tunnelApplicationName": "anvil-tunnel",
+  "win32TunnelServiceMutex": "anvil-tunnelservice",
+  "win32TunnelMutex": "anvil-tunnel",
+  "quality": "stable"
 }

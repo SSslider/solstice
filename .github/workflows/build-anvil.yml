@@ -1,0 +1,115 @@
+name: Build Anvil (win32-x64 + darwin-arm64)
+
+# Manual trigger only — each full matrix run costs ~$6-8 on a private repo
+# (Windows 2x + macOS 10x minute multipliers). Never build installers on the
+# Linux server: native .node modules must compile on the target OS.
+on:
+  workflow_dispatch:
+    inputs:
+      build_windows:
+        type: boolean
+        default: true
+        description: Build win32-x64 UserSetup
+      build_macos:
+        type: boolean
+        default: true
+        description: Build darwin-arm64 zip+dmg
+
+env:
+  APP_NAME: Anvil
+  BINARY_NAME: anvil
+  GH_REPO_PATH: ${{ github.repository }}
+  ASSETS_REPOSITORY: ${{ github.repository }}
+  ORG_NAME: ${{ github.repository_owner }}
+  VSCODE_QUALITY: stable
+  DISABLE_UPDATE: yes
+  SHOULD_BUILD: yes
+  SHOULD_BUILD_REH: no
+  SHOULD_BUILD_REH_WEB: no
+
+permissions: {}
+
+jobs:
+  windows:
+    if: ${{ inputs.build_windows }}
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    env:
+      OS_NAME: windows
+      VSCODE_ARCH: x64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Clone VSCode repo (pinned MS_TAG)
+        run: ./get_repo.sh
+
+      - name: Build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./build.sh
+
+      # MANDATORY GATE — fails the job if any .node inside the output is not a
+      # Windows PE binary (lesson: 4x false-positive cross-builds, 17-22/05).
+      - name: Verify native modules match win32
+        run: bash scripts/verify-build-target-natives.sh ../VSCode-win32-x64 win32
+
+      - name: Prepare assets (installer + zip)
+        run: ./prepare_assets.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: anvil-win32-x64
+          path: assets/
+          retention-days: 7
+
+  macos:
+    if: ${{ inputs.build_macos }}
+    runs-on: macos-14 # GitHub-hosted Apple Silicon (real arm64)
+    env:
+      OS_NAME: osx
+      VSCODE_ARCH: arm64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Clone VSCode repo (pinned MS_TAG)
+        run: ./get_repo.sh
+
+      - name: Build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./build.sh
+
+      - name: Verify native modules match darwin
+        run: bash scripts/verify-build-target-natives.sh ../VSCode-darwin-arm64 darwin
+
+      # Ad-hoc signing is REQUIRED on Apple Silicon (kernel kills unsigned
+      # arm64 code). Must be the LAST mutation of the .app before zipping.
+      - name: Ad-hoc codesign
+        run: codesign --force --deep -s - "../VSCode-darwin-arm64/${APP_NAME}.app"
+
+      - name: Prepare assets (zip + dmg)
+        run: ./prepare_assets.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: anvil-darwin-arm64
+          path: assets/
+          retention-days: 7
