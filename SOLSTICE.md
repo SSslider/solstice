@@ -1,7 +1,7 @@
-# Nova — Antigravity-class AI IDE (build repo)
+# Solstice — Antigravity-class AI IDE (build repo)
 
 Downstream of the VSCodium patch-pipeline (this repo IS VSCodium's scripts repo,
-branch `nova-main`, with our changes layered on top). It builds a branded
+branch `solstice-main`, with our changes layered on top). It builds a branded
 Code-OSS fork installable on Windows (Inno UserSetup) and macOS Apple Silicon
 (ad-hoc-signed zip+dmg).
 
@@ -10,11 +10,11 @@ and `Julius-cc-x/agents/orion/deliverables/antigravity_clone_master_plan_2026-06
 
 ## What we changed vs upstream VSCodium
 
-- `product.json` (root, deep-merged LAST by `prepare_vscode.sh` → wins): Nova
-  brand keys — names, `.nova` data folder, `nova://` protocol,
-  `com.thomas.nova`, fresh win32 installer GUIDs. Open VSX gallery inherited.
+- `product.json` (root, deep-merged LAST by `prepare_vscode.sh` → wins): Solstice
+  brand keys — names, `.solstice` data folder, `solstice://` protocol,
+  `com.thomas.solstice`, fresh win32 installer GUIDs. Open VSX gallery inherited.
 - `brand.env` — env for local script runs (APP_NAME/BINARY_NAME/...).
-- `.github/workflows/build-nova.yml` — manual-dispatch matrix: windows-2022
+- `.github/workflows/build-solstice.yml` — manual-dispatch matrix: windows-2022
   (win32-x64) + macos-14 (darwin-arm64), with the **blocking native-modules
   verify gate** and mac ad-hoc codesign.
 - `scripts/verify-build-target-natives.sh` — the gate (from Orion's toolkit).
@@ -31,7 +31,7 @@ and `Julius-cc-x/agents/orion/deliverables/antigravity_clone_master_plan_2026-06
 ## Roadmap (phases)
 
 0. ✅ Repo scaffold (this commit) — no builds yet.
-1. First installable: run `build-nova.yml` → UserSetup.exe + .dmg → install on
+1. First installable: run `build-solstice.yml` → UserSetup.exe + .dmg → install on
    Thomas's machines. Needs: GitHub repo created (private recommended) + final
    product name from Thomas.
 2. Codex/GPT-5.5 inside: bundle pinned `codex` binary per platform, own
