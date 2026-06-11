@@ -44,9 +44,16 @@ and `Julius-cc-x/agents/orion/deliverables/antigravity_clone_master_plan_2026-06
    bundled bin/ → PATH; CI bundles pinned codex per platform
    (scripts/bundle-codex-binary.sh, rust-v0.137.0). Verified live on the
    server build under Xvfb: prompt → file created + approval flow + quota bar.
-3. Agent Manager surface: 3-column mission control (workspaces | thread inbox
-   w/ status | work area), Artifacts (plan/diffs/walkthrough+screenshots),
-   annotate-don't-reprompt comments.
+3. ✅ Agent Manager surface (12/06): editor-area panel (Solstice: Open Agent
+   Manager / view-title button) with 3 columns — thread inbox (thread/list +
+   live thread/status/changed badges, archive) | work area (history via
+   thread/read includeTurns, live streaming, approvals) | Artifacts (plan from
+   turn/plan/updated w/ step status, diff stat from turn/diff/updated +
+   open-in-editor). Annotate-don't-reprompt: composer steers the active turn
+   via turn/steer {expectedTurnId} instead of waiting. Multi-thread controller:
+   all notifications routed by threadId (sidebar = its thread only, manager =
+   all). User messages render from server item replay (no local echo).
+   Verified under Xvfb: dental landing page built end-to-end in the manager.
 4. Browser computer-use sub-agent + self-verify loop (port from Forge) +
    visual polish beyond Antigravity.
 5. Fleet agents bridge (web-building agents first) + Atrium per-client

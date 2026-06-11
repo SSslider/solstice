@@ -2,7 +2,7 @@
   "name": "solstice-codex",
   "displayName": "Solstice Agent",
   "description": "Built-in AI agent panel powered by Codex (ChatGPT subscription).",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "solstice",
   "license": "MIT",
   "engines": {
@@ -57,6 +57,12 @@
         "command": "solstice.agent.signOut",
         "title": "Sign out of ChatGPT",
         "category": "Solstice"
+      },
+      {
+        "command": "solstice.agent.openManager",
+        "title": "Open Agent Manager",
+        "category": "Solstice",
+        "icon": "$(layout)"
       }
     ],
     "menus": {
@@ -70,6 +76,11 @@
           "command": "solstice.agent.showDiff",
           "when": "view == solstice.agentPanel",
           "group": "navigation@2"
+        },
+        {
+          "command": "solstice.agent.openManager",
+          "when": "view == solstice.agentPanel",
+          "group": "navigation@3"
         }
       ]
     },
