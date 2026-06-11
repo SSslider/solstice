@@ -35,17 +35,12 @@ case "$TARGET" in
   *)      echo "ERROR: unknown target '$TARGET' (use win32|darwin|linux)" >&2; exit 2 ;;
 esac
 
-# Find every .node file in the build
-mapfile -t NODE_FILES < <(find "$OUT_DIR" -name '*.node' -type f 2>/dev/null)
-
-if [ "${#NODE_FILES[@]}" -eq 0 ]; then
-  echo "WARN: no .node files found in $OUT_DIR — verify the path"
-  exit 0
-fi
-
-echo "Verifying ${#NODE_FILES[@]} .node files against target=$TARGET (expected: $EXPECTED)..."
+# Find every .node file in the build.
+# NOTE: no mapfile/arrays — macOS ships bash 3.2; keep this POSIX-ish.
+TOTAL=0
 MISMATCH=0
-for f in "${NODE_FILES[@]}"; do
+while IFS= read -r f; do
+  TOTAL=$((TOTAL+1))
   FT=$(file -b "$f")
   if echo "$FT" | grep -q "$EXPECTED"; then
     : # ok
@@ -55,15 +50,20 @@ for f in "${NODE_FILES[@]}"; do
     echo "  got:      $FT"
     MISMATCH=$((MISMATCH+1))
   fi
-done
+done < <(find "$OUT_DIR" -name '*.node' -type f 2>/dev/null)
+
+if [ "$TOTAL" -eq 0 ]; then
+  echo "WARN: no .node files found in $OUT_DIR — verify the path"
+  exit 0
+fi
 
 if [ "$MISMATCH" -gt 0 ]; then
   echo ""
-  echo "FAIL: $MISMATCH/${#NODE_FILES[@]} .node files do NOT match target $TARGET."
+  echo "FAIL: $MISMATCH/$TOTAL .node files do NOT match target $TARGET."
   echo "This build will NOT launch on the target OS."
   echo "Root cause: cross-compiling native modules on Linux doesn't rebuild .node files for the target."
   echo "Fix: build on the target OS itself (or run electron-rebuild with correct --target_platform/--target_arch)."
   exit 1
 fi
 
-echo "PASS: all ${#NODE_FILES[@]} .node files match target $TARGET ($EXPECTED)."
+echo "PASS: all $TOTAL .node files match target $TARGET ($EXPECTED)."
