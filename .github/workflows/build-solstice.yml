@@ -31,7 +31,9 @@ env:
   SHOULD_BUILD_REH: no
   SHOULD_BUILD_REH_WEB: no
 
-permissions: {}
+# contents:read required — repo is private, checkout authenticates with GITHUB_TOKEN
+permissions:
+  contents: read
 
 jobs:
   windows:
