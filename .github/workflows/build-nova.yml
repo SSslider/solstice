@@ -1,4 +1,4 @@
-name: Build Anvil (win32-x64 + darwin-arm64)
+name: Build Nova (win32-x64 + darwin-arm64)
 
 # Manual trigger only — each full matrix run costs ~$6-8 on a private repo
 # (Windows 2x + macOS 10x minute multipliers). Never build installers on the
@@ -16,8 +16,8 @@ on:
         description: Build darwin-arm64 zip+dmg
 
 env:
-  APP_NAME: Anvil
-  BINARY_NAME: anvil
+  APP_NAME: Nova
+  BINARY_NAME: nova
   GH_REPO_PATH: ${{ github.repository }}
   ASSETS_REPOSITORY: ${{ github.repository }}
   ORG_NAME: ${{ github.repository_owner }}
@@ -70,7 +70,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: anvil-win32-x64
+          name: nova-win32-x64
           path: assets/
           retention-days: 7
 
@@ -110,6 +110,6 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: anvil-darwin-arm64
+          name: nova-darwin-arm64
           path: assets/
           retention-days: 7
