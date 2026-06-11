@@ -9,7 +9,7 @@ on:
       build_windows:
         type: boolean
         default: true
-        description: Build win32-x64 UserSetup
+        description: Build win32-x64 UserSetup + SystemSetup
       build_macos:
         type: boolean
         default: true
@@ -50,7 +50,9 @@ jobs:
       CI_BUILD: no
       SHOULD_BUILD_MSI: no
       SHOULD_BUILD_MSI_NOUP: no
-      SHOULD_BUILD_EXE_SYS: no
+      # SHOULD_BUILD_EXE_SYS defaults to yes — produces SolsticeSetup-x64-*.exe
+      # (system-wide Inno Setup installer, requires admin — Antigravity-style)
+      # alongside SolsticeUserSetup-x64-*.exe (per-user, no admin).
     steps:
       - uses: actions/checkout@v6
         with:
