@@ -1,0 +1,118 @@
+{
+  "name": "solstice-codex",
+  "displayName": "Solstice Agent",
+  "description": "Built-in AI agent panel powered by Codex (ChatGPT subscription).",
+  "version": "0.2.0",
+  "publisher": "solstice",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.121.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "virtualWorkspaces": false,
+    "untrustedWorkspaces": {
+      "supported": false
+    }
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "solstice-agent",
+          "title": "Solstice Agent",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "solstice-agent": [
+        {
+          "type": "webview",
+          "id": "solstice.agentPanel",
+          "name": "Agent"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "solstice.agent.newThread",
+        "title": "New Agent Thread",
+        "category": "Solstice",
+        "icon": "$(add)"
+      },
+      {
+        "command": "solstice.agent.showDiff",
+        "title": "Show Last Turn Diff",
+        "category": "Solstice",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "solstice.agent.signOut",
+        "title": "Sign out of ChatGPT",
+        "category": "Solstice"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "solstice.agent.newThread",
+          "when": "view == solstice.agentPanel",
+          "group": "navigation@1"
+        },
+        {
+          "command": "solstice.agent.showDiff",
+          "when": "view == solstice.agentPanel",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Solstice Agent",
+      "properties": {
+        "solstice.codex.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the codex binary. Empty = bundled binary, then PATH."
+        },
+        "solstice.codex.home": {
+          "type": "string",
+          "default": "",
+          "description": "CODEX_HOME directory for auth/config. Empty = codex default (~/.codex)."
+        },
+        "solstice.codex.model": {
+          "type": "string",
+          "default": "gpt-5.5",
+          "description": "Model for agent threads."
+        },
+        "solstice.codex.approvalPolicy": {
+          "type": "string",
+          "enum": [
+            "untrusted",
+            "on-request",
+            "on-failure",
+            "never"
+          ],
+          "default": "on-request",
+          "description": "When the agent must ask before running commands."
+        },
+        "solstice.codex.sandbox": {
+          "type": "string",
+          "enum": [
+            "read-only",
+            "workspace-write",
+            "danger-full-access"
+          ],
+          "default": "workspace-write",
+          "description": "Sandbox policy for agent commands."
+        }
+      }
+    }
+  }
+}

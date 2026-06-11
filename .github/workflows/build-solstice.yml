@@ -69,6 +69,9 @@ jobs:
       - name: Clone VSCode repo (pinned MS_TAG)
         run: ./get_repo.sh
 
+      - name: Bundle codex binary (win32)
+        run: bash scripts/bundle-codex-binary.sh win32
+
       - name: Build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -105,6 +108,9 @@ jobs:
 
       - name: Clone VSCode repo (pinned MS_TAG)
         run: ./get_repo.sh
+
+      - name: Bundle codex binary (darwin)
+        run: bash scripts/bundle-codex-binary.sh darwin
 
       - name: Build
         env:
@@ -153,6 +159,9 @@ jobs:
 
       - name: Clone VSCode repo (pinned MS_TAG)
         run: ./get_repo.sh
+
+      - name: Bundle codex binary (linux)
+        run: bash scripts/bundle-codex-binary.sh linux
 
       - name: Build
         env:

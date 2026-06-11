@@ -30,14 +30,20 @@ and `Julius-cc-x/agents/orion/deliverables/antigravity_clone_master_plan_2026-06
 
 ## Roadmap (phases)
 
-0. ✅ Repo scaffold (this commit) — no builds yet.
-1. First installable: run `build-solstice.yml` → UserSetup.exe + .dmg → install on
-   Thomas's machines. Needs: GitHub repo created (private recommended) + final
-   product name from Thomas.
-2. Codex/GPT-5.5 inside: bundle pinned `codex` binary per platform, own
-   CODEX_HOME, `codex app-server` JSON-RPC (threads/turns/items, approvals,
-   rate-limit meter), ChatGPT OAuth via `account/login/start`. Agent panel as a
-   built-in webview extension. `AgentRunner` abstraction from day 1.
+0. ✅ Repo scaffold — no builds yet.
+1. ✅ First installable (11-12/06): all 3 platforms green in CI, Release v0.1.0,
+   verified running on Thomas's Windows PC (gate passed 12/06).
+2. ✅ Codex/GPT-5.5 inside (12/06): built-in extension `solstice-codex`
+   (src/stable/extensions/solstice-codex — plain JS, zero deps, packaged by the
+   local-extensions stream). `codex app-server` JSON-RPC 2.0 over JSONL stdio:
+   threads/turns, item streaming (agentMessage/reasoning/commandExecution/
+   fileChange deltas), approval cards (execCommand/applyPatch/requestApproval →
+   approved/approved_for_session/denied), turn/diff/updated → diff editor,
+   rate-limit meter from account/rateLimits, ChatGPT OAuth via
+   account/login/start (browser flow). Binary resolution: setting →
+   bundled bin/ → PATH; CI bundles pinned codex per platform
+   (scripts/bundle-codex-binary.sh, rust-v0.137.0). Verified live on the
+   server build under Xvfb: prompt → file created + approval flow + quota bar.
 3. Agent Manager surface: 3-column mission control (workspaces | thread inbox
    w/ status | work area), Artifacts (plan/diffs/walkthrough+screenshots),
    annotate-don't-reprompt comments.
