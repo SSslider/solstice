@@ -62,41 +62,65 @@
 		vscode.postMessage({ type: "send", text });
 	}
 
+	const SPIN_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+	const IDLE_VERBS = ["Thinking", "Planning", "Exploring", "Reasoning", "Synthesizing", "Crafting", "Weighing options", "Connecting dots"];
 	let busyEl = null;
+	let busyGlyphEl = null;
 	let busyLabelEl = null;
+	let busyCountEl = null;
 	let busyClockEl = null;
 	let busyStart = 0;
 	let busyTimer = null;
+	let spinTimer = null;
+	let spinFrame = 0;
+	let verbIdx = 0;
+	let explicitActivity = null;
+	let actionCount = 0;
 	function setBusy(b) {
 		busy = b;
 		dotEl.className = "dot " + (b ? "busy" : "idle");
 		sendBtn.disabled = b;
 		stopBtn.classList.toggle("hidden", !b);
 		if (b && !busyEl) {
+			actionCount = 0;
+			explicitActivity = null;
 			busyEl = el("div");
 			busyEl.id = "busyLine";
-			busyLabelEl = el("span", "busyLabel", "Working…");
+			busyGlyphEl = el("span", "busyGlyph", SPIN_FRAMES[0]);
+			busyLabelEl = el("span", "busyLabel", "Thinking…");
+			busyCountEl = el("span", "busyCount", "");
 			busyClockEl = el("span", "busyClock", "0:00");
-			busyEl.append(el("span", "bd"), el("span", "bd"), el("span", "bd"), busyLabelEl, busyClockEl);
+			busyEl.append(busyGlyphEl, busyLabelEl, busyCountEl, busyClockEl);
 			messagesEl.appendChild(busyEl);
 			busyStart = Date.now();
 			busyTimer = setInterval(() => {
 				const s = Math.floor((Date.now() - busyStart) / 1000);
 				busyClockEl.textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+				// no explicit tool activity → rotate whimsical thinking verbs (Claude Code style)
+				if (!explicitActivity && s > 0 && s % 4 === 0) {
+					verbIdx = (verbIdx + 1) % IDLE_VERBS.length;
+					busyLabelEl.textContent = IDLE_VERBS[verbIdx] + "…";
+				}
 			}, 1000);
+			spinTimer = setInterval(() => {
+				spinFrame = (spinFrame + 1) % SPIN_FRAMES.length;
+				if (busyGlyphEl) busyGlyphEl.textContent = SPIN_FRAMES[spinFrame];
+			}, 90);
 		} else if (!b && busyEl) {
 			clearInterval(busyTimer);
-			busyTimer = null;
+			clearInterval(spinTimer);
+			busyTimer = spinTimer = null;
 			busyEl.remove();
 			busyEl = null;
-			busyLabelEl = null;
-			busyClockEl = null;
+			busyGlyphEl = busyLabelEl = busyCountEl = busyClockEl = null;
 		}
 		scroll();
 	}
 
 	function setActivity(label) {
-		if (busyLabelEl) busyLabelEl.textContent = label || "Working…";
+		explicitActivity = label || null;
+		if (busyLabelEl) busyLabelEl.textContent = label || (IDLE_VERBS[verbIdx] + "…");
+		if (busyCountEl && actionCount > 0) busyCountEl.textContent = "· " + actionCount + (actionCount === 1 ? " step" : " steps");
 	}
 
 	function activityFor(item) {
@@ -150,11 +174,12 @@
 			entry = { el: body, type: item.type, text: item.text || "" };
 		} else if (item.type === "reasoning") {
 			const d = el("details", "reasoning");
+			d.open = true;
 			d.appendChild(el("summary", "", "Thinking…"));
 			const body = el("div", "reasonText", "");
 			d.appendChild(body);
 			messagesEl.appendChild(d);
-			entry = { el: body, type: item.type, text: "", root: d };
+			entry = { el: body, type: item.type, text: "", root: d, t0: Date.now() };
 		} else if (item.type === "commandExecution") {
 			const card = el("div", "card cmd");
 			const title = el("div", "cardTitle");
@@ -193,6 +218,9 @@
 		} else {
 			return null;
 		}
+		if (item.type === "commandExecution" || item.type === "fileChange" || item.type === "mcpToolCall") {
+			actionCount++;
+		}
 		items.set(item.id, entry);
 		scroll();
 		return entry;
@@ -204,6 +232,37 @@
 		if (!entry) return;
 		entry.text += delta;
 		entry.el.textContent = entry.text;
+		entry.el.scrollTop = entry.el.scrollHeight;
+		scroll();
+	}
+
+	// ---------- live plan checklist ----------
+	let planCard = null;
+	function renderPlan(plan) {
+		if (!Array.isArray(plan) || !plan.length) return;
+		if (!planCard || !planCard.parentNode) {
+			planCard = el("div", "card planCard");
+			messagesEl.appendChild(planCard);
+		}
+		planCard.innerHTML = "";
+		const done = plan.filter((s) => s.status === "completed").length;
+		const title = el("div", "cardTitle planTitle");
+		title.appendChild(el("span", "", "◆ Plan"));
+		title.appendChild(el("span", "planProg", done + " / " + plan.length));
+		planCard.appendChild(title);
+		const bar = el("div", "pbar");
+		const fill = el("div", "pfill");
+		fill.style.width = Math.round((done / plan.length) * 100) + "%";
+		bar.appendChild(fill);
+		planCard.appendChild(bar);
+		const list = el("div", "planList");
+		for (const s of plan) {
+			const row = el("div", "planStep " + (s.status || "pending"));
+			row.appendChild(el("span", "pIcon", s.status === "completed" ? "✓" : s.status === "inProgress" ? "●" : "○"));
+			row.appendChild(el("span", "pTxt", s.step || ""));
+			list.appendChild(row);
+		}
+		planCard.appendChild(list);
 		scroll();
 	}
 
@@ -227,7 +286,9 @@
 		}
 		if (item.type === "reasoning" && entry.root) {
 			entry.root.classList.add("done");
-			entry.root.querySelector("summary").textContent = "Thought";
+			entry.root.open = false;
+			const secs = entry.t0 ? Math.max(1, Math.round((Date.now() - entry.t0) / 1000)) : 0;
+			entry.root.querySelector("summary").textContent = secs ? `Thought for ${secs}s` : "Thought";
 			if (!entry.text) entry.root.classList.add("hidden");
 		}
 		if (item.type === "commandExecution" && entry.root) {
@@ -361,6 +422,7 @@
 			case "item/reasoning/textDelta":
 			case "item/reasoning/summaryTextDelta": appendDelta(params.itemId, params.delta, "reasoning"); break;
 			case "item/commandExecution/outputDelta": appendDelta(params.itemId, params.delta, "commandExecution"); break;
+			case "turn/plan/updated": renderPlan(params.plan); break;
 			case "account/rateLimits/updated": renderQuota(params.rateLimits); break;
 			case "error": sysLine((params.error && params.error.message) || "Agent error", "error"); break;
 		}

@@ -102,6 +102,8 @@ class AgentController {
 			`${i + 1}. ${marks[s.status] || "[ ]"} ${s.step}${s.status === "inProgress" ? "   ← current" : ""}`);
 		const title = (th.preview || "").split("\n")[0].slice(0, 80);
 		const text = `# Agent Plan\n\n${title ? "_" + title + "_\n\n" : ""}${lines.join("\n")}\n`;
+		if (text === this.lastPlanFileText) return;
+		this.lastPlanFileText = text;
 		const file = path.join(dir, "PLAN.md");
 		try { fs.writeFileSync(file, text); } catch { return; }
 		if (!this.planFileOpened) {
@@ -115,7 +117,9 @@ class AgentController {
 	onFilesChanged(item) {
 		const root = workspaceCwd();
 		const paths = (item.changes || []).map((c) => c.path || c.file).filter(Boolean);
-		for (const p of paths.slice(0, 3)) {
+		// research/plan docs have dedicated views — never open their raw editors over them
+		const skip = /(^|[\\/])(RESEARCH|DECONSTRUCT)\.md$|[\\/]\.solstice[\\/]/;
+		for (const p of paths.filter((p) => !skip.test(p)).slice(0, 3)) {
 			const abs = path.isAbsolute(p) ? p : path.join(root || "", p);
 			let stat;
 			try { stat = fs.statSync(abs); } catch { continue; }
@@ -191,6 +195,9 @@ class AgentController {
 		this.grokChanged = new Set();
 		const track = (uri) => {
 			const p = uri.fsPath;
+			// grok has no plan tool — it maintains .solstice/PLAN.md per the preamble;
+			// bridge it into turn/plan/updated so the panel shows a live checklist
+			if (/[\\/]\.solstice[\\/]PLAN\.md$/.test(p)) { this.emitGrokPlan(p); return; }
 			if (/[\\/](node_modules|\.git|\.solstice|\.next|dist)([\\/]|$)/.test(p)) return;
 			this.grokChanged.add(p);
 		};
@@ -198,6 +205,23 @@ class AgentController {
 		w.onDidCreate(track);
 		w.onDidChange(track);
 		this.grokWatcher = w;
+	}
+
+	emitGrokPlan(file) {
+		let text;
+		try { text = fs.readFileSync(file, "utf8"); } catch { return; }
+		if (text === this.lastPlanFileText) return;
+		this.lastPlanFileText = text;
+		const plan = [];
+		for (const m of text.matchAll(/^\s*(?:\d+\.|[-*])\s*\[( |x|X|~)\]\s*(.+)$/gm)) {
+			plan.push({
+				status: /x/i.test(m[1]) ? "completed" : m[1] === "~" ? "inProgress" : "pending",
+				step: m[2].replace(/\s*←\s*current\s*$/, "").trim(),
+			});
+		}
+		if (plan.length) {
+			this.onNotification("turn/plan/updated", { threadId: this.grok ? this.grok.threadId : undefined, plan });
+		}
 	}
 
 	flushGrokChanges() {
@@ -236,7 +260,8 @@ class AgentController {
 			"- Generate images by subcontracting to codex (it has an image generation tool):",
 			'  codex exec --skip-git-repo-check --full-auto "Use your image generation tool to create: <detailed description>. Then copy the EXACT file you just generated (by its precise filename from ~/.codex/generated_images/ — never the most recent file, other jobs may write there concurrently) into <workspace>/public/images/<descriptive-name>.png"',
 			"  Verify the file exists in the workspace afterwards, and view it with codex vision to confirm it shows the right subject before using it.",
-			"- For multi-step builds, first write a short numbered plan to .solstice/PLAN.md and keep step markers updated as you work ([x] done, [~] current, [ ] pending).",
+			"- For multi-step builds, first write a short numbered plan to .solstice/PLAN.md and keep step markers updated as you work ([x] done, [~] current, [ ] pending). The IDE renders it as a live checklist.",
+			"- When deconstructing / analyzing / researching a design, website, or app: maintain DECONSTRUCT.md (or RESEARCH.md) in the workspace root and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end. The IDE renders this file live to the user as a research dashboard. Include as you go: what you examined so far, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, techniques you detected (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists.",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
 			playbook ? "\n" + playbook : "",
 		].join("\n");
@@ -474,6 +499,7 @@ class AgentController {
 			"  After taking a screenshot, ALWAYS open it with your view_image tool to study layout, colors, typography and content. Use this whenever the user asks to inspect, analyze or imitate a website or design (e.g. Behance/Dribbble references).",
 			"- Image generation: you can generate images; afterwards copy the generated file from your image output directory into the workspace with a proper name and reference it from the site.",
 			"- For any multi-step build task, first create a plan with your plan tool and keep step statuses updated as you work.",
+			"- When deconstructing / analyzing / researching a design, website, or app: maintain DECONSTRUCT.md (or RESEARCH.md) in the workspace root and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end. The IDE renders this file live to the user as a research dashboard. Include as you go: what you examined so far, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, techniques you detected (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists.",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
 			playbook ? "\n" + playbook : "",
 		].join("\n");
@@ -616,9 +642,55 @@ class AgentController {
 		this.postManager({ type: "auth", authMethod: null });
 	}
 
+	// ---- live research dashboard (main editor area) ----
+	// The agent maintains DECONSTRUCT.md / RESEARCH.md incrementally while it
+	// deconstructs a reference; we render it live as a styled dashboard.
+	showResearch(uri) {
+		const p = uri.fsPath;
+		if (/[\\/](node_modules|\.git|\.next|dist)([\\/]|$)/.test(p)) return;
+		this.researchFile = p;
+		clearTimeout(this.researchDebounce);
+		this.researchDebounce = setTimeout(() => this.pushResearch(), 250);
+	}
+
+	pushResearch() {
+		if (!this.researchFile) return;
+		let text;
+		try { text = fs.readFileSync(this.researchFile, "utf8"); } catch { return; }
+		try { this.openResearchPanel(); } catch (e) { this.output.append("research panel: " + e.message + "\n"); return; }
+		this.researchPanel.webview.postMessage({
+			type: "doc",
+			name: path.basename(this.researchFile),
+			text,
+			time: Date.now(),
+		});
+		// keep the dashboard foreground while research findings stream in
+		this.researchPanel.reveal(vscode.ViewColumn.One, true);
+	}
+
+	openResearchPanel() {
+		if (!this.researchPanel) {
+			this.researchPanel = vscode.window.createWebviewPanel(
+				"solstice.research",
+				"🔬 Agent Research",
+				{ viewColumn: vscode.ViewColumn.One, preserveFocus: true },
+				{
+					enableScripts: true,
+					retainContextWhenHidden: true,
+					localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media")],
+				}
+			);
+			this.researchPanel.webview.html = mediaHtml(this.researchPanel.webview, this.context.extensionUri, "research.js", "research.css");
+			this.researchPanel.webview.onDidReceiveMessage((m) => { if (m.type === "ready") this.pushResearch(); });
+			this.researchPanel.onDidDispose(() => { this.researchPanel = null; });
+		}
+	}
+
 	dispose() {
 		for (const resolve of this.pendingApprovals.values()) resolve("abort");
 		this.pendingApprovals.clear();
+		clearTimeout(this.researchDebounce);
+		if (this.researchPanel) this.researchPanel.dispose();
 		if (this.preview) this.preview.dispose();
 		if (this.grokWatcher) this.grokWatcher.dispose();
 		if (this.grok) this.grok.interrupt();
@@ -745,6 +817,15 @@ function activate(context) {
 		vscode.commands.registerCommand("solstice.agent.openPreview", (url) => controller.openPreview(typeof url === "string" ? url : "")),
 		vscode.commands.registerCommand("solstice.agent.selectModel", () => controller.selectModel())
 	);
+	// live research dashboard: render DECONSTRUCT.md / RESEARCH.md as the agent writes it
+	// (no brace glob — filter by basename; grok writes from outside the editor)
+	const researchWatcher = vscode.workspace.createFileSystemWatcher("**/*.md");
+	const onResearchFile = (u) => {
+		if (/^(DECONSTRUCT|RESEARCH)\.md$/.test(path.basename(u.fsPath))) controller.showResearch(u);
+	};
+	researchWatcher.onDidCreate(onResearchFile);
+	researchWatcher.onDidChange(onResearchFile);
+	context.subscriptions.push(researchWatcher);
 	// chat lives in the secondary side bar (right of the editor); reveal it on first run
 	if (!context.globalState.get("solstice.revealedAgentPanel")) {
 		context.globalState.update("solstice.revealedAgentPanel", true);

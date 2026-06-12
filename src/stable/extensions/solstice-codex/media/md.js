@@ -55,6 +55,37 @@
 				frag.appendChild(pre);
 				continue;
 			}
+			// pipe table: header row + |---| separator
+			if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+				closeList();
+				const cells = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+				const table = document.createElement("table");
+				table.className = "mdtable";
+				const thead = document.createElement("thead");
+				const hr = document.createElement("tr");
+				for (const c of cells(line)) {
+					const th = document.createElement("th");
+					inline(th, c);
+					hr.appendChild(th);
+				}
+				thead.appendChild(hr);
+				table.appendChild(thead);
+				const tbody = document.createElement("tbody");
+				i += 2;
+				while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+					const tr = document.createElement("tr");
+					for (const c of cells(lines[i])) {
+						const td = document.createElement("td");
+						inline(td, c);
+						tr.appendChild(td);
+					}
+					tbody.appendChild(tr);
+					i++;
+				}
+				table.appendChild(tbody);
+				frag.appendChild(table);
+				continue;
+			}
 			const h = line.match(/^(#{1,4})\s+(.*)$/);
 			if (h) {
 				closeList();
