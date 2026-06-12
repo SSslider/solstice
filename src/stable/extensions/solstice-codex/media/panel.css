@@ -162,6 +162,8 @@ details.reasoning:not(.done) summary {
 #busyLine .bd { width: 4px; height: 4px; border-radius: 50%; background: var(--sol-accent); animation: solB 1.2s infinite; }
 #busyLine .bd:nth-child(2) { animation-delay: 0.2s; }
 #busyLine .bd:nth-child(3) { animation-delay: 0.4s; }
+#busyLine .busyLabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 70%; }
+#busyLine .busyClock { margin-left: auto; opacity: 0.6; font-variant-numeric: tabular-nums; }
 @keyframes solB { 0%, 60%, 100% { opacity: 0.25; transform: none; } 30% { opacity: 1; transform: translateY(-2px); } }
 
 /* MCP tool cards */

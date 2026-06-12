@@ -63,6 +63,10 @@
 	}
 
 	let busyEl = null;
+	let busyLabelEl = null;
+	let busyClockEl = null;
+	let busyStart = 0;
+	let busyTimer = null;
 	function setBusy(b) {
 		busy = b;
 		dotEl.className = "dot " + (b ? "busy" : "idle");
@@ -71,13 +75,40 @@
 		if (b && !busyEl) {
 			busyEl = el("div");
 			busyEl.id = "busyLine";
-			busyEl.append(el("span", "bd"), el("span", "bd"), el("span", "bd"), el("span", "", "Agent is working…"));
+			busyLabelEl = el("span", "busyLabel", "Working…");
+			busyClockEl = el("span", "busyClock", "0:00");
+			busyEl.append(el("span", "bd"), el("span", "bd"), el("span", "bd"), busyLabelEl, busyClockEl);
 			messagesEl.appendChild(busyEl);
+			busyStart = Date.now();
+			busyTimer = setInterval(() => {
+				const s = Math.floor((Date.now() - busyStart) / 1000);
+				busyClockEl.textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+			}, 1000);
 		} else if (!b && busyEl) {
+			clearInterval(busyTimer);
+			busyTimer = null;
 			busyEl.remove();
 			busyEl = null;
+			busyLabelEl = null;
+			busyClockEl = null;
 		}
 		scroll();
+	}
+
+	function setActivity(label) {
+		if (busyLabelEl) busyLabelEl.textContent = label || "Working…";
+	}
+
+	function activityFor(item) {
+		if (item.type === "reasoning") return "Thinking…";
+		if (item.type === "commandExecution") {
+			const c = String(item.command || "").split("\n")[0];
+			return "Running: " + (c.length > 64 ? c.slice(0, 64) + "…" : c);
+		}
+		if (item.type === "fileChange") return "Editing files…";
+		if (item.type === "mcpToolCall") return "Tool: " + mcpName(item);
+		if (item.type === "agentMessage") return "Writing…";
+		return null;
 	}
 
 	function scroll() {
@@ -324,8 +355,8 @@
 		switch (method) {
 			case "turn/started": setBusy(true); break;
 			case "turn/completed": setBusy(false); break;
-			case "item/started": startItem(params.item); break;
-			case "item/completed": completeItem(params.item); break;
+			case "item/started": startItem(params.item); setActivity(activityFor(params.item)); break;
+			case "item/completed": completeItem(params.item); setActivity(null); break;
 			case "item/agentMessage/delta": appendDelta(params.itemId, params.delta, "agentMessage"); break;
 			case "item/reasoning/textDelta":
 			case "item/reasoning/summaryTextDelta": appendDelta(params.itemId, params.delta, "reasoning"); break;

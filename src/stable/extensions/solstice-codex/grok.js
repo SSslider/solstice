@@ -1,11 +1,88 @@
 "use strict";
 const { spawn } = require("child_process");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 // Both fallback models are served by the same `grok` CLI (Grok Build TUI).
 const GROK_MODELS = {
 	"grok-build": { id: "grok-build", label: "Grok 4.3 Build" },
 	"composer-2.5": { id: "grok-composer-2.5-fast", label: "Composer 2.5 Fast" },
 };
+
+// The grok CLI's streaming-json stdout only carries thought/text chunks.
+// Tool activity (shell commands, file edits, reads) is written to the
+// session's updates.jsonl under ~/.grok/sessions/<urlencoded-cwd>/<id>/.
+// Tail that file in parallel so the webviews get the same rich cards
+// (commandExecution / fileChange / mcpToolCall) codex turns produce.
+class UpdatesTailer {
+	constructor(cwd, sinceMs, onUpdate, log) {
+		this.sessionsDir = path.join(os.homedir(), ".grok", "sessions", encodeURIComponent(cwd));
+		this.sinceMs = sinceMs;
+		this.onUpdate = onUpdate;
+		this.log = log;
+		this.file = null;
+		this.offset = 0;
+		this.timer = null;
+		this.stopped = false;
+	}
+
+	start() {
+		this.timer = setInterval(() => this.tick(), 300);
+	}
+
+	tick() {
+		try {
+			if (!this.file) {
+				this.file = this.findFile();
+				if (!this.file) return;
+			}
+			const size = fs.statSync(this.file).size;
+			if (size <= this.offset) return;
+			const fd = fs.openSync(this.file, "r");
+			const buf = Buffer.alloc(size - this.offset);
+			fs.readSync(fd, buf, 0, buf.length, this.offset);
+			fs.closeSync(fd);
+			this.offset = size;
+			for (const line of buf.toString("utf8").split("\n")) {
+				const s = line.trim();
+				if (!s) continue;
+				try {
+					const e = JSON.parse(s);
+					const u = e && e.params && e.params.update;
+					if (u) this.onUpdate(u);
+				} catch { /* partial last line — re-read next tick via offset rollback */
+					this.offset -= Buffer.byteLength(line, "utf8");
+					break;
+				}
+			}
+		} catch (err) {
+			this.log("updates tailer: " + err.message + "\n");
+		}
+	}
+
+	findFile() {
+		let dirs;
+		try { dirs = fs.readdirSync(this.sessionsDir); } catch { return null; }
+		let best = null, bestMtime = 0;
+		for (const d of dirs) {
+			const f = path.join(this.sessionsDir, d, "updates.jsonl");
+			try {
+				const st = fs.statSync(f);
+				if (st.mtimeMs >= this.sinceMs && st.mtimeMs > bestMtime) { best = f; bestMtime = st.mtimeMs; }
+			} catch { }
+		}
+		return best;
+	}
+
+	// flush any remaining lines, then stop
+	stop() {
+		if (this.stopped) return;
+		this.stopped = true;
+		this.tick();
+		clearInterval(this.timer);
+	}
+}
 
 // Drives the grok CLI in headless streaming-json mode and re-emits its events
 // using the codex app-server notification vocabulary, so both webviews render
@@ -78,6 +155,92 @@ class GrokProvider {
 			}
 		};
 
+		// ---- tool activity from updates.jsonl → codex item vocabulary ----
+		const tools = new Map(); // toolCallId -> { id, kind, command, out, paths, done, started }
+		const updateText = (u) => {
+			const c = Array.isArray(u.content) && u.content[0];
+			if (c && c.type === "content" && c.content && typeof c.content.text === "string") return c.content.text;
+			return null;
+		};
+		const updatePaths = (u) => {
+			const out = [];
+			for (const c of u.content || []) if (c && c.type === "diff" && c.path) out.push(c.path);
+			for (const l of u.locations || []) if (l && l.path) out.push(l.path);
+			return [...new Set(out)];
+		};
+		const onUpdate = (u) => {
+			if (u.sessionUpdate !== "tool_call" && u.sessionUpdate !== "tool_call_update") return;
+			const tcId = u.toolCallId;
+			if (!tcId) return;
+			let t = tools.get(tcId);
+			if (!t) {
+				t = { id: "gtl" + this.seq++, kind: null, command: null, out: "", paths: [], done: false, started: false, title: "" };
+				tools.set(tcId, t);
+			}
+			if (u.title) t.title = u.title;
+			if (u.rawInput && u.rawInput.command) t.command = u.rawInput.command;
+			if (u.kind) t.kind = u.kind;
+			if (!t.kind) {
+				if (t.command) t.kind = "execute";
+				else if ((u.content || []).some((c) => c && c.type === "diff")) t.kind = "edit";
+			}
+			const paths = updatePaths(u);
+			for (const p of paths) if (!t.paths.includes(p)) t.paths.push(p);
+
+			// start the card once the kind is known
+			if (!t.started && t.kind) {
+				t.started = true;
+				if (t.kind === "execute") {
+					this.notify("item/started", { threadId: tid, item: { id: t.id, type: "commandExecution", command: t.command || t.title } });
+				} else if (t.kind === "edit") {
+					this.notify("item/started", { threadId: tid, item: { id: t.id, type: "fileChange" } });
+				} else {
+					this.notify("item/started", { threadId: tid, item: { id: t.id, type: "mcpToolCall", tool: t.title || t.kind } });
+				}
+			}
+			if (!t.started || t.done) return;
+
+			// stream command output (updates carry the FULL text each time)
+			if (t.kind === "execute") {
+				const txt = updateText(u);
+				if (txt !== null && txt.length > t.out.length && txt.startsWith(t.out)) {
+					const delta = txt.slice(t.out.length);
+					t.out = txt;
+					this.notify("item/commandExecution/outputDelta", { threadId: tid, itemId: t.id, delta });
+				} else if (txt !== null && txt !== t.out && txt.length >= t.out.length) {
+					t.out = txt;
+				}
+			}
+
+			if (u.status === "completed" || u.status === "failed") {
+				t.done = true;
+				if (t.kind === "execute") {
+					const exitCode = u.rawOutput && typeof u.rawOutput.exit_code === "number" ? u.rawOutput.exit_code : (u.status === "failed" ? 1 : 0);
+					this.notify("item/completed", {
+						threadId: tid,
+						item: { id: t.id, type: "commandExecution", command: t.command || t.title, exitCode, aggregatedOutput: t.out },
+					});
+				} else if (t.kind === "edit") {
+					this.notify("item/completed", {
+						threadId: tid,
+						item: { id: t.id, type: "fileChange", changes: t.paths.map((p) => ({ path: p })) },
+					});
+				} else {
+					this.notify("item/completed", {
+						threadId: tid,
+						item: { id: t.id, type: "mcpToolCall", tool: t.title || t.kind, status: u.status === "failed" ? "failed" : "completed" },
+					});
+				}
+			}
+		};
+		const tailer = new UpdatesTailer(this.cwd, Date.now() - (this.turns > 1 ? 6 * 3600 * 1000 : 2000), onUpdate, this.log);
+		tailer.start();
+		// turn 2+ continues an existing session file — skip its history
+		if (this.turns > 1) {
+			const f = tailer.findFile();
+			if (f) { tailer.file = f; try { tailer.offset = fs.statSync(f).size; } catch { } }
+		}
+
 		return new Promise((resolve) => {
 			const child = spawn(this.bin, args, { cwd: this.cwd, env });
 			this.child = child;
@@ -95,6 +258,7 @@ class GrokProvider {
 			child.stderr.on("data", (d) => this.log(d.toString()));
 			child.on("error", (e) => {
 				this.child = null;
+				tailer.stop();
 				this.notify("error", {
 					threadId: tid,
 					error: { message: `Could not start the grok CLI (${this.bin}): ${e.message}. Install it and sign in once, then retry.` },
@@ -105,6 +269,7 @@ class GrokProvider {
 			child.on("close", (code) => {
 				if (!this.child) return; // already resolved via "error"
 				this.child = null;
+				tailer.stop();
 				closeReasoning();
 				closeMessage();
 				if (code !== 0 && code !== null) {
