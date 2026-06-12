@@ -274,8 +274,12 @@
 		for (const line of String(text || "").split("\n")) {
 			const head = line.match(/^\+\+\+ (?:b\/)?(.+)$/);
 			if (head) {
-				cur = { path: head[1], add: 0, del: 0, lines: [] };
-				files.push(cur);
+				// successive edits to the same file arrive as separate sections — merge them
+				cur = files.find((f) => f.path === head[1]);
+				if (!cur) {
+					cur = { path: head[1], add: 0, del: 0, lines: [] };
+					files.push(cur);
+				}
 				continue;
 			}
 			if (/^(--- |diff --git |index |new file|deleted file)/.test(line)) continue;
@@ -293,10 +297,9 @@
 		const openPaths = new Set(
 			diffCard ? Array.from(diffCard.querySelectorAll("details.diffFile[open]")).map((d) => d.getAttribute("data-path")) : []
 		);
-		if (!diffCard || !diffCard.parentNode) {
-			diffCard = el("div", "card diffCard");
-			messagesEl.appendChild(diffCard);
-		}
+		if (!diffCard || !diffCard.parentNode) diffCard = el("div", "card diffCard");
+		// keep the aggregate Changes card pinned after the latest activity
+		messagesEl.appendChild(diffCard);
 		diffCard.innerHTML = "";
 		const totalAdd = files.reduce((n, f) => n + f.add, 0);
 		const totalDel = files.reduce((n, f) => n + f.del, 0);

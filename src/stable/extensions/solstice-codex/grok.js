@@ -4,6 +4,32 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+// Synthesize a unified diff from a full-file edit (oldText -> newText) by
+// trimming the common prefix/suffix lines — enough for the panel's Changes card.
+function unifiedDiff(relPath, oldText, newText) {
+	const a = oldText == null ? [] : String(oldText).split("\n");
+	const b = newText == null ? [] : String(newText).split("\n");
+	let p = 0;
+	while (p < a.length && p < b.length && a[p] === b[p]) p++;
+	let s = 0;
+	while (s < a.length - p && s < b.length - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s++;
+	const aMid = a.slice(p, a.length - s);
+	const bMid = b.slice(p, b.length - s);
+	if (!aMid.length && !bMid.length) return "";
+	const ctx = 2;
+	const cs = Math.max(0, p - ctx);
+	const preCtx = a.slice(cs, p);
+	const postCtx = a.slice(a.length - s, Math.min(a.length, a.length - s + ctx));
+	const lines = ["--- a/" + relPath, "+++ b/" + relPath];
+	lines.push("@@ -" + (cs + 1) + "," + (preCtx.length + aMid.length + postCtx.length) +
+		" +" + (cs + 1) + "," + (preCtx.length + bMid.length + postCtx.length) + " @@");
+	for (const l of preCtx) lines.push(" " + l);
+	for (const l of aMid) lines.push("-" + l);
+	for (const l of bMid) lines.push("+" + l);
+	for (const l of postCtx) lines.push(" " + l);
+	return lines.join("\n");
+}
+
 // Both fallback models are served by the same `grok` CLI (Grok Build TUI).
 const GROK_MODELS = {
 	"grok-build": { id: "grok-build", label: "Grok 4.3 Build" },
@@ -157,6 +183,7 @@ class GrokProvider {
 
 		// ---- tool activity from updates.jsonl → codex item vocabulary ----
 		const tools = new Map(); // toolCallId -> { id, kind, command, out, paths, done, started }
+		const turnDiffs = []; // cumulative synthesized diffs for this turn
 		const updateText = (u) => {
 			const c = Array.isArray(u.content) && u.content[0];
 			if (c && c.type === "content" && c.content && typeof c.content.text === "string") return c.content.text;
@@ -186,6 +213,12 @@ class GrokProvider {
 			}
 			const paths = updatePaths(u);
 			for (const p of paths) if (!t.paths.includes(p)) t.paths.push(p);
+			for (const c of u.content || []) {
+				if (c && c.type === "diff" && c.path) {
+					if (!t.diffs) t.diffs = new Map();
+					t.diffs.set(c.path, { o: c.oldText, n: c.newText });
+				}
+			}
 
 			// start the card once the kind is known
 			if (!t.started && t.kind) {
@@ -225,6 +258,15 @@ class GrokProvider {
 						threadId: tid,
 						item: { id: t.id, type: "fileChange", changes: t.paths.map((p) => ({ path: p })) },
 					});
+					if (t.diffs) {
+						for (const [p, d] of t.diffs) {
+							const rel = path.relative(this.cwd, p);
+							const ud = unifiedDiff(rel && !rel.startsWith("..") ? rel : p, d.o, d.n);
+							if (ud) turnDiffs.push(ud);
+						}
+						t.diffs = null;
+						if (turnDiffs.length) this.notify("turn/diff/updated", { threadId: tid, diff: turnDiffs.join("\n") });
+					}
 				} else {
 					this.notify("item/completed", {
 						threadId: tid,

@@ -23,12 +23,18 @@ When the user gives a design reference URL and asks to analyze, imitate or rebui
    - *Actual website screens*: long full-page captures of the designed site (navbar + hero + sections + footer), usually shown for desktop AND mobile.
    You must classify every frame first, then rebuild the WEBSITE from the actual website screens only. NEVER rebuild the presentation poster as if it were the site. NEVER use a screenshot of the presentation (e.g. a laptop on a table) as your hero image.
 3. Study every frame (with vision) and write the classification + per-section breakdown to DECONSTRUCT.md: which frames are site screens (desktop/mobile), then for the site itself — navbar, hero, every section in order, footer, color tokens (hex), type pairing, imagery style, motion moments.
-4. **One coherent design.** A case study may show multiple concepts or pages — do not blend different directions into one page. Follow the single design system shown in the main site screens, and use the mobile screens to get the responsive behavior right.
-5. Rebuild section-by-section against that breakdown. All imagery on the rebuilt site must be newly generated or sourced assets matching the reference's style — never crops of the reference screenshots themselves.
-6. Self-check before done: compare your rebuild screenshot to the actual site screens (not the presentation frames). Same section order? Same palette? Same typographic feel? If you rebuilt a poster instead of a website — start over from step 2.
+4. **Deconstruct each section into measured components before writing any code.** For every section record in DECONSTRUCT.md:
+   - **Composition pattern** — name it precisely: full-bleed photo with overlaid type / split columns / card grid / bento / centered stack. The rebuild MUST use the same pattern. If the reference hero is a full-bleed photograph with the wordmark ON the image, a "safe" split-layout with an image card is a FAILURE even if it looks clean.
+   - **Measured type scale** — measure the display headline width/height as a fraction of the page width in the reference screen (use a pixel-measure script if needed). Express it in vw units (e.g. "wordmark spans ~85% of page width ≈ 11vw font-size") and reproduce within ±20%. Never trust a size printed on a brand board — measure the actual screen.
+   - **Imagery subject + framing** — what exactly is in the photo (e.g. "extreme close-up of a smile, warm tan grade, fills entire hero") and reproduce that subject and framing, not just "a relevant photo".
+   - **Layer structure** — what sits on top of what (photo → gradient scrim → headline → chips/CTA), and overlay element positions.
+5. **One coherent design.** A case study may show multiple concepts or pages — do not blend different directions into one page. Follow the single design system shown in the main site screens, and use the mobile screens to get the responsive behavior right.
+6. Rebuild section-by-section against that breakdown. All imagery on the rebuilt site must be newly generated or sourced assets matching the reference's style — never crops of the reference screenshots themselves.
 
-## Self-verification loop (mandatory before "done")
-1. Run the site locally, screenshot it with the browse tool at desktop width, plus a mobile-width pass.
-2. Open your own screenshots with view_image and judge them against the reference / the quality bar above.
-3. If it looks generic, flat, or off-sector — iterate. At least one self-critique pass is required on every build.
-4. Only report completion after the screenshot review passes. Include what you verified.
+## Fidelity loop (mandatory before "done")
+A single verification pass that checks colors is NOT verification. Run this loop:
+1. Run the site locally; screenshot at desktop width (plus a mobile pass) with the browse tool.
+2. Build a side-by-side composite of REFERENCE vs YOUR BUILD (one image, labeled halves — PIL/ImageMagick one-liner) and send it to codex vision:
+   `codex exec --skip-git-repo-check -i sidebyside.png "Left = reference design, right = rebuild. Score the rebuild 0-10 on each axis: composition pattern fidelity, typographic scale & hierarchy, color/grade, imagery subject & framing, spacing/density. For every axis below 8, give the exact CSS/markup change needed."`
+3. Record the scores as a table in DECONSTRUCT.md (the dashboard shows it live), apply the fixes, re-screenshot.
+4. Repeat until every axis ≥ 8/10, or 3 full rounds — whichever comes first. Report the final scorecard. Declaring "done" after one cosmetic check (e.g. background hex matches) is a failure.
