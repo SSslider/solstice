@@ -137,7 +137,7 @@ class AgentController {
 	}
 
 	providerKey() {
-		return this.cfg().get("provider") || "gpt-5.5";
+		return this.cfg().get("provider") || "composer-2.5";
 	}
 
 	providerLabel() {
@@ -215,14 +215,30 @@ class AgentController {
 	grokPreamble() {
 		const browseJs = path.join(this.context.extensionPath, "tools", "browse.js");
 		const node = process.execPath;
-		const run = process.platform === "win32"
+		const shot = process.platform === "win32"
+			? `cmd /c "set ELECTRON_RUN_AS_NODE=1&& ""${node}"" ""${browseJs}"" shot <url> <out.png>"`
+			: `ELECTRON_RUN_AS_NODE=1 "${node}" "${browseJs}" shot <url> <out.png>`;
+		const dom = process.platform === "win32"
 			? `cmd /c "set ELECTRON_RUN_AS_NODE=1&& ""${node}"" ""${browseJs}"" dom <url>"`
 			: `ELECTRON_RUN_AS_NODE=1 "${node}" "${browseJs}" dom <url>`;
+		let playbook = "";
+		try {
+			playbook = fs.readFileSync(path.join(this.context.extensionPath, "prompts", "design-playbook.md"), "utf8");
+		} catch { /* missing playbook must not break the agent */ }
 		return [
 			"You are the Solstice IDE agent. Work directly on files in this workspace.",
-			`- To read any website's rendered HTML: ${run}`,
+			"Capabilities beyond your normal tools (run these as shell commands):",
+			`- Screenshot any website: ${shot}`,
+			`- Read any website's rendered HTML: ${dom}`,
+			"- You cannot view images yourself. To study a screenshot or any image, subcontract vision to codex:",
+			'  codex exec --skip-git-repo-check -i <image.png> "Describe this design in exhaustive detail: layout, every section top-to-bottom, colors (hex if possible), typography, imagery style, spacing, mood."',
+			"  Always do this for every reference screenshot before designing, and for your own verification screenshots before declaring done.",
+			"- Generate images by subcontracting to codex (it has an image generation tool):",
+			'  codex exec --skip-git-repo-check --full-auto "Use your image generation tool to create: <detailed description>. Then copy the generated file from ~/.codex/generated_images/ into <workspace>/public/images/<descriptive-name>.png"',
+			"  Verify the file exists in the workspace afterwards.",
 			"- For multi-step builds, first write a short numbered plan to .solstice/PLAN.md and keep step markers updated as you work ([x] done, [~] current, [ ] pending).",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
+			playbook ? "\n" + playbook : "",
 		].join("\n");
 	}
 
