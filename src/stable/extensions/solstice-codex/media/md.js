@@ -3,27 +3,35 @@
 // Exposes window.mdRender(text) -> DocumentFragment.
 (function () {
 	function inline(target, text) {
-		// links, bold, italics, inline code
-		const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[([^\]]+)\]\((https?:\/\/[^\s)]+)\))/g;
+		// images, links, bold, italics, inline code
+		const re = /(!\[([^\]]*)\]\(([^\s)]+)\))|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[([^\]]+)\]\((https?:\/\/[^\s)]+)\))/g;
 		let last = 0, m;
 		while ((m = re.exec(text))) {
 			if (m.index > last) target.appendChild(document.createTextNode(text.slice(last, m.index)));
 			if (m[1]) {
-				const c = document.createElement("code");
-				c.textContent = m[1].slice(1, -1);
-				target.appendChild(c);
-			} else if (m[2]) {
-				const b = document.createElement("strong");
-				inline(b, m[2].slice(2, -2));
-				target.appendChild(b);
-			} else if (m[3]) {
-				const i = document.createElement("em");
-				inline(i, m[3].slice(1, -1));
-				target.appendChild(i);
+				const img = document.createElement("img");
+				img.className = "mdimg";
+				img.alt = m[2];
+				// host script resolves relative paths via data-src; absolute http(s) loads directly
+				if (/^https?:\/\//.test(m[3])) img.src = m[3];
+				else img.setAttribute("data-src", m[3]);
+				target.appendChild(img);
 			} else if (m[4]) {
+				const c = document.createElement("code");
+				c.textContent = m[4].slice(1, -1);
+				target.appendChild(c);
+			} else if (m[5]) {
+				const b = document.createElement("strong");
+				inline(b, m[5].slice(2, -2));
+				target.appendChild(b);
+			} else if (m[6]) {
+				const i = document.createElement("em");
+				inline(i, m[6].slice(1, -1));
+				target.appendChild(i);
+			} else if (m[7]) {
 				const a = document.createElement("a");
-				a.href = m[6];
-				a.textContent = m[5];
+				a.href = m[9];
+				a.textContent = m[8];
 				target.appendChild(a);
 			}
 			last = re.lastIndex;

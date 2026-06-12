@@ -86,6 +86,15 @@ body {
 }
 .rDoc .mdtable tbody tr:nth-child(even) { background: rgba(128,128,128,0.05); }
 
+/* embedded frames / screenshots */
+.rDoc img.mdimg {
+	display: block; max-width: 100%; max-height: 420px;
+	margin: 10px 0; border-radius: 10px;
+	border: 1px solid rgba(128,128,128,0.3);
+	box-shadow: 0 4px 18px rgba(0,0,0,0.35);
+}
+.rDoc td img.mdimg { max-height: 120px; margin: 2px 0; border-radius: 6px; }
+
 /* color swatches */
 .swatch {
 	display: inline-flex; align-items: center; gap: 5px;

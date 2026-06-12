@@ -64,6 +64,15 @@
 		}
 	}
 
+	function resolveImages(root, base) {
+		if (!base) return;
+		for (const img of root.querySelectorAll("img.mdimg[data-src]")) {
+			const rel = img.getAttribute("data-src").replace(/^\.\//, "");
+			img.src = base + "/" + rel;
+			img.removeAttribute("data-src");
+		}
+	}
+
 	function decorateChecks(root) {
 		for (const li of root.querySelectorAll("li")) {
 			const m = li.textContent.match(/^\s*\[( |x|X|~)\]\s*/);
@@ -101,6 +110,7 @@
 		const doc = document.createElement("div");
 		doc.className = "mdtext rDoc";
 		doc.appendChild(window.mdRender(msg.text));
+		resolveImages(doc, msg.base);
 		decorateSwatches(doc);
 		decorateChecks(doc);
 		bodyEl.appendChild(doc);
