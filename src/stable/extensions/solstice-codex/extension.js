@@ -124,6 +124,11 @@ class AgentController {
 				viewColumn: vscode.ViewColumn.One, preview: true, preserveFocus: true,
 			}).then(undefined, () => { });
 		}
+		// first .html the agent writes → open the live preview automatically
+		if (!this.previewUrl && paths.some((p) => p.endsWith(".html"))) {
+			this.openPreview("").then(undefined, () => { });
+			return;
+		}
 		this.refreshPreview();
 	}
 
