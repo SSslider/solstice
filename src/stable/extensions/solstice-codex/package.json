@@ -23,7 +23,7 @@
   },
   "contributes": {
     "viewsContainers": {
-      "activitybar": [
+      "secondarySidebar": [
         {
           "id": "solstice-agent",
           "title": "Solstice Agent",
@@ -63,6 +63,18 @@
         "title": "Open Agent Manager",
         "category": "Solstice",
         "icon": "$(layout)"
+      },
+      {
+        "command": "solstice.agent.openPreview",
+        "title": "Preview Site",
+        "category": "Solstice",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "solstice.agent.selectModel",
+        "title": "Select Agent Model",
+        "category": "Solstice",
+        "icon": "$(chip)"
       }
     ],
     "menus": {
@@ -81,12 +93,37 @@
           "command": "solstice.agent.openManager",
           "when": "view == solstice.agentPanel",
           "group": "navigation@3"
+        },
+        {
+          "command": "solstice.agent.openPreview",
+          "when": "view == solstice.agentPanel",
+          "group": "navigation@4"
+        },
+        {
+          "command": "solstice.agent.selectModel",
+          "when": "view == solstice.agentPanel",
+          "group": "navigation@5"
         }
       ]
     },
     "configuration": {
       "title": "Solstice Agent",
       "properties": {
+        "solstice.codex.provider": {
+          "type": "string",
+          "enum": [
+            "gpt-5.5",
+            "grok-build",
+            "composer-2.5"
+          ],
+          "enumDescriptions": [
+            "GPT-5.5 via the codex CLI (ChatGPT subscription) — full agent",
+            "Grok 4.3 Build via the grok CLI — agentic fallback",
+            "Composer 2.5 Fast via the grok CLI — fast builder"
+          ],
+          "default": "gpt-5.5",
+          "description": "Which model drives the Solstice agent. Switch to a grok-CLI model when the Codex usage limit is hit."
+        },
         "solstice.codex.path": {
           "type": "string",
           "default": "",

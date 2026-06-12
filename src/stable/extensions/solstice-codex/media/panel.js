@@ -62,14 +62,27 @@
 		vscode.postMessage({ type: "send", text });
 	}
 
+	let busyEl = null;
 	function setBusy(b) {
 		busy = b;
 		dotEl.className = "dot " + (b ? "busy" : "idle");
 		sendBtn.disabled = b;
 		stopBtn.classList.toggle("hidden", !b);
+		if (b && !busyEl) {
+			busyEl = el("div");
+			busyEl.id = "busyLine";
+			busyEl.append(el("span", "bd"), el("span", "bd"), el("span", "bd"), el("span", "", "Agent is working…"));
+			messagesEl.appendChild(busyEl);
+		} else if (!b && busyEl) {
+			busyEl.remove();
+			busyEl = null;
+		}
+		scroll();
 	}
 
 	function scroll() {
+		// keep the busy indicator pinned under the newest item
+		if (busyEl && busyEl.parentNode) messagesEl.appendChild(busyEl);
 		messagesEl.scrollTop = messagesEl.scrollHeight;
 	}
 
@@ -113,6 +126,10 @@
 			entry = { el: body, type: item.type, text: "", root: d };
 		} else if (item.type === "commandExecution") {
 			const card = el("div", "card cmd");
+			const title = el("div", "cardTitle");
+			title.appendChild(el("span", "spin"));
+			title.appendChild(el("span", "stateTxt", "Running command"));
+			card.appendChild(title);
 			card.appendChild(el("div", "cmdLine", "$ " + (item.command || "")));
 			const out = el("pre", "cmdOut", "");
 			card.appendChild(out);
@@ -125,6 +142,16 @@
 			card.appendChild(body);
 			messagesEl.appendChild(card);
 			entry = { el: body, type: item.type, text: "", root: card };
+		} else if (item.type === "mcpToolCall") {
+			const card = el("div", "card mcp");
+			const title = el("div", "cardTitle");
+			title.appendChild(el("span", "spin"));
+			title.appendChild(el("span", "stateTxt", "MCP tool: " + mcpName(item)));
+			card.appendChild(title);
+			const out = el("pre", "cmdOut", "");
+			card.appendChild(out);
+			messagesEl.appendChild(card);
+			entry = { el: out, type: item.type, text: "", root: card };
 		} else if (item.type === "plan") {
 			const card = el("div", "card plan");
 			card.appendChild(el("div", "cardTitle", "Plan"));
@@ -168,15 +195,26 @@
 			entry.el.appendChild(window.mdRender(item.text));
 		}
 		if (item.type === "reasoning" && entry.root) {
+			entry.root.classList.add("done");
 			entry.root.querySelector("summary").textContent = "Thought";
 			if (!entry.text) entry.root.classList.add("hidden");
 		}
 		if (item.type === "commandExecution" && entry.root) {
 			const ok = item.exitCode === 0 || item.exitCode === null;
 			entry.root.classList.add(ok ? "ok" : "fail");
+			const state = entry.root.querySelector(".stateTxt");
+			if (state) state.textContent = ok ? "Command finished" : `Command failed (exit ${item.exitCode})`;
 			if (item.aggregatedOutput) {
 				entry.el.textContent = String(item.aggregatedOutput).split("\n").slice(-12).join("\n");
 			}
+		}
+		if (item.type === "mcpToolCall" && entry.root) {
+			const ok = item.status !== "failed";
+			entry.root.classList.add(ok ? "ok" : "fail");
+			const state = entry.root.querySelector(".stateTxt");
+			if (state) state.textContent = (ok ? "MCP tool finished: " : "MCP tool failed: ") + mcpName(item);
+			const txt = mcpResultText(item);
+			if (txt) entry.el.textContent = txt.split("\n").slice(-8).join("\n");
 		}
 		if (item.type === "fileChange") {
 			const changes = item.changes || [];
@@ -186,11 +224,24 @@
 		scroll();
 	}
 
+	function mcpName(item) {
+		return (item.server ? item.server + "/" : "") + (item.tool || item.name || "");
+	}
+
+	function mcpResultText(item) {
+		const r = item.result;
+		if (r && Array.isArray(r.content)) return r.content.map((c) => c.text || "").filter(Boolean).join("\n");
+		if (typeof r === "string") return r;
+		return "";
+	}
+
 	// ---------- approvals ----------
 	function approvalCard(key, method, params) {
 		const card = el("div", "card approval");
 		const isFile = method.indexOf("fileChange") !== -1 || method === "applyPatchApproval";
-		card.appendChild(el("div", "cardTitle", isFile ? "⚠️ Agent wants to edit files" : "⚠️ Agent wants to run a command"));
+		const isMcp = method.indexOf("elicitation") !== -1;
+		card.appendChild(el("div", "cardTitle", isMcp ? "⚠️ Agent wants to use an MCP tool" : isFile ? "⚠️ Agent wants to edit files" : "⚠️ Agent wants to run a command"));
+		if (isMcp && params && params.serverName) card.appendChild(el("div", "cmdLine", "🔌 " + params.serverName));
 		if (params && params.command) card.appendChild(el("div", "cmdLine", "$ " + params.command));
 		if (params && params.reason) card.appendChild(el("div", "muted", params.reason));
 		const bar = el("div", "btnBar");

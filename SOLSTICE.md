@@ -54,13 +54,56 @@ and `Julius-cc-x/agents/orion/deliverables/antigravity_clone_master_plan_2026-06
    all notifications routed by threadId (sidebar = its thread only, manager =
    all). User messages render from server item replay (no local echo).
    Verified under Xvfb: dental landing page built end-to-end in the manager.
-4. ◐ Visual polish slice DONE (12/06 night): XSS-safe markdown renderer
-   (media/md.js — DOM/textContent only, no innerHTML: fenced code, headings,
-   lists, inline code/bold/italic/links) wired into both webviews
-   (agentMessage bubbles in sidebar + manager). Walkthrough artifact card in
-   the manager: on turn/completed renders Files touched, Commands (✓/✗ +
-   exit status), and the agent's final Summary as markdown. Verified under
-   Xvfb (dental landing page run). REMAINING for Phase 4: browser
-   computer-use sub-agent + self-verify loop (port from Forge).
+4. ◐ Phase 4 — Antigravity-parity workbench (redefined by Thomas 12/06 ~02:30,
+   built same night):
+   - ✅ Chat on the RIGHT: solstice-agent view container moved to
+     `secondarySidebar` (VS Code 1.121 supports it declaratively in
+     viewsContainers) + first-run auto-focus. Verified in E2E screenshots.
+   - ✅ Live site preview: media-served PreviewServer (preview.js, http on
+     127.0.0.1 random port, workspace root, traversal-guarded) opened in
+     Simple Browser via simpleBrowser.api.open (ViewColumn.Two); Preview
+     Site command + manager "Preview site" button; auto-refresh on
+     fileChange. Changed files auto-open in editor (≤3 per change).
+   - ✅ Plan checklist file: turn/plan/updated → writes
+     <ws>/.solstice/PLAN.md with [x]/[~]+"← current"/[ ] markers, auto-opens
+     in center editor once per turn. Verified live (yoga-studio E2E).
+   - ✅ Image generation: codex 0.137 image_gen works (0.136 gpt-image-2
+     break gone) — 1254×1254 logo generated + agent self-copied to
+     workspace. developerInstructions tell it to copy outputs into ws.
+   - ✅ Browser sub-agent: tools/browse.js (headless Chromium shot/dom CLI,
+     runs via ELECTRON_RUN_AS_NODE on user machines, finds
+     chrome/edge/brave/chromium per-platform) + developerInstructions wired
+     into thread/start (screenshot→view_image→imitate workflow,
+     Behance/Dribbble guidance). Verified in-IDE 12/06 ~04:00: agent
+     screenshotted example.com, described its design, built index.html in
+     that spirit.
+   - ✅ Next.js/libraries E2E: create-next-app + three + @react-three/fiber
+     installed + `next build` passed (BUILD_ID exists), PLAN.md all [x].
+   - ✅ Visual polish: md.js XSS-safe markdown renderer, Walkthrough card,
+     Solstice amber brand accents (--sol-grad bubbles), thinking shimmer,
+     custom scrollbars.
+   - ✅ Multi-provider (12/06 ~04:00): grok.js GrokProvider wraps grok CLI
+     0.2.20 (`grok --cwd ... -m grok-build|grok-composer-2.5-fast
+     --always-approve --output-format streaming-json -p`, `-c` continues,
+     OAuth forced by deleting XAI/OPENAI keys from env). Re-emits codex
+     notification vocab so both webviews render unchanged. Setting
+     solstice.codex.provider (gpt-5.5|grok-build|composer-2.5) + Select
+     Agent Model QuickPick ($(chip) toolbar) + once-per-session auto
+     fallback suggestion when codex reports usage/rate limit. FS-watcher
+     synthesizes fileChange items for grok turns (auto-open + preview
+     refresh). E2E verified: grok-build built a landing page in-IDE.
+   - ✅ Live activity feed: command cards get spinner + state text
+     (Running/finished/failed) with amber→green/red border, slide-in
+     animation on every feed item, "Agent is working…" bouncing-dots line
+     pinned under newest item (panel).
+   - ✅ MCP: codex-native mcp_servers (codex mcp add …) + bundled
+     mcp/deploy-server.js — real `deploy_site` MCP tool (stdio JSON-RPC:
+     initialize/tools/list/tools/call) copying a site to
+     ~/solstice-deploys/<slug> and serving it via detached
+     mcp/static-server.js on :8930 → returns live URL. mcpToolCall items
+     render as purple cards (spin → finished + result tail) in both
+     webviews.
+   REMAINING: self-verify loop (agent screenshots its own preview and
+   fixes); Vercel/remote MCP servers (token-gated, needs Thomas creds).
 5. Fleet agents bridge (web-building agents first) + Atrium per-client
    integration (Falcon audit cards).

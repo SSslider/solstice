@@ -1,4 +1,12 @@
+:root {
+	--sol-accent: #f59e0b;
+	--sol-accent2: #fb7a3c;
+	--sol-grad: linear-gradient(135deg, var(--sol-accent2), var(--sol-accent));
+}
 * { box-sizing: border-box; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.3); border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
 html, body { height: 100%; margin: 0; padding: 0; }
 body {
 	font-family: var(--vscode-font-family);
@@ -35,14 +43,27 @@ body {
 	max-width: 92%; padding: 7px 10px; border-radius: 10px;
 	white-space: pre-wrap; word-break: break-word; line-height: 1.45;
 }
-.msg.user .bubble { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-bottom-right-radius: 3px; }
-.msg.agent .bubble { background: var(--vscode-editorWidget-background, rgba(128,128,128,0.12)); border-bottom-left-radius: 3px; }
+.msg.user .bubble {
+	background: var(--sol-grad); color: #fff; border-bottom-right-radius: 3px;
+	box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+}
+.msg.agent .bubble {
+	background: var(--vscode-editorWidget-background, rgba(128,128,128,0.12));
+	border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.15));
+	border-bottom-left-radius: 3px;
+}
 
 .sys { font-size: 11px; opacity: 0.7; text-align: center; padding: 2px 0; }
 .sys.error { color: var(--vscode-errorForeground); opacity: 1; }
 
 details.reasoning { font-size: 11px; opacity: 0.75; }
 details.reasoning summary { cursor: pointer; user-select: none; }
+details.reasoning:not(.done) summary {
+	background: linear-gradient(90deg, var(--vscode-foreground) 25%, var(--sol-accent) 50%, var(--vscode-foreground) 75%);
+	background-size: 200% 100%; -webkit-background-clip: text; background-clip: text;
+	-webkit-text-fill-color: transparent; animation: shimmer 1.8s linear infinite;
+}
+@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 .reasonText { white-space: pre-wrap; padding: 4px 0 0 12px; font-style: italic; }
 
 .card {
@@ -122,3 +143,30 @@ details.reasoning summary { cursor: pointer; user-select: none; }
 .mdtext pre.mdcode code { background: none; padding: 0; }
 .mdtext a { color: var(--vscode-textLink-foreground); text-decoration: none; }
 .mdtext a:hover { text-decoration: underline; }
+
+/* ---- live activity ---- */
+#messages > * { animation: solIn 0.28s ease; }
+@keyframes solIn { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+.spin {
+	display: inline-block; width: 10px; height: 10px; flex: 0 0 auto;
+	border: 2px solid rgba(128,128,128,0.3); border-top-color: var(--sol-accent);
+	border-radius: 50%; animation: solSpin 0.8s linear infinite;
+}
+@keyframes solSpin { to { transform: rotate(360deg); } }
+.card.cmd { border-left: 3px solid var(--sol-accent); }
+.card.cmd.ok { border-left-color: #3fb950; }
+.card.cmd.fail { border-left-color: #f85149; }
+.card.cmd .cardTitle { display: flex; align-items: center; gap: 6px; }
+.card.cmd .stateTxt { opacity: 0.85; }
+#busyLine { display: flex; align-items: center; gap: 7px; font-size: 11px; opacity: 0.75; padding: 4px 2px; }
+#busyLine .bd { width: 4px; height: 4px; border-radius: 50%; background: var(--sol-accent); animation: solB 1.2s infinite; }
+#busyLine .bd:nth-child(2) { animation-delay: 0.2s; }
+#busyLine .bd:nth-child(3) { animation-delay: 0.4s; }
+@keyframes solB { 0%, 60%, 100% { opacity: 0.25; transform: none; } 30% { opacity: 1; transform: translateY(-2px); } }
+
+/* MCP tool cards */
+.card.mcp { border-left: 3px solid #a371f7; }
+.card.mcp.ok { border-left-color: #3fb950; }
+.card.mcp.fail { border-left-color: #f85149; }
+.card.mcp .cardTitle { display: flex; align-items: center; gap: 6px; }
+.card.mcp .stateTxt { opacity: 0.85; }
