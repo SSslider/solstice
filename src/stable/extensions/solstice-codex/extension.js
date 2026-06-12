@@ -19,6 +19,7 @@ const SIDEBAR_FORWARDED = new Set([
 	"item/reasoning/summaryTextDelta",
 	"item/commandExecution/outputDelta",
 	"item/fileChange/patchUpdated",
+	"item/mcpToolCall/progress",
 	"account/rateLimits/updated",
 	"turn/diff/updated",
 	"error",

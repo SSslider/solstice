@@ -56,14 +56,14 @@ body {
 .sys { font-size: 11px; opacity: 0.7; text-align: center; padding: 2px 0; }
 .sys.error { color: var(--vscode-errorForeground); opacity: 1; }
 
+/* reasoning — dim italic monospace stream, Claude-Code style "✳ Thinking…" */
 details.reasoning {
-	font-size: 11px; opacity: 0.85;
-	border-left: 2px solid var(--sol-accent);
-	padding: 4px 8px; border-radius: 0 6px 6px 0;
-	background: linear-gradient(90deg, rgba(245,158,11,0.07), transparent 70%);
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 11px; opacity: 0.8; padding: 0 2px;
 }
-details.reasoning.done { border-left-color: rgba(128,128,128,0.35); background: none; opacity: 0.6; }
-details.reasoning summary { cursor: pointer; user-select: none; font-weight: 600; }
+details.reasoning.done { opacity: 0.5; }
+details.reasoning summary { cursor: pointer; user-select: none; font-weight: 600; list-style: none; }
+details.reasoning summary::-webkit-details-marker { display: none; }
 details.reasoning:not(.done) summary {
 	background: linear-gradient(90deg, var(--vscode-foreground) 25%, var(--sol-accent) 50%, var(--vscode-foreground) 75%);
 	background-size: 200% 100%; -webkit-background-clip: text; background-clip: text;
@@ -71,7 +71,7 @@ details.reasoning:not(.done) summary {
 }
 @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 .reasonText {
-	white-space: pre-wrap; padding: 4px 0 0 12px; font-style: italic;
+	white-space: pre-wrap; padding: 3px 0 2px 19px; font-style: italic; opacity: 0.85;
 	max-height: 110px; overflow-y: auto;
 }
 
@@ -86,13 +86,44 @@ details.reasoning:not(.done) summary {
 	font-family: var(--vscode-editor-font-family, monospace); font-size: 11px;
 	white-space: pre-wrap; word-break: break-all; color: var(--vscode-textPreformat-foreground, inherit);
 }
-.cmdOut {
-	margin: 5px 0 0; font-family: var(--vscode-editor-font-family, monospace);
-	font-size: 10.5px; opacity: 0.75; white-space: pre-wrap; word-break: break-all;
-	max-height: 130px; overflow-y: auto;
+
+/* ---- Claude-Code-style tool-call cards ---- */
+.tc {
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 11.5px; line-height: 1.5; padding: 0 2px; margin: -3px 0;
 }
-.cmdOut:empty { display: none; }
-.fileList { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; white-space: pre-wrap; }
+.tcHead { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.tc.expandable .tcHead { cursor: pointer; }
+.tc.expandable .tcHead:hover .tcArg { text-decoration: underline dotted rgba(128,128,128,0.6); }
+.tcDot { flex: 0 0 auto; color: var(--sol-accent); font-size: 10px; }
+.tc.running .tcDot { animation: pulse 1.2s infinite; }
+.tc.ok .tcDot { color: #3fb950; }
+.tc.fail .tcDot { color: #f85149; }
+.tc.halt .tcDot { color: rgba(128,128,128,0.6); }
+.tcVerb { font-weight: 700; flex: 0 0 auto; }
+.tcArg { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.92; }
+.tcTime { flex: 0 0 auto; opacity: 0.45; font-size: 10px; font-variant-numeric: tabular-nums; }
+.tcRes { display: flex; gap: 6px; padding-left: 19px; opacity: 0.62; min-width: 0; }
+.tcRes.live { opacity: 0.45; font-style: italic; }
+.tc.fail .tcRes { color: #f85149; opacity: 0.85; }
+.tcElbow { flex: 0 0 auto; opacity: 0.7; }
+.tcResTxt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tcOut {
+	display: none; margin: 4px 0 3px 19px; max-height: 240px; overflow: auto;
+	border-left: 2px solid rgba(245,158,11,0.35); border-radius: 0 6px 6px 0;
+	background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.25)); padding: 6px 9px;
+}
+.tc.open .tcOut { display: block; }
+.tc.ok .tcOut, .tc.fail .tcOut, .tc.halt .tcOut { border-left-color: rgba(128,128,128,0.3); }
+.tcOut pre {
+	margin: 0; font-family: inherit; font-size: 10.5px; line-height: 1.45;
+	white-space: pre-wrap; word-break: break-all; opacity: 0.85;
+}
+.tcOut .dl { white-space: pre-wrap; word-break: break-all; }
+.tcOut .la { background: rgba(63,185,80,0.13); color: #7ee2a8; }
+.tcOut .ld { background: rgba(248,81,73,0.12); color: #ffa198; }
+.tcOut .lh { color: #58a6ff; opacity: 0.85; padding-top: 3px; }
+.tcOut .lc { opacity: 0.75; }
 
 .card.approval { border-color: #d29922; }
 .card.approval.decided { opacity: 0.65; }
@@ -156,17 +187,6 @@ details.reasoning:not(.done) summary {
 /* ---- live activity ---- */
 #messages > * { animation: solIn 0.28s ease; }
 @keyframes solIn { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
-.spin {
-	display: inline-block; width: 10px; height: 10px; flex: 0 0 auto;
-	border: 2px solid rgba(128,128,128,0.3); border-top-color: var(--sol-accent);
-	border-radius: 50%; animation: solSpin 0.8s linear infinite;
-}
-@keyframes solSpin { to { transform: rotate(360deg); } }
-.card.cmd { border-left: 3px solid var(--sol-accent); }
-.card.cmd.ok { border-left-color: #3fb950; }
-.card.cmd.fail { border-left-color: #f85149; }
-.card.cmd .cardTitle { display: flex; align-items: center; gap: 6px; }
-.card.cmd .stateTxt { opacity: 0.85; }
 #busyLine {
 	display: flex; align-items: center; gap: 7px; font-size: 11.5px;
 	padding: 7px 11px; border-radius: 999px;
@@ -211,13 +231,6 @@ details.reasoning:not(.done) summary {
 .mdtable { border-collapse: collapse; margin: 6px 0; font-size: 11px; width: 100%; }
 .mdtable th, .mdtable td { border: 1px solid rgba(128,128,128,0.25); padding: 3px 7px; text-align: left; vertical-align: top; }
 .mdtable th { background: rgba(128,128,128,0.12); font-weight: 600; }
-
-/* MCP tool cards */
-.card.mcp { border-left: 3px solid #a371f7; }
-.card.mcp.ok { border-left-color: #3fb950; }
-.card.mcp.fail { border-left-color: #f85149; }
-.card.mcp .cardTitle { display: flex; align-items: center; gap: 6px; }
-.card.mcp .stateTxt { opacity: 0.85; }
 
 /* live changes (diff) card */
 .card.diffCard { border-left: 3px solid #58a6ff; }

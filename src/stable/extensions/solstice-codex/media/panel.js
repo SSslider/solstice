@@ -114,6 +114,7 @@
 			busyEl = null;
 			busyGlyphEl = busyLabelEl = busyCountEl = busyClockEl = null;
 		}
+		if (!b) haltRunningCards();
 		scroll();
 	}
 
@@ -125,13 +126,11 @@
 
 	function activityFor(item) {
 		if (item.type === "reasoning") return "Thinking…";
-		if (item.type === "commandExecution") {
-			const c = String(item.command || "").split("\n")[0];
-			return "Running: " + (c.length > 64 ? c.slice(0, 64) + "…" : c);
-		}
-		if (item.type === "fileChange") return "Editing files…";
-		if (item.type === "mcpToolCall") return "Tool: " + mcpName(item);
 		if (item.type === "agentMessage") return "Writing…";
+		if (TOOL_TYPES.has(item.type)) {
+			const h = toolHead(item);
+			return trunc(h.verb + (h.arg ? " " + h.arg : ""), 72);
+		}
 		return null;
 	}
 
@@ -162,6 +161,202 @@
 		return m;
 	}
 
+	// ---------- Claude-Code-style tool cards ----------
+	// Every tool action the agent takes renders as a compact monospace card:
+	//   ⏺ Verb argument                     3s
+	//     ⎿ one-line result (click head to expand full output)
+	const TOOL_TYPES = new Set([
+		"commandExecution", "fileChange", "mcpToolCall", "webSearch",
+		"dynamicToolCall", "collabAgentToolCall", "imageGeneration", "imageView",
+		"enteredReviewMode", "exitedReviewMode", "contextCompaction",
+	]);
+	const runningCards = new Set();
+	let tickTimer = null;
+	function ensureTick() {
+		if (tickTimer) return;
+		tickTimer = setInterval(() => {
+			if (!runningCards.size) { clearInterval(tickTimer); tickTimer = null; return; }
+			for (const e of runningCards) e.timeEl.textContent = Math.floor((Date.now() - e.t0) / 1000) + "s";
+		}, 1000);
+	}
+
+	function firstLine(s) { return String(s || "").split("\n")[0]; }
+	function trunc(s, n) { s = String(s || ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+	function stripShell(c) {
+		let s = Array.isArray(c) ? c.join(" ") : String(c || "");
+		return s.replace(/^\s*(\/bin\/|\/usr\/bin\/)?(ba|z|da)?sh\s+-l?c\s+/, "")
+			.replace(/^(['"])([\s\S]*)\1$/, "$2");
+	}
+	function relPath(p) {
+		const s = String(p || "").replace(/\\/g, "/");
+		if (!/^([A-Za-z]:)?\//.test(s)) return s;
+		const parts = s.split("/").filter(Boolean);
+		return parts.length > 3 ? parts.slice(-3).join("/") : parts.join("/");
+	}
+	function diffStats(diff) {
+		let add = 0, del = 0;
+		for (const l of String(diff || "").split("\n")) {
+			if (l[0] === "+" && !l.startsWith("+++")) add++;
+			else if (l[0] === "-" && !l.startsWith("---")) del++;
+		}
+		return { add, del };
+	}
+	function fileChangeHead(changes) {
+		const ch = Array.isArray(changes) ? changes : [];
+		if (!ch.length) return { verb: "Edit", arg: "files…" };
+		const kind = ch[0].kind && ch[0].kind.type;
+		const verb = ch.length > 1 ? "Edit" : kind === "add" ? "Write" : kind === "delete" ? "Delete" : "Edit";
+		let arg = relPath(ch[0].path || ch[0].file);
+		const st = diffStats(ch[0].diff);
+		if (st.add || st.del) arg += ` (+${st.add} -${st.del})`;
+		if (ch.length > 1) arg += ` · +${ch.length - 1} more`;
+		return { verb, arg };
+	}
+	function toolHead(item) {
+		switch (item.type) {
+			case "commandExecution": {
+				const acts = Array.isArray(item.commandActions) ? item.commandActions : [];
+				const a = (acts.length === 1 && acts[0]) || {};
+				if (a.type === "read") return { verb: "Read", arg: relPath(a.path) || trunc(stripShell(a.command), 96) };
+				if (a.type === "search") {
+					const q = a.query ? `"${a.query}"` : "";
+					const where = a.path ? relPath(a.path) : "";
+					return { verb: "Search", arg: (q && where ? q + " in " + where : q || where) || trunc(stripShell(a.command), 96) };
+				}
+				if (a.type === "listFiles") return { verb: "List", arg: relPath(a.path) || "." };
+				return { verb: "Bash", arg: trunc(firstLine(stripShell(item.command)), 96) };
+			}
+			case "fileChange": return fileChangeHead(item.changes);
+			case "webSearch": {
+				const act = item.action || {};
+				if (act.type === "openPage") return { verb: "Open", arg: trunc(act.url || "", 96) };
+				if (act.type === "findInPage") return { verb: "Find", arg: trunc((act.pattern ? `"${act.pattern}" in ` : "") + (act.url || ""), 96) };
+				const q = (Array.isArray(act.queries) && act.queries[0]) || act.query || item.query;
+				return { verb: "Search", arg: q ? `"${trunc(q, 90)}"` : "web" };
+			}
+			case "mcpToolCall": return { verb: "Tool", arg: mcpName(item) };
+			case "dynamicToolCall": return { verb: "Tool", arg: (item.namespace ? item.namespace + "/" : "") + (item.tool || "") };
+			case "collabAgentToolCall": return { verb: "Agent", arg: trunc((item.tool || "") + (item.prompt ? " · " + firstLine(item.prompt) : ""), 96) };
+			case "imageGeneration": return { verb: "Image", arg: trunc(item.revisedPrompt || (item.savedPath ? relPath(item.savedPath) : "generating…"), 96) };
+			case "imageView": return { verb: "View", arg: relPath(item.path) };
+			case "enteredReviewMode": return { verb: "Review", arg: "entering review mode" };
+			case "exitedReviewMode": return { verb: "Review", arg: "review finished" };
+			case "contextCompaction": return { verb: "Compact", arg: "compressing context" };
+			default: return { verb: item.type || "Tool", arg: "" };
+		}
+	}
+
+	function makeToolCard(item) {
+		const head = toolHead(item);
+		const root = el("div", "tc running");
+		const headEl = el("div", "tcHead");
+		const verbEl = el("span", "tcVerb", head.verb);
+		const argEl = el("span", "tcArg", head.arg || "");
+		const timeEl = el("span", "tcTime", "0s");
+		headEl.append(el("span", "tcDot", "⏺"), verbEl, argEl, timeEl);
+		const resEl = el("div", "tcRes hidden");
+		const resTxtEl = el("span", "tcResTxt", "");
+		resEl.append(el("span", "tcElbow", "⎿"), resTxtEl);
+		const outWrap = el("div", "tcOut");
+		const outPre = el("pre", "", "");
+		outWrap.appendChild(outPre);
+		root.append(headEl, resEl, outWrap);
+		messagesEl.appendChild(root);
+		const entry = {
+			el: outPre, root, verbEl, argEl, timeEl, resEl, resTxtEl, outWrap, outPre,
+			type: item.type, text: "", t0: Date.now(), done: false, changes: item.changes || null,
+		};
+		headEl.addEventListener("click", () => {
+			if (!root.classList.contains("expandable")) return;
+			root.classList.toggle("open");
+			if (root.classList.contains("open")) outWrap.scrollTop = outWrap.scrollHeight;
+		});
+		runningCards.add(entry);
+		ensureTick();
+		return entry;
+	}
+
+	function setHead(entry, head) {
+		entry.verbEl.textContent = head.verb;
+		entry.argEl.textContent = head.arg || "";
+	}
+
+	function setRes(entry, text, live) {
+		entry.resTxtEl.textContent = text || "";
+		entry.resEl.classList.toggle("hidden", !text);
+		entry.resEl.classList.toggle("live", !!live);
+	}
+
+	function appendOut(entry, delta) {
+		entry.text += delta;
+		if (entry.text.length > 200000) entry.text = entry.text.slice(-150000);
+		entry.outPre.textContent = entry.text;
+		entry.root.classList.add("expandable");
+		// while running and collapsed, mirror the latest output line as a live tail
+		if (!entry.done) {
+			const lines = entry.text.split("\n");
+			for (let i = lines.length - 1; i >= 0; i--) {
+				if (lines[i].trim()) { setRes(entry, trunc(lines[i].trim(), 140), true); break; }
+			}
+		}
+		if (entry.root.classList.contains("open")) entry.outWrap.scrollTop = entry.outWrap.scrollHeight;
+	}
+
+	function renderChangesInto(entry) {
+		const ch = Array.isArray(entry.changes) ? entry.changes : [];
+		entry.outPre.textContent = "";
+		let any = false;
+		for (const c of ch) {
+			if (!c || !c.diff) continue;
+			any = true;
+			entry.outPre.appendChild(el("div", "dl lh", relPath(c.path || c.file)));
+			for (const ln of String(c.diff).split("\n").slice(0, 400)) {
+				const cls = ln[0] === "+" ? "la" : ln[0] === "-" ? "ld" : /^@@/.test(ln) ? "lh" : "lc";
+				entry.outPre.appendChild(el("div", "dl " + cls, ln));
+			}
+		}
+		if (any) entry.root.classList.add("expandable");
+	}
+
+	function fileChangeTotals(changes) {
+		let add = 0, del = 0;
+		for (const c of changes || []) { const s = diffStats(c && c.diff); add += s.add; del += s.del; }
+		return { add, del };
+	}
+
+	function updateFileCard(entry, changes) {
+		if (Array.isArray(changes) && changes.length) entry.changes = changes;
+		setHead(entry, fileChangeHead(entry.changes));
+		renderChangesInto(entry);
+		const ch = Array.isArray(entry.changes) ? entry.changes : [];
+		if (ch.length > 1) {
+			const t = fileChangeTotals(ch);
+			setRes(entry, `${ch.length} files · +${t.add} -${t.del}`, !entry.done);
+		}
+	}
+
+	function finishToolCard(entry, item, ok, resText) {
+		entry.done = true;
+		runningCards.delete(entry);
+		entry.root.classList.remove("running");
+		entry.root.classList.add(ok ? "ok" : "fail");
+		const ms = item && typeof item.durationMs === "number" ? item.durationMs : Date.now() - entry.t0;
+		const secs = ms / 1000;
+		entry.timeEl.textContent = secs >= 10 ? Math.round(secs) + "s" : secs >= 0.05 ? secs.toFixed(1) + "s" : "";
+		setRes(entry, resText, false);
+	}
+
+	// a turn ended (or was interrupted) with cards still spinning — freeze them
+	function haltRunningCards() {
+		for (const e of [...runningCards]) {
+			e.done = true;
+			runningCards.delete(e);
+			e.root.classList.remove("running");
+			e.root.classList.add("halt");
+			e.timeEl.textContent = "";
+		}
+	}
+
 	// ---------- item rendering ----------
 	function startItem(item) {
 		if (items.has(item.id)) return items.get(item.id);
@@ -175,39 +370,14 @@
 		} else if (item.type === "reasoning") {
 			const d = el("details", "reasoning");
 			d.open = true;
-			d.appendChild(el("summary", "", "Thinking…"));
+			d.appendChild(el("summary", "", "✳ Thinking…"));
 			const body = el("div", "reasonText", "");
 			d.appendChild(body);
 			messagesEl.appendChild(d);
 			entry = { el: body, type: item.type, text: "", root: d, t0: Date.now() };
-		} else if (item.type === "commandExecution") {
-			const card = el("div", "card cmd");
-			const title = el("div", "cardTitle");
-			title.appendChild(el("span", "spin"));
-			title.appendChild(el("span", "stateTxt", "Running command"));
-			card.appendChild(title);
-			card.appendChild(el("div", "cmdLine", "$ " + (item.command || "")));
-			const out = el("pre", "cmdOut", "");
-			card.appendChild(out);
-			messagesEl.appendChild(card);
-			entry = { el: out, type: item.type, text: "", root: card };
-		} else if (item.type === "fileChange") {
-			const card = el("div", "card file");
-			card.appendChild(el("div", "cardTitle", "✎ Editing files"));
-			const body = el("div", "fileList", "");
-			card.appendChild(body);
-			messagesEl.appendChild(card);
-			entry = { el: body, type: item.type, text: "", root: card };
-		} else if (item.type === "mcpToolCall") {
-			const card = el("div", "card mcp");
-			const title = el("div", "cardTitle");
-			title.appendChild(el("span", "spin"));
-			title.appendChild(el("span", "stateTxt", "MCP tool: " + mcpName(item)));
-			card.appendChild(title);
-			const out = el("pre", "cmdOut", "");
-			card.appendChild(out);
-			messagesEl.appendChild(card);
-			entry = { el: out, type: item.type, text: "", root: card };
+		} else if (TOOL_TYPES.has(item.type)) {
+			entry = makeToolCard(item);
+			actionCount++;
 		} else if (item.type === "plan") {
 			const card = el("div", "card plan");
 			card.appendChild(el("div", "cardTitle", "Plan"));
@@ -218,9 +388,6 @@
 		} else {
 			return null;
 		}
-		if (item.type === "commandExecution" || item.type === "fileChange" || item.type === "mcpToolCall") {
-			actionCount++;
-		}
 		items.set(item.id, entry);
 		scroll();
 		return entry;
@@ -230,6 +397,11 @@
 		let entry = items.get(itemId);
 		if (!entry) entry = startItem({ id: itemId, type });
 		if (!entry) return;
+		if (TOOL_TYPES.has(entry.type)) {
+			appendOut(entry, delta);
+			scroll();
+			return;
+		}
 		entry.text += delta;
 		entry.el.textContent = entry.text;
 		entry.el.scrollTop = entry.el.scrollHeight;
@@ -342,8 +514,11 @@
 					entry.el.textContent = "";
 					entry.el.appendChild(window.mdRender(item.text));
 				}
+				return;
 			}
-			return;
+			// tool event with no begin/end pair — render a single completed card
+			if (TOOL_TYPES.has(item.type)) entry = startItem(item);
+			if (!entry) return;
 		}
 		if (item.type === "agentMessage" && item.text) {
 			entry.text = item.text;
@@ -354,30 +529,73 @@
 			entry.root.classList.add("done");
 			entry.root.open = false;
 			const secs = entry.t0 ? Math.max(1, Math.round((Date.now() - entry.t0) / 1000)) : 0;
-			entry.root.querySelector("summary").textContent = secs ? `Thought for ${secs}s` : "Thought";
+			entry.root.querySelector("summary").textContent = secs ? `✳ Thought for ${secs}s` : "✳ Thought";
 			if (!entry.text) entry.root.classList.add("hidden");
 		}
-		if (item.type === "commandExecution" && entry.root) {
-			const ok = item.exitCode === 0 || item.exitCode === null;
-			entry.root.classList.add(ok ? "ok" : "fail");
-			const state = entry.root.querySelector(".stateTxt");
-			if (state) state.textContent = ok ? "Command finished" : `Command failed (exit ${item.exitCode})`;
-			if (item.aggregatedOutput) {
-				entry.el.textContent = String(item.aggregatedOutput).split("\n").slice(-12).join("\n");
+		if (item.type === "commandExecution") {
+			const code = item.exitCode;
+			const declined = item.status === "declined";
+			const ok = !declined && item.status !== "failed" && (code === 0 || code === null || code === undefined);
+			if (item.command) setHead(entry, toolHead(item));
+			if (item.aggregatedOutput && String(item.aggregatedOutput).length > entry.text.length) {
+				entry.text = "";
+				appendOut(entry, String(item.aggregatedOutput));
 			}
-		}
-		if (item.type === "mcpToolCall" && entry.root) {
-			const ok = item.status !== "failed";
-			entry.root.classList.add(ok ? "ok" : "fail");
-			const state = entry.root.querySelector(".stateTxt");
-			if (state) state.textContent = (ok ? "MCP tool finished: " : "MCP tool failed: ") + mcpName(item);
-			const txt = mcpResultText(item);
-			if (txt) entry.el.textContent = txt.split("\n").slice(-8).join("\n");
+			const outLines = entry.text.split("\n").filter((l) => l.trim());
+			const ms = typeof item.durationMs === "number" ? item.durationMs : Date.now() - entry.t0;
+			let res;
+			if (declined) res = "declined";
+			else if (ok) {
+				res = outLines.length
+					? outLines.length + (outLines.length === 1 ? " line" : " lines")
+					: `exit ${code == null ? 0 : code} in ${(ms / 1000).toFixed(1)}s`;
+			} else {
+				const lastErr = outLines.length ? outLines[outLines.length - 1] : "failed";
+				res = trunc(lastErr, 140) + (code != null ? ` (exit ${code})` : "");
+			}
+			finishToolCard(entry, item, ok, res);
 		}
 		if (item.type === "fileChange") {
-			const changes = item.changes || [];
-			entry.el.textContent = changes.map((c) => (c.path || c.file || "")).filter(Boolean).join("\n") || entry.text;
-			if (entry.root) entry.root.classList.add("ok");
+			updateFileCard(entry, item.changes);
+			const declined = item.status === "declined";
+			const ok = !declined && item.status !== "failed";
+			const ch = Array.isArray(entry.changes) ? entry.changes : [];
+			let res = "";
+			if (declined) res = "declined";
+			else if (!ok) res = "patch failed";
+			else if (ch.length === 1) {
+				const s = diffStats(ch[0].diff);
+				res = (s.add || s.del) ? `+${s.add} -${s.del}` : relPath(ch[0].path || ch[0].file);
+			} else if (ch.length > 1) {
+				const t = fileChangeTotals(ch);
+				res = `${ch.length} files · +${t.add} -${t.del}`;
+			}
+			finishToolCard(entry, item, ok, res);
+		}
+		if (item.type === "mcpToolCall" || item.type === "dynamicToolCall" || item.type === "collabAgentToolCall") {
+			const ok = item.status !== "failed" && item.success !== false && !item.error;
+			const txt = mcpResultText(item);
+			if (txt) { entry.text = ""; appendOut(entry, txt); }
+			const res = ok
+				? (txt ? trunc(firstLine(txt), 140) : "done")
+				: trunc(firstLine((item.error && (item.error.message || item.error)) || txt || "failed"), 140);
+			finishToolCard(entry, item, ok, res);
+		}
+		if (item.type === "webSearch") {
+			setHead(entry, toolHead(item));
+			const act = item.action || {};
+			const extra = Array.isArray(act.queries) && act.queries.length > 1
+				? act.queries.slice(1).map((q) => `"${q}"`).join(" · ") : "";
+			finishToolCard(entry, item, true, extra);
+		}
+		if (item.type === "imageGeneration") {
+			const ok = item.status !== "failed";
+			setHead(entry, toolHead(item));
+			finishToolCard(entry, item, ok, ok ? (item.savedPath ? relPath(item.savedPath) : "") : "generation failed");
+		}
+		if (item.type === "imageView" || item.type === "enteredReviewMode" ||
+			item.type === "exitedReviewMode" || item.type === "contextCompaction") {
+			finishToolCard(entry, item, true, "");
 		}
 		scroll();
 	}
@@ -488,6 +706,16 @@
 			case "item/reasoning/textDelta":
 			case "item/reasoning/summaryTextDelta": appendDelta(params.itemId, params.delta, "reasoning"); break;
 			case "item/commandExecution/outputDelta": appendDelta(params.itemId, params.delta, "commandExecution"); break;
+			case "item/fileChange/patchUpdated": {
+				const e = items.get(params.itemId);
+				if (e && e.type === "fileChange" && !e.done) { updateFileCard(e, params.changes); scroll(); }
+				break;
+			}
+			case "item/mcpToolCall/progress": {
+				const e = items.get(params.itemId);
+				if (e && TOOL_TYPES.has(e.type) && !e.done) setRes(e, trunc(params.message || "", 140), true);
+				break;
+			}
 			case "turn/plan/updated": renderPlan(params.plan); break;
 			case "turn/diff/updated": renderDiff(params.diff); break;
 			case "account/rateLimits/updated": renderQuota(params.rateLimits); break;
