@@ -218,3 +218,34 @@ details.reasoning:not(.done) summary {
 .card.mcp.fail { border-left-color: #f85149; }
 .card.mcp .cardTitle { display: flex; align-items: center; gap: 6px; }
 .card.mcp .stateTxt { opacity: 0.85; }
+
+/* live changes (diff) card */
+.card.diffCard { border-left: 3px solid #58a6ff; }
+.diffTitle { display: flex; justify-content: space-between; align-items: center; }
+.diffTot { display: flex; gap: 7px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.dAdd { color: #3fb950; }
+.dDel { color: #f85149; }
+details.diffFile { margin: 3px 0; border: 1px solid rgba(128,128,128,0.18); border-radius: 6px; overflow: hidden; }
+.diffSum {
+	display: flex; justify-content: space-between; align-items: center; gap: 8px;
+	cursor: pointer; padding: 4px 8px; font-size: 11px;
+	background: rgba(128,128,128,0.08); list-style: none;
+}
+.diffSum::-webkit-details-marker { display: none; }
+.diffSum::before { content: "▸"; opacity: 0.5; margin-right: 2px; }
+details.diffFile[open] > .diffSum::before { content: "▾"; }
+.diffSum .dName {
+	flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	font-family: var(--vscode-editor-font-family, monospace); direction: rtl; text-align: left;
+}
+.diffSum .dStat { display: flex; gap: 6px; font-size: 10px; font-variant-numeric: tabular-nums; }
+.diffBody {
+	margin: 0; padding: 4px 0; max-height: 240px; overflow: auto;
+	font-family: var(--vscode-editor-font-family, monospace); font-size: 10.5px; line-height: 1.45;
+	background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.2));
+}
+.diffBody .dl { padding: 0 8px; white-space: pre; }
+.diffBody .la { background: rgba(63,185,80,0.13); color: #7ee2a8; }
+.diffBody .ld { background: rgba(248,81,73,0.12); color: #ffa198; }
+.diffBody .lh { color: #58a6ff; opacity: 0.85; padding-top: 3px; }
+.diffBody .lc { opacity: 0.75; }

@@ -266,6 +266,69 @@
 		scroll();
 	}
 
+	// ---------- live changes (diff) card ----------
+	let diffCard = null;
+	function parseDiff(text) {
+		const files = [];
+		let cur = null;
+		for (const line of String(text || "").split("\n")) {
+			const head = line.match(/^\+\+\+ (?:b\/)?(.+)$/);
+			if (head) {
+				cur = { path: head[1], add: 0, del: 0, lines: [] };
+				files.push(cur);
+				continue;
+			}
+			if (/^(--- |diff --git |index |new file|deleted file)/.test(line)) continue;
+			if (!cur) continue;
+			if (line[0] === "+") cur.add++;
+			else if (line[0] === "-") cur.del++;
+			cur.lines.push(line);
+		}
+		return files.filter((f) => f.lines.length);
+	}
+
+	function renderDiff(diffText) {
+		const files = parseDiff(diffText);
+		if (!files.length) return;
+		const openPaths = new Set(
+			diffCard ? Array.from(diffCard.querySelectorAll("details.diffFile[open]")).map((d) => d.getAttribute("data-path")) : []
+		);
+		if (!diffCard || !diffCard.parentNode) {
+			diffCard = el("div", "card diffCard");
+			messagesEl.appendChild(diffCard);
+		}
+		diffCard.innerHTML = "";
+		const totalAdd = files.reduce((n, f) => n + f.add, 0);
+		const totalDel = files.reduce((n, f) => n + f.del, 0);
+		const title = el("div", "cardTitle diffTitle");
+		title.appendChild(el("span", "", "⛬ Changes"));
+		const stat = el("span", "diffTot");
+		stat.appendChild(el("span", "dAdd", "+" + totalAdd));
+		stat.appendChild(el("span", "dDel", "−" + totalDel));
+		title.appendChild(stat);
+		diffCard.appendChild(title);
+		for (const f of files) {
+			const d = el("details", "diffFile");
+			d.setAttribute("data-path", f.path);
+			if (openPaths.has(f.path)) d.open = true;
+			const sum = el("summary", "diffSum");
+			sum.appendChild(el("span", "dName", f.path));
+			const s = el("span", "dStat");
+			if (f.add) s.appendChild(el("span", "dAdd", "+" + f.add));
+			if (f.del) s.appendChild(el("span", "dDel", "−" + f.del));
+			sum.appendChild(s);
+			d.appendChild(sum);
+			const body = el("pre", "diffBody");
+			for (const ln of f.lines.slice(0, 400)) {
+				const cls = ln[0] === "+" ? "la" : ln[0] === "-" ? "ld" : /^@@/.test(ln) ? "lh" : "lc";
+				body.appendChild(el("div", "dl " + cls, ln));
+			}
+			d.appendChild(body);
+			diffCard.appendChild(d);
+		}
+		scroll();
+	}
+
 	function completeItem(item) {
 		let entry = items.get(item.id);
 		if (!entry) {
@@ -423,6 +486,7 @@
 			case "item/reasoning/summaryTextDelta": appendDelta(params.itemId, params.delta, "reasoning"); break;
 			case "item/commandExecution/outputDelta": appendDelta(params.itemId, params.delta, "commandExecution"); break;
 			case "turn/plan/updated": renderPlan(params.plan); break;
+			case "turn/diff/updated": renderDiff(params.diff); break;
 			case "account/rateLimits/updated": renderQuota(params.rateLimits); break;
 			case "error": sysLine((params.error && params.error.message) || "Agent error", "error"); break;
 		}

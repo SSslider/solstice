@@ -20,6 +20,7 @@ const SIDEBAR_FORWARDED = new Set([
 	"item/commandExecution/outputDelta",
 	"item/fileChange/patchUpdated",
 	"account/rateLimits/updated",
+	"turn/diff/updated",
 	"error",
 ]);
 
@@ -27,7 +28,6 @@ const MANAGER_FORWARDED = new Set([
 	...SIDEBAR_FORWARDED,
 	"thread/status/changed",
 	"thread/name/updated",
-	"turn/diff/updated",
 ]);
 
 const APPROVAL_METHODS = new Set([
