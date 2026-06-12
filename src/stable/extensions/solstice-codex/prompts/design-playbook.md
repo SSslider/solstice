@@ -33,7 +33,7 @@ When the user gives a design reference URL and asks to analyze, imitate or rebui
 
 ## Fidelity loop (mandatory before "done")
 A single verification pass that checks colors is NOT verification. Run this loop:
-1. Run the site locally; screenshot at desktop width (plus a mobile pass) with the browse tool.
+1. Run the site locally; capture with `browse.js scrollshot <url> <prefix> 5` (NOT a single full-page `shot`: scroll-reveal sections — GSAP/IntersectionObserver — stay at opacity:0 in a no-scroll capture, so a full-page shot shows blank sections and lies about the build). Add a mobile pass. Use full-page `shot` only for layout-overview, never as proof a section renders.
 2. Build a side-by-side composite of REFERENCE vs YOUR BUILD (one image, labeled halves — PIL/ImageMagick one-liner) and send it to codex vision:
    `codex exec --skip-git-repo-check -i sidebyside.png "Left = reference design, right = rebuild. Score the rebuild 0-10 on each axis: composition pattern fidelity, typographic scale & hierarchy, color/grade, imagery subject & framing, spacing/density. For every axis below 8, give the exact CSS/markup change needed."`
 3. Record the scores as a table in DECONSTRUCT.md (the dashboard shows it live), apply the fixes, re-screenshot.

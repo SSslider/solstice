@@ -2,9 +2,12 @@
 "use strict";
 // Headless-browser helper for the Solstice agent.
 //   node browse.js shot <url> <out.png> [widthxheight]
+//   node browse.js scrollshot <url> <outPrefix> [stops]   → outPrefix_s0..sN.png at scroll positions
 //   node browse.js dom  <url>
 // Uses an installed Chrome/Chromium/Edge in headless mode.
-const { execFileSync } = require("child_process");
+// scrollshot exists because scroll-reveal sites (GSAP/IntersectionObserver) render
+// below-the-fold sections at opacity:0 in a single no-scroll capture.
+const { execFileSync, spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -43,16 +46,91 @@ function findBrowser() {
 	return null;
 }
 
+async function scrollshot(bin, url, outPrefix, nStops, dims) {
+	if (typeof WebSocket !== "function") {
+		console.error("scrollshot needs Node >= 22 (global WebSocket). Falling back: use 'shot' at several heights.");
+		process.exit(4);
+	}
+	const [w, h] = dims.split(",").map(Number);
+	const tmpProfile = fs.mkdtempSync(path.join(os.tmpdir(), "solstice-browse-"));
+	const chrome = spawn(bin, [
+		"--headless=new", "--disable-gpu", "--no-sandbox", "--mute-audio",
+		"--hide-scrollbars", "--no-first-run", "--disable-extensions",
+		`--user-data-dir=${tmpProfile}`, `--window-size=${w},${h}`,
+		"--remote-debugging-port=0", "about:blank",
+	], { stdio: "ignore" });
+	const portFile = path.join(tmpProfile, "DevToolsActivePort");
+	try {
+		let port = 0;
+		for (let i = 0; i < 100 && !port; i++) {
+			await new Promise(r => setTimeout(r, 100));
+			try { port = parseInt(fs.readFileSync(portFile, "utf8").split("\n")[0], 10) || 0; } catch { }
+		}
+		if (!port) throw new Error("Chrome DevTools port never appeared");
+		// Use the initial tab + Page.navigate: tabs opened via /json/new are backgrounded
+		// and Page.captureScreenshot hangs forever on a hidden target.
+		const tabs = await fetch(`http://127.0.0.1:${port}/json/list`).then(r => r.json());
+		const tab = tabs.find(t => t.type === "page");
+		if (!tab) throw new Error("no page target found");
+		const ws = new WebSocket(tab.webSocketDebuggerUrl);
+		await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error("CDP socket failed")); });
+		let seq = 0;
+		const pending = new Map();
+		ws.onmessage = (ev) => {
+			const msg = JSON.parse(ev.data);
+			if (msg.id && pending.has(msg.id)) { pending.get(msg.id)(msg); pending.delete(msg.id); }
+		};
+		// Every command gets a deadline — a wedged page must produce an error, not a silent hang.
+		const send = (method, params = {}, deadlineMs = 20000) => new Promise((res, rej) => {
+			const id = ++seq;
+			const timer = setTimeout(() => { pending.delete(id); rej(new Error(`${method} timed out after ${deadlineMs}ms (page may be wedged)`)); }, deadlineMs);
+			pending.set(id, (msg) => { clearTimeout(timer); msg.error ? rej(new Error(msg.error.message)) : res(msg.result); });
+			ws.send(JSON.stringify({ id, method, params }));
+		});
+		await send("Page.enable");
+		await send("Runtime.enable");
+		await send("Page.navigate", { url }, 30000);
+		const evalJs = async (expr) => (await send("Runtime.evaluate", { expression: expr, returnByValue: true })).result.value;
+		for (let i = 0; i < 30; i++) { // dev servers compile on first hit — wait for real load
+			if (await evalJs("document.readyState === 'complete'")) break;
+			await new Promise(r => setTimeout(r, 500));
+		}
+		await new Promise(r => setTimeout(r, 2500)); // settle: fonts + first animations
+		const height = await evalJs("Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)");
+		const stops = Array.from({ length: nStops }, (_, i) => Math.floor(Math.max(0, height - h) * (nStops === 1 ? 0 : i / (nStops - 1))));
+		for (let i = 0; i < stops.length; i++) {
+			await evalJs(`window.scrollTo({ top: ${stops[i]}, behavior: 'instant' }); ''`);
+			await new Promise(r => setTimeout(r, 1500)); // let reveal animations fire
+			const shot = await send("Page.captureScreenshot", { format: "png" });
+			const file = path.resolve(`${outPrefix}_s${i}.png`);
+			fs.writeFileSync(file, Buffer.from(shot.data, "base64"));
+			console.log(file);
+		}
+		ws.close();
+	} finally {
+		try { chrome.kill(); } catch { }
+		try { fs.rmSync(tmpProfile, { recursive: true, force: true }); } catch { }
+	}
+}
+
 function main() {
 	const [mode, url, out, size] = process.argv.slice(2);
-	if (!mode || !url || (mode === "shot" && !out)) {
-		console.error("usage: browse.js shot <url> <out.png> [WxH] | browse.js dom <url>");
+	if (!mode || !url || ((mode === "shot" || mode === "scrollshot") && !out)) {
+		console.error("usage: browse.js shot <url> <out.png> [WxH] | browse.js scrollshot <url> <outPrefix> [stops] | browse.js dom <url>");
 		process.exit(2);
 	}
 	const bin = findBrowser();
 	if (!bin) {
 		console.error("No Chrome/Chromium/Edge found. Install one or set SOLSTICE_BROWSER.");
 		process.exit(3);
+	}
+	if (mode === "scrollshot") {
+		const stops = /^\d+$/.test(size || "") ? Math.min(12, Math.max(2, parseInt(size, 10))) : 5;
+		scrollshot(bin, url, out, stops, "1440,900").catch((err) => {
+			console.error(`scrollshot failed: ${err.message}`);
+			process.exit(1);
+		});
+		return;
 	}
 	const dims = /^\d+x\d+$/.test(size || "") ? size.replace("x", ",") : "1440,2200";
 	const tmpProfile = fs.mkdtempSync(path.join(os.tmpdir(), "solstice-browse-"));
