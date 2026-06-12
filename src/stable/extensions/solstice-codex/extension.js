@@ -447,6 +447,10 @@ class AgentController {
 		const run = process.platform === "win32"
 			? `cmd /c "set ELECTRON_RUN_AS_NODE=1&& ""${node}"" ""${browseJs}"" shot <url> <out.png>"`
 			: `ELECTRON_RUN_AS_NODE=1 "${node}" "${browseJs}" shot <url> <out.png>`;
+		let playbook = "";
+		try {
+			playbook = fs.readFileSync(path.join(this.context.extensionPath, "prompts", "design-playbook.md"), "utf8");
+		} catch { /* missing playbook must not break the agent */ }
 		return [
 			"You are the Solstice IDE agent. Capabilities beyond your normal tools:",
 			`- Web browsing: take a screenshot of any website with: ${run}`,
@@ -455,6 +459,7 @@ class AgentController {
 			"- Image generation: you can generate images; afterwards copy the generated file from your image output directory into the workspace with a proper name and reference it from the site.",
 			"- For any multi-step build task, first create a plan with your plan tool and keep step statuses updated as you work.",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
+			playbook ? "\n" + playbook : "",
 		].join("\n");
 	}
 
