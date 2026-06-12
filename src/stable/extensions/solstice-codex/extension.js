@@ -6,6 +6,7 @@ const path = require("path");
 const { CodexClient, resolveCodexBinary } = require("./codexClient");
 const { PreviewServer } = require("./preview");
 const { GrokProvider, GROK_MODELS } = require("./grok");
+const { ClaudeProvider, CLAUDE_LABEL } = require("./claude");
 
 const SIDEBAR_FORWARDED = new Set([
 	"thread/started",
@@ -58,6 +59,7 @@ class AgentController {
 		this.preview = null;
 		this.previewUrl = "";
 		this.grok = null;
+		this.claude = null;
 		this.grokWatcher = null;
 		this.grokChanged = null;
 		this.fallbackPrompted = false;
@@ -147,6 +149,7 @@ class AgentController {
 
 	providerLabel() {
 		const k = this.providerKey();
+		if (k === "claude") return CLAUDE_LABEL;
 		return k === "gpt-5.5" ? "gpt-5.5" : (GROK_MODELS[k] ? GROK_MODELS[k].label : k);
 	}
 
@@ -154,6 +157,7 @@ class AgentController {
 		const cur = this.providerKey();
 		const items = [
 			{ key: "gpt-5.5", label: "GPT-5.5 (Codex)", description: "ChatGPT subscription — full agent: plans, approvals, image gen" },
+			{ key: "claude", label: "Claude Code", description: "claude CLI — Anthropic Max subscription (fleet engine)" },
 			{ key: "grok-build", label: "Grok 4.3 Build", description: "grok CLI — agentic fallback when Codex quota runs out" },
 			{ key: "composer-2.5", label: "Composer 2.5 Fast", description: "grok CLI — fast builder" },
 		].map((it) => (it.key === cur ? { ...it, label: "$(check) " + it.label } : it));
@@ -168,7 +172,7 @@ class AgentController {
 		this.post(mt);
 		this.postManager(mt);
 		if (this.providerKey() !== "gpt-5.5") {
-			const auth = { type: "auth", authMethod: "grok-cli" };
+			const auth = { type: "auth", authMethod: this.providerKey() === "claude" ? "claude-cli" : "grok-cli" };
 			this.post(auth);
 			this.postManager(auth);
 		} else {
@@ -182,9 +186,9 @@ class AgentController {
 		this.fallbackPrompted = true;
 		vscode.window.showWarningMessage(
 			"Codex (GPT-5.5) hit its usage limit. Switch the Solstice agent to a fallback model?",
-			"Grok 4.3 Build", "Composer 2.5 Fast", "Stay"
+			"Claude Code", "Grok 4.3 Build", "Composer 2.5 Fast", "Stay"
 		).then(async (pick) => {
-			const key = pick === "Grok 4.3 Build" ? "grok-build" : pick === "Composer 2.5 Fast" ? "composer-2.5" : null;
+			const key = pick === "Claude Code" ? "claude" : pick === "Grok 4.3 Build" ? "grok-build" : pick === "Composer 2.5 Fast" ? "composer-2.5" : null;
 			if (!key) return;
 			await this.cfg().update("provider", key, vscode.ConfigurationTarget.Global);
 			this.applyProviderToWebviews();
@@ -255,6 +259,7 @@ class AgentController {
 			"Capabilities beyond your normal tools (run these as shell commands):",
 			`- Screenshot any website: ${shot}`,
 			`- Read any website's rendered HTML: ${dom}`,
+			`- Sample frames from a video on any page (case-study scroll videos, domain-locked Vimeo embeds): ${shot.replace(" shot <url> <out.png>", ' videoframes <url> <outPrefix> [frames] [referrer]')}`,
 			"- You cannot view images yourself. To study a screenshot or any image, subcontract vision to codex:",
 			'  codex exec --skip-git-repo-check -i <image.png> "Describe this design in exhaustive detail: layout, every section top-to-bottom, colors (hex if possible), typography, imagery style, spacing, mood."',
 			"  Always do this for every reference screenshot before designing, and for your own verification screenshots before declaring done.",
@@ -266,6 +271,55 @@ class AgentController {
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
 			playbook ? "\n" + playbook : "",
 		].join("\n");
+	}
+
+	claudePreamble() {
+		const browseJs = path.join(this.context.extensionPath, "tools", "browse.js");
+		const node = process.execPath;
+		const shot = process.platform === "win32"
+			? `cmd /c "set ELECTRON_RUN_AS_NODE=1&& ""${node}"" ""${browseJs}"" shot <url> <out.png>"`
+			: `ELECTRON_RUN_AS_NODE=1 "${node}" "${browseJs}" shot <url> <out.png>`;
+		const dom = process.platform === "win32"
+			? `cmd /c "set ELECTRON_RUN_AS_NODE=1&& ""${node}"" ""${browseJs}"" dom <url>"`
+			: `ELECTRON_RUN_AS_NODE=1 "${node}" "${browseJs}" dom <url>`;
+		let playbook = "";
+		try {
+			playbook = fs.readFileSync(path.join(this.context.extensionPath, "prompts", "design-playbook.md"), "utf8");
+		} catch { /* missing playbook must not break the agent */ }
+		return [
+			"You are the Solstice IDE agent. Work directly on files in this workspace.",
+			"Capabilities beyond your normal tools (run these as shell commands):",
+			`- Screenshot any website: ${shot}`,
+			`- Read any website's rendered HTML: ${dom}`,
+			`- Sample frames from a video on any page (case-study scroll videos, domain-locked Vimeo embeds): ${shot.replace(" shot <url> <out.png>", ' videoframes <url> <outPrefix> [frames] [referrer]')}`,
+			"- You CAN view images: open any screenshot/reference image with your Read tool and study it in exhaustive detail (layout, sections, colors with hex, typography, imagery style, spacing, mood). Always do this for every reference screenshot before designing, and for your own verification screenshots before declaring done.",
+			"- Generate images by subcontracting to codex (it has an image generation tool):",
+			'  codex exec --skip-git-repo-check --full-auto "Use your image generation tool to create: <detailed description>. Then copy the EXACT file you just generated (by its precise filename from ~/.codex/generated_images/ — never the most recent file, other jobs may write there concurrently) into <workspace>/public/images/<descriptive-name>.png"',
+			"  Verify the file exists in the workspace afterwards, and view it with your Read tool to confirm it shows the right subject before using it.",
+			"- For multi-step builds, use your todo/plan tool and keep step statuses updated as you work — the IDE renders it as a live checklist.",
+			"- When deconstructing / analyzing / researching a design, website, or app: maintain DECONSTRUCT.md (or RESEARCH.md) in the workspace root and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end. The IDE renders this file live to the user as a research dashboard. Include as you go: what you examined so far, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, techniques you detected (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed the frames/screenshots you examine as images with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
+			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
+			playbook ? "\n" + playbook : "",
+		].join("\n");
+	}
+
+	async sendClaude(text) {
+		const cwd = workspaceCwd();
+		if (!cwd) { vscode.window.showWarningMessage("Solstice: open a folder first."); return; }
+		if (!this.claude) {
+			this.claude = new ClaudeProvider({
+				cwd,
+				bin: this.cfg().get("claudePath") || undefined,
+				permissionMode: this.cfg().get("claudePermissionMode") || undefined,
+				log: (s) => this.output.append(s),
+				notify: (m, p) => this.onNotification(m, p),
+			});
+			this.threadId = this.claude.threadId;
+			const th = this.upsertThread({ id: this.threadId });
+			th.preview = text;
+			this.post({ type: "thread", threadId: this.threadId, model: this.providerLabel() });
+		}
+		await this.claude.send(text, this.claudePreamble());
 	}
 
 	async sendGrok(text) {
@@ -438,12 +492,13 @@ class AgentController {
 
 	async refreshAccount(target) {
 		if (this.providerKey() !== "gpt-5.5") {
-			// grok CLI auth lives in the CLI itself — no codex login flow needed
-			const msg = { type: "auth", authMethod: "grok-cli" };
+			// grok/claude CLI auth lives in the CLI itself — no codex login flow needed
+			const method = this.providerKey() === "claude" ? "claude-cli" : "grok-cli";
+			const msg = { type: "auth", authMethod: method };
 			const mt = { type: "thread", model: this.providerLabel() };
 			if (target === "manager") { this.postManager(msg); this.postManager(mt); }
 			else { this.post(msg); this.post(mt); }
-			return { authMethod: "grok-cli" };
+			return { authMethod: method };
 		}
 		const client = await this.ensureClient();
 		const auth = await client.request("getAuthStatus", {});
@@ -496,7 +551,7 @@ class AgentController {
 		return [
 			"You are the Solstice IDE agent. Capabilities beyond your normal tools:",
 			`- Web browsing: take a screenshot of any website with: ${run}`,
-			"  (replace mode 'shot' with 'dom' to dump the rendered HTML to stdout).",
+			"  (replace mode 'shot' with 'dom' to dump the rendered HTML to stdout, or with 'videoframes <url> <outPrefix> [frames] [referrer]' to sample frames from a video on the page — e.g. case-study scroll videos in domain-locked Vimeo embeds).",
 			"  After taking a screenshot, ALWAYS open it with your view_image tool to study layout, colors, typography and content. Use this whenever the user asks to inspect, analyze or imitate a website or design (e.g. Behance/Dribbble references).",
 			"- Image generation: you can generate images; afterwards copy the generated file from your image output directory into the workspace with a proper name and reference it from the site.",
 			"- For any multi-step build task, first create a plan with your plan tool and keep step statuses updated as you work.",
@@ -552,6 +607,7 @@ class AgentController {
 
 	// sidebar send: lazily creates the sidebar thread
 	async send(text) {
+		if (this.providerKey() === "claude") return this.sendClaude(text);
 		if (this.providerKey() !== "gpt-5.5") return this.sendGrok(text);
 		if (!this.threadId) {
 			const { id, model } = await this.startThread();
@@ -578,6 +634,10 @@ class AgentController {
 	}
 
 	async interrupt(threadId) {
+		if (this.claude && this.claude.busy && (!threadId || threadId === this.claude.threadId)) {
+			this.claude.interrupt();
+			return;
+		}
 		if (this.grok && this.grok.busy && (!threadId || threadId === this.grok.threadId)) {
 			this.grok.interrupt();
 			return;
@@ -622,6 +682,8 @@ class AgentController {
 	newThread() {
 		this.threadId = null;
 		this.lastDiff = "";
+		// drop the claude session so the next send starts a fresh conversation
+		if (this.claude && !this.claude.busy) this.claude = null;
 		this.post({ type: "reset" });
 	}
 
@@ -699,6 +761,7 @@ class AgentController {
 		if (this.preview) this.preview.dispose();
 		if (this.grokWatcher) this.grokWatcher.dispose();
 		if (this.grok) this.grok.interrupt();
+		if (this.claude) this.claude.interrupt();
 		if (this.client) this.client.stop();
 	}
 }

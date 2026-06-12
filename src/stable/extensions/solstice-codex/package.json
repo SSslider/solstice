@@ -113,16 +113,18 @@
           "type": "string",
           "enum": [
             "gpt-5.5",
+            "claude",
             "grok-build",
             "composer-2.5"
           ],
           "enumDescriptions": [
             "GPT-5.5 via the codex CLI (ChatGPT subscription) — full agent",
+            "Claude Code via the claude CLI (Anthropic Max subscription) — fleet engine",
             "Grok 4.3 Build via the grok CLI — agentic fallback",
             "Composer 2.5 Fast via the grok CLI — fast builder"
           ],
           "default": "gpt-5.5",
-          "description": "Which model drives the Solstice agent. Switch to a grok-CLI model when the Codex usage limit is hit."
+          "description": "Which model drives the Solstice agent. Switch to claude or a grok-CLI model when the Codex usage limit is hit."
         },
         "solstice.codex.path": {
           "type": "string",
@@ -159,6 +161,22 @@
           ],
           "default": "workspace-write",
           "description": "Sandbox policy for agent commands."
+        },
+        "solstice.codex.claudePath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the claude binary (Claude Code CLI). Empty = `claude` from PATH."
+        },
+        "solstice.codex.claudePermissionMode": {
+          "type": "string",
+          "enum": [
+            "acceptEdits",
+            "default",
+            "dontAsk",
+            "bypassPermissions"
+          ],
+          "default": "acceptEdits",
+          "description": "Permission mode passed to the claude CLI. In headless --print mode tools that would prompt are denied; raise to bypassPermissions if shell commands get blocked."
         }
       }
     }

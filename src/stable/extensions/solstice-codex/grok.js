@@ -324,4 +324,4 @@ class GrokProvider {
 	}
 }
 
-module.exports = { GrokProvider, GROK_MODELS };
+module.exports = { GrokProvider, GROK_MODELS, unifiedDiff };
