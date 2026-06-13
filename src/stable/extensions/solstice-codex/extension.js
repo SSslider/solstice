@@ -3,6 +3,7 @@ const vscode = require("vscode");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const { CodexClient, resolveCodexBinary } = require("./codexClient");
 const { PreviewServer } = require("./preview");
 const { GrokProvider, GROK_MODELS } = require("./grok");
@@ -143,8 +144,38 @@ class AgentController {
 		return vscode.workspace.getConfiguration("solstice.codex");
 	}
 
+	claudeAllowed() {
+		return this.cfg().get("allowClaude") === true;
+	}
+
 	providerKey() {
-		return this.cfg().get("provider") || "composer-2.5";
+		const k = this.cfg().get("provider") || "composer-2.5";
+		// Claude is gated: never run it unless explicitly opted in. A stale
+		// provider="claude" setting falls back to the safe default instead.
+		if (k === "claude" && !this.claudeAllowed()) return "gpt-5.5";
+		return k;
+	}
+
+	designElevationOn() {
+		return this.cfg().get("designElevation") === true;
+	}
+
+	// Premium design playbook — only injected when Design Elevation is ON (optional layer).
+	designPlaybook() {
+		if (!this.designElevationOn()) return "";
+		try {
+			return fs.readFileSync(path.join(this.context.extensionPath, "prompts", "design-playbook.md"), "utf8");
+		} catch { return ""; }
+	}
+
+	async toggleDesignElevation() {
+		const on = !this.designElevationOn();
+		await this.cfg().update("designElevation", on, vscode.ConfigurationTarget.Global);
+		vscode.window.showInformationMessage(
+			on
+				? "Solstice Design Elevation: ON — premium design playbook will guide the next build."
+				: "Solstice Design Elevation: OFF — plain build (no design playbook)."
+		);
 	}
 
 	providerLabel() {
@@ -157,10 +188,14 @@ class AgentController {
 		const cur = this.providerKey();
 		const items = [
 			{ key: "gpt-5.5", label: "GPT-5.5 (Codex)", description: "ChatGPT subscription — full agent: plans, approvals, image gen" },
-			{ key: "claude", label: "Claude Code", description: "claude CLI — Anthropic Max subscription (fleet engine)" },
 			{ key: "grok-build", label: "Grok 4.3 Build", description: "grok CLI — agentic fallback when Codex quota runs out" },
 			{ key: "composer-2.5", label: "Composer 2.5 Fast", description: "grok CLI — fast builder" },
-		].map((it) => (it.key === cur ? { ...it, label: "$(check) " + it.label } : it));
+		];
+		// Claude only appears as a choice when explicitly opted in.
+		if (this.claudeAllowed()) {
+			items.splice(1, 0, { key: "claude", label: "Claude Code", description: "claude CLI — opt-in via solstice.codex.allowClaude" });
+		}
+		items.forEach((it, i) => { if (it.key === cur) items[i] = { ...it, label: "$(check) " + it.label }; });
 		const pick = await vscode.window.showQuickPick(items, { placeHolder: "Solstice agent model" });
 		if (!pick) return;
 		await this.cfg().update("provider", pick.key, vscode.ConfigurationTarget.Global);
@@ -184,9 +219,11 @@ class AgentController {
 	suggestFallback() {
 		if (this.fallbackPrompted) return;
 		this.fallbackPrompted = true;
+		const choices = ["Grok 4.3 Build", "Composer 2.5 Fast", "Stay"];
+		if (this.claudeAllowed()) choices.unshift("Claude Code");
 		vscode.window.showWarningMessage(
 			"Codex (GPT-5.5) hit its usage limit. Switch the Solstice agent to a fallback model?",
-			"Claude Code", "Grok 4.3 Build", "Composer 2.5 Fast", "Stay"
+			...choices
 		).then(async (pick) => {
 			const key = pick === "Claude Code" ? "claude" : pick === "Grok 4.3 Build" ? "grok-build" : pick === "Composer 2.5 Fast" ? "composer-2.5" : null;
 			if (!key) return;
@@ -250,10 +287,7 @@ class AgentController {
 		const dom = process.platform === "win32"
 			? `cmd /c "set ELECTRON_RUN_AS_NODE=1&& ""${node}"" ""${browseJs}"" dom <url>"`
 			: `ELECTRON_RUN_AS_NODE=1 "${node}" "${browseJs}" dom <url>`;
-		let playbook = "";
-		try {
-			playbook = fs.readFileSync(path.join(this.context.extensionPath, "prompts", "design-playbook.md"), "utf8");
-		} catch { /* missing playbook must not break the agent */ }
+		const playbook = this.designPlaybook();
 		return [
 			"You are the Solstice IDE agent. Work directly on files in this workspace.",
 			"Capabilities beyond your normal tools (run these as shell commands):",
@@ -282,10 +316,7 @@ class AgentController {
 		const dom = process.platform === "win32"
 			? `cmd /c "set ELECTRON_RUN_AS_NODE=1&& ""${node}"" ""${browseJs}"" dom <url>"`
 			: `ELECTRON_RUN_AS_NODE=1 "${node}" "${browseJs}" dom <url>`;
-		let playbook = "";
-		try {
-			playbook = fs.readFileSync(path.join(this.context.extensionPath, "prompts", "design-playbook.md"), "utf8");
-		} catch { /* missing playbook must not break the agent */ }
+		const playbook = this.designPlaybook();
 		return [
 			"You are the Solstice IDE agent. Work directly on files in this workspace.",
 			"Capabilities beyond your normal tools (run these as shell commands):",
@@ -304,6 +335,10 @@ class AgentController {
 	}
 
 	async sendClaude(text) {
+		if (!this.claudeAllowed()) {
+			vscode.window.showWarningMessage("Solstice: Claude is disabled. Set solstice.codex.allowClaude to true to enable it.");
+			return;
+		}
 		const cwd = workspaceCwd();
 		if (!cwd) { vscode.window.showWarningMessage("Solstice: open a folder first."); return; }
 		if (!this.claude) {
@@ -544,10 +579,7 @@ class AgentController {
 		const run = process.platform === "win32"
 			? `cmd /c "set ELECTRON_RUN_AS_NODE=1&& ""${node}"" ""${browseJs}"" shot <url> <out.png>"`
 			: `ELECTRON_RUN_AS_NODE=1 "${node}" "${browseJs}" shot <url> <out.png>`;
-		let playbook = "";
-		try {
-			playbook = fs.readFileSync(path.join(this.context.extensionPath, "prompts", "design-playbook.md"), "utf8");
-		} catch { /* missing playbook must not break the agent */ }
+		const playbook = this.designPlaybook();
 		return [
 			"You are the Solstice IDE agent. Capabilities beyond your normal tools:",
 			`- Web browsing: take a screenshot of any website with: ${run}`,
@@ -883,7 +915,8 @@ function activate(context) {
 		vscode.commands.registerCommand("solstice.agent.signOut", () => controller.signOut()),
 		vscode.commands.registerCommand("solstice.agent.openManager", () => openManager(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.openPreview", (url) => controller.openPreview(typeof url === "string" ? url : "")),
-		vscode.commands.registerCommand("solstice.agent.selectModel", () => controller.selectModel())
+		vscode.commands.registerCommand("solstice.agent.selectModel", () => controller.selectModel()),
+		vscode.commands.registerCommand("solstice.agent.toggleDesignElevation", () => controller.toggleDesignElevation())
 	);
 	// live research dashboard: render DECONSTRUCT.md / RESEARCH.md as the agent writes it
 	// (no brace glob — filter by basename; grok writes from outside the editor)
@@ -894,6 +927,38 @@ function activate(context) {
 	researchWatcher.onDidCreate(onResearchFile);
 	researchWatcher.onDidChange(onResearchFile);
 	context.subscriptions.push(researchWatcher);
+	// fleet bridge: external agents (Orion/Jasper/Niko) drop a task JSON into the
+	// inbox dir (relayed from Telegram or written directly); we focus the panel,
+	// inject the task as a prompt, and archive the file so it runs exactly once.
+	// We poll with Node fs rather than vscode.createFileSystemWatcher because the
+	// inbox lives OUTSIDE the workspace, where VS Code watchers don't fire.
+	const inboxDir = process.env.SOLSTICE_AGENT_INBOX || path.join(os.homedir(), ".solstice", "agent-inbox");
+	const inboxDone = path.join(inboxDir, "processed");
+	try { fs.mkdirSync(inboxDone, { recursive: true }); } catch { }
+	let inboxBusy = false;
+	const handleInboxTask = async (p) => {
+		let job;
+		try { job = JSON.parse(fs.readFileSync(p, "utf8")); } catch { return; }
+		const from = String(job.from || "fleet");
+		const task = String(job.task || job.text || "").trim();
+		// archive first so a slow agent turn can't cause the same task to fire twice
+		try { fs.renameSync(p, path.join(inboxDone, Date.now() + "-" + path.basename(p))); } catch { }
+		if (!task) return;
+		await vscode.commands.executeCommand("solstice.agentPanel.focus").then(undefined, () => { });
+		const text = `\u{1f4e5} \u05de\u05e9\u05d9\u05de\u05d4 \u05de-${from} (\u05e6\u05d9 \u05d4\u05e1\u05d5\u05db\u05e0\u05d9\u05dd):\n\n${task}`;
+		setTimeout(() => controller.post({ type: "injectPrompt", text }), 1200);
+	};
+	const scanInbox = async () => {
+		if (inboxBusy) return;
+		inboxBusy = true;
+		try {
+			const files = fs.readdirSync(inboxDir).filter((f) => f.endsWith(".json")).sort();
+			for (const f of files) await handleInboxTask(path.join(inboxDir, f));
+		} catch { } finally { inboxBusy = false; }
+	};
+	const inboxTimer = setInterval(scanInbox, 1500);
+	setTimeout(scanInbox, 1000); // catch tasks dropped before the panel armed
+	context.subscriptions.push({ dispose: () => clearInterval(inboxTimer) });
 	// chat lives in the secondary side bar (right of the editor); reveal it on first run
 	if (!context.globalState.get("solstice.revealedAgentPanel")) {
 		context.globalState.update("solstice.revealedAgentPanel", true);

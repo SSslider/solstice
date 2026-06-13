@@ -75,6 +75,12 @@
         "title": "Select Agent Model",
         "category": "Solstice",
         "icon": "$(chip)"
+      },
+      {
+        "command": "solstice.agent.toggleDesignElevation",
+        "title": "Toggle Design Elevation",
+        "category": "Solstice",
+        "icon": "$(sparkle)"
       }
     ],
     "menus": {
@@ -119,12 +125,17 @@
           ],
           "enumDescriptions": [
             "GPT-5.5 via the codex CLI (ChatGPT subscription) — full agent",
-            "Claude Code via the claude CLI (Anthropic Max subscription) — fleet engine",
+            "Claude Code via the claude CLI — DISABLED unless solstice.codex.allowClaude is true",
             "Grok 4.3 Build via the grok CLI — agentic fallback",
             "Composer 2.5 Fast via the grok CLI — fast builder"
           ],
-          "default": "gpt-5.5",
-          "description": "Which model drives the Solstice agent. Switch to claude or a grok-CLI model when the Codex usage limit is hit."
+          "default": "composer-2.5",
+          "description": "Which model drives the Solstice agent. Default is composer-2.5 (Thomas's directive). Claude is gated behind solstice.codex.allowClaude and will not run unless that flag is explicitly enabled."
+        },
+        "solstice.codex.allowClaude": {
+          "type": "boolean",
+          "default": false,
+          "description": "Explicit opt-in gate for the Claude provider. OFF by default so Claude never runs unattended. When false, selecting 'claude' falls back to gpt-5.5 and the Claude option is hidden from the model picker. Set to true only when you deliberately want Claude to drive the agent."
         },
         "solstice.codex.path": {
           "type": "string",
@@ -177,6 +188,11 @@
           ],
           "default": "acceptEdits",
           "description": "Permission mode passed to the claude CLI. In headless --print mode tools that would prompt are denied; raise to bypassPermissions if shell commands get blocked."
+        },
+        "solstice.codex.designElevation": {
+          "type": "boolean",
+          "default": false,
+          "description": "Design Elevation layer (OPTIONAL, off by default). When on, the premium design playbook (sector-fit, 10-15 sections, real imagery, GSAP/R3F, reference deconstruction, self-verify) is injected into the agent's instructions on every build. Toggle via 'Solstice: Toggle Design Elevation'. Both the user and the agent can switch it to compare the same build with/without the high-design layer."
         }
       }
     }
