@@ -18,22 +18,34 @@ on:
         type: boolean
         default: true
         description: Build linux-x64 (server-side run + screenshots)
+      publish:
+        type: boolean
+        default: false
+        description: "Publish: create the GH Release + push OTA manifests (needs STRONGER_GITHUB_TOKEN + SSslider/versions). Off = artifacts only."
+      release_version:
+        type: string
+        default: ""
+        description: "Release version for publish, e.g. 0.5.0 (no leading v). Required when publish is on."
 
 env:
   APP_NAME: Solstice
   BINARY_NAME: solstice
   GH_REPO_PATH: ${{ github.repository }}
   ASSETS_REPOSITORY: ${{ github.repository }}
+  VERSIONS_REPOSITORY: ${{ github.repository_owner }}/versions
   ORG_NAME: ${{ github.repository_owner }}
   VSCODE_QUALITY: stable
-  DISABLE_UPDATE: yes
+  # OTA on: update patches stay off so updateUrl (product.json → SSslider/versions)
+  # is honored. Auto-update is a no-op until the versions repo has manifests, so
+  # an artifacts-only run (publish=false) is still safe.
+  DISABLE_UPDATE: no
   SHOULD_BUILD: yes
   SHOULD_BUILD_REH: no
   SHOULD_BUILD_REH_WEB: no
 
-# contents:read required — repo is private, checkout authenticates with GITHUB_TOKEN
+# contents:write so the publish path can create the GH Release on this repo.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   windows:
@@ -45,6 +57,9 @@ jobs:
     env:
       OS_NAME: windows
       VSCODE_ARCH: x64
+      # RELEASE_VERSION must be set before Build so version.sh derives the right
+      # BUILD_SOURCEVERSION (the update manifest's `version`). Empty when not publishing.
+      RELEASE_VERSION: ${{ inputs.release_version }}
       # CI_BUILD=no makes build.sh run the packaging gulp task + CLI build
       # in-process (upstream CI packages in a separate job we don't have).
       CI_BUILD: no
@@ -91,12 +106,30 @@ jobs:
           path: assets/
           retention-days: 7
 
+      # Publish path (opt-in): create/refresh the GH Release with the installers,
+      # then push the OTA update manifests to SSslider/versions so installed
+      # Solstice clients auto-update. Needs STRONGER_GITHUB_TOKEN (PAT with write
+      # to the versions repo) + the versions repo to exist.
+      - name: Publish GH Release (win32)
+        if: ${{ inputs.publish }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./release.sh
+
+      - name: Publish OTA manifests (win32)
+        if: ${{ inputs.publish }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.STRONGER_GITHUB_TOKEN }}
+          GITHUB_USERNAME: ${{ github.repository_owner }}
+        run: ./update_version.sh
+
   macos:
     if: ${{ inputs.build_macos }}
     runs-on: macos-14 # GitHub-hosted Apple Silicon (real arm64)
     env:
       OS_NAME: osx
       VSCODE_ARCH: arm64
+      RELEASE_VERSION: ${{ inputs.release_version }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -133,6 +166,19 @@ jobs:
           name: solstice-darwin-arm64
           path: assets/
           retention-days: 7
+
+      - name: Publish GH Release (darwin)
+        if: ${{ inputs.publish }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./release.sh
+
+      - name: Publish OTA manifests (darwin)
+        if: ${{ inputs.publish }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.STRONGER_GITHUB_TOKEN }}
+          GITHUB_USERNAME: ${{ github.repository_owner }}
+        run: ./update_version.sh
 
   linux:
     if: ${{ inputs.build_linux }}

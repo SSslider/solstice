@@ -666,5 +666,6 @@
   "tunnelApplicationName": "solstice-tunnel",
   "win32TunnelServiceMutex": "solstice-tunnelservice",
   "win32TunnelMutex": "solstice-tunnel",
+  "updateUrl": "https://raw.githubusercontent.com/SSslider/versions/refs/heads/master",
   "quality": "stable"
 }
