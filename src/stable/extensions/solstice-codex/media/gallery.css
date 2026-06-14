@@ -1,0 +1,123 @@
+:root {
+  --amber: var(--vscode-button-background, #f59e0b);
+  --amber-soft: color-mix(in srgb, var(--amber) 18%, transparent);
+  --surface: color-mix(in srgb, var(--vscode-foreground, #ccc) 4%, transparent);
+  --surface-2: color-mix(in srgb, var(--vscode-foreground, #ccc) 7%, transparent);
+  --line: color-mix(in srgb, var(--vscode-foreground, #ccc) 11%, transparent);
+  --line-soft: color-mix(in srgb, var(--vscode-foreground, #ccc) 7%, transparent);
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0; height: 100%;
+  background: var(--vscode-editor-background, #181818);
+  color: var(--vscode-foreground, #ccc);
+  font-family: var(--vscode-font-family, system-ui, sans-serif);
+  font-size: 13px;
+}
+#app {
+  min-height: 100%;
+  padding: 0 0 64px;
+  background:
+    radial-gradient(120% 50% at 50% -10%, color-mix(in srgb, var(--amber) 9%, transparent), transparent 60%),
+    var(--vscode-editor-background, #181818);
+}
+
+/* ---------- hero header ---------- */
+.galHead {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 16px; padding: 40px 48px 28px; flex-wrap: wrap;
+  border-bottom: 1px solid var(--line-soft);
+}
+.galTitleWrap { display: flex; align-items: center; gap: 16px; }
+.galMark {
+  width: 46px; height: 46px; border-radius: 13px; flex: none;
+  display: grid; place-items: center; font-size: 24px; color: #1a1206;
+  background: linear-gradient(150deg, #fbbf24, #f59e0b 55%, #ea7c0b);
+  box-shadow: 0 6px 22px -6px color-mix(in srgb, var(--amber) 65%, transparent);
+}
+.galTitle { font-size: 26px; font-weight: 680; letter-spacing: -0.4px; line-height: 1.05; }
+.galSub { color: var(--vscode-descriptionForeground, #9d9d9d); font-size: 12.5px; margin-top: 3px; }
+.galSub b { color: color-mix(in srgb, var(--vscode-foreground) 80%, transparent); font-weight: 640; }
+.galActions { display: flex; gap: 9px; }
+.gBtn {
+  appearance: none; border: 1px solid var(--line); cursor: pointer;
+  background: var(--surface-2); color: var(--vscode-foreground);
+  padding: 9px 15px; border-radius: 9px; font-size: 12.5px; font-weight: 560;
+  display: inline-flex; align-items: center; gap: 7px;
+  transition: background .14s, border-color .14s, transform .1s;
+}
+.gBtn:hover { background: var(--surface); border-color: color-mix(in srgb, var(--amber) 40%, var(--line)); }
+.gBtn:active { transform: translateY(1px); }
+.gBtn.primary {
+  border: none; color: #1a1206;
+  background: linear-gradient(150deg, #fbbf24, #f59e0b 60%, #ea7c0b);
+  box-shadow: 0 5px 18px -7px color-mix(in srgb, var(--amber) 70%, transparent);
+}
+.gBtn.primary:hover { filter: brightness(1.05); }
+
+/* ---------- grid ---------- */
+.grid {
+  display: grid; gap: 18px; padding: 28px 48px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+.pcard {
+  position: relative; border: 1px solid var(--line); border-radius: 15px;
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  overflow: hidden; cursor: pointer; isolation: isolate;
+  transition: transform .16s cubic-bezier(.2,.7,.3,1), border-color .16s, box-shadow .16s;
+}
+.pcard:hover {
+  transform: translateY(-4px);
+  border-color: color-mix(in srgb, var(--amber) 45%, var(--line));
+  box-shadow: 0 18px 40px -22px color-mix(in srgb, var(--amber) 60%, #000), 0 2px 0 var(--line-soft) inset;
+}
+.pthumb {
+  position: relative; aspect-ratio: 16 / 9; width: 100%; overflow: hidden;
+  background: var(--vscode-editor-background);
+  border-bottom: 1px solid var(--line-soft);
+}
+.pthumb img { width: 100%; height: 100%; object-fit: cover; display: block;
+  transition: transform .4s cubic-bezier(.2,.7,.3,1); }
+.pcard:hover .pthumb img { transform: scale(1.045); }
+.pthumb.placeholder { display: grid; place-items: center; }
+.pInitial {
+  font-size: 46px; font-weight: 720; letter-spacing: -1px;
+  color: color-mix(in srgb, var(--amber) 85%, #fff 0%);
+  text-shadow: 0 4px 24px color-mix(in srgb, var(--amber) 45%, transparent);
+}
+.pthumb.placeholder {
+  background:
+    radial-gradient(80% 120% at 25% 0%, color-mix(in srgb, var(--amber) 16%, transparent), transparent 60%),
+    repeating-linear-gradient(135deg, transparent 0 11px, color-mix(in srgb, var(--vscode-foreground) 3%, transparent) 11px 12px),
+    var(--vscode-editor-background);
+}
+.openHint {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  background: color-mix(in srgb, #000 38%, transparent); opacity: 0;
+  transition: opacity .16s; font-weight: 600; color: #fff;
+}
+.openHint span {
+  border: 1px solid rgba(255,255,255,.5); padding: 7px 16px; border-radius: 8px;
+  background: color-mix(in srgb, var(--amber) 88%, transparent); color: #1a1206;
+}
+.pcard:hover .openHint { opacity: 1; }
+.pbody { padding: 13px 15px 15px; }
+.pname { font-size: 14.5px; font-weight: 640; letter-spacing: -0.2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pdesc {
+  color: var(--vscode-descriptionForeground, #9d9d9d); font-size: 12px;
+  margin-top: 4px; line-height: 1.45; height: 2.9em; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.pmeta { display: flex; align-items: center; gap: 7px; margin-top: 11px; flex-wrap: wrap; }
+.chip {
+  font-size: 10.5px; font-weight: 560; padding: 2.5px 8px; border-radius: 999px;
+  background: var(--amber-soft); color: color-mix(in srgb, var(--amber) 92%, #fff);
+  border: 1px solid color-mix(in srgb, var(--amber) 30%, transparent);
+}
+.ptime { margin-left: auto; font-size: 11px; color: var(--vscode-descriptionForeground, #9d9d9d); }
+
+/* ---------- empty ---------- */
+.empty { text-align: center; padding: 90px 24px; color: var(--vscode-descriptionForeground); }
+.empty .big { font-size: 40px; margin-bottom: 10px; opacity: .55; }
+.empty h3 { color: var(--vscode-foreground); font-weight: 620; margin: 0 0 6px; }

@@ -1,0 +1,89 @@
+:root {
+  --amber: var(--vscode-button-background, #f59e0b);
+  --amber-soft: color-mix(in srgb, var(--amber) 18%, transparent);
+  --surface: color-mix(in srgb, var(--vscode-foreground, #ccc) 4%, transparent);
+  --surface-2: color-mix(in srgb, var(--vscode-foreground, #ccc) 7%, transparent);
+  --line: color-mix(in srgb, var(--vscode-foreground, #ccc) 11%, transparent);
+  --line-soft: color-mix(in srgb, var(--vscode-foreground, #ccc) 7%, transparent);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--vscode-editor-background, #181818);
+  color: var(--vscode-foreground, #ccc); font-family: var(--vscode-font-family, system-ui, sans-serif); font-size: 13px; }
+#app { height: 100%; }
+.fleet { display: grid; grid-template-columns: 264px 1fr; height: 100vh; }
+
+/* ---------- roster ---------- */
+.roster {
+  border-right: 1px solid var(--line-soft); padding: 18px 14px; overflow-y: auto;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--amber) 5%, transparent), transparent 220px),
+    color-mix(in srgb, var(--vscode-foreground) 2%, transparent);
+}
+.rosterHead { display: flex; align-items: center; gap: 11px; padding: 4px 6px 16px; }
+.rMark { width: 34px; height: 34px; border-radius: 10px; flex: none; display: grid; place-items: center;
+  font-size: 18px; color: #1a1206; background: linear-gradient(150deg, #fbbf24, #f59e0b 60%, #ea7c0b);
+  box-shadow: 0 5px 16px -6px color-mix(in srgb, var(--amber) 65%, transparent); }
+.rTitle { font-size: 15px; font-weight: 660; letter-spacing: -0.2px; }
+.rTitle small { display: block; font-weight: 500; font-size: 11px; color: var(--vscode-descriptionForeground); }
+.agent {
+  display: flex; gap: 11px; align-items: center; padding: 11px 11px; border-radius: 11px;
+  cursor: pointer; border: 1px solid transparent; margin-bottom: 5px; transition: background .13s, border-color .13s;
+}
+.agent:hover { background: var(--surface); }
+.agent.active { background: var(--surface-2); border-color: color-mix(in srgb, var(--amber) 38%, var(--line)); }
+.aGlyph { width: 34px; height: 34px; border-radius: 9px; flex: none; display: grid; place-items: center;
+  font-size: 16px; background: var(--amber-soft); color: color-mix(in srgb, var(--amber) 92%, #fff);
+  border: 1px solid color-mix(in srgb, var(--amber) 26%, transparent); }
+.aMeta { min-width: 0; flex: 1; }
+.aName { font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 7px; }
+.aDot { width: 7px; height: 7px; border-radius: 50%; background: #4ade80;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #4ade80 22%, transparent); }
+.aDot.off { background: #6b7280; box-shadow: none; }
+.aRole { font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+.aModel { font-size: 10px; color: color-mix(in srgb, var(--amber) 90%, #fff); margin-top: 2px; font-weight: 560; }
+
+/* ---------- chat ---------- */
+.chat { display: flex; flex-direction: column; min-width: 0; }
+.chatHead { padding: 16px 22px; border-bottom: 1px solid var(--line-soft); display: flex; align-items: center; gap: 12px; }
+.chatHead .aGlyph { width: 38px; height: 38px; font-size: 18px; }
+.chatHeadName { font-size: 15.5px; font-weight: 650; }
+.chatHeadRole { font-size: 11.5px; color: var(--vscode-descriptionForeground); }
+
+.liveBanner {
+  display: none; align-items: center; gap: 10px; margin: 14px 22px 0; padding: 11px 15px; border-radius: 11px;
+  background: linear-gradient(120deg, color-mix(in srgb, var(--amber) 16%, transparent), color-mix(in srgb, var(--amber) 6%, transparent));
+  border: 1px solid color-mix(in srgb, var(--amber) 36%, transparent); font-size: 12.5px;
+}
+.liveBanner.show { display: flex; animation: pop .25s ease; }
+@keyframes pop { from { transform: translateY(-6px); opacity: 0; } }
+.livePulse { width: 9px; height: 9px; border-radius: 50%; background: var(--amber); flex: none;
+  animation: pulse 1.1s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--amber) 55%, transparent); }
+  50% { box-shadow: 0 0 0 7px transparent; } }
+.liveBanner b { color: color-mix(in srgb, var(--amber) 95%, #fff); }
+.liveOpen { margin-left: auto; cursor: pointer; text-decoration: underline; color: var(--vscode-textLink-foreground, #fb923c); }
+
+.msgs { flex: 1; overflow-y: auto; padding: 20px 22px; display: flex; flex-direction: column; gap: 12px; }
+.row { display: flex; }
+.row.me { justify-content: flex-end; }
+.bubble { max-width: 76%; padding: 10px 14px; border-radius: 14px; font-size: 13px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word; }
+.row.me .bubble { background: linear-gradient(150deg, #fbbf24, #f59e0b 70%); color: #1a1206; border-bottom-right-radius: 5px; }
+.row.them .bubble { background: var(--surface-2); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
+.row.sys { justify-content: center; }
+.row.sys .bubble { background: transparent; color: var(--vscode-descriptionForeground); font-size: 11.5px; max-width: 90%; text-align: center; }
+.bTime { font-size: 10px; opacity: .6; margin-top: 4px; }
+.emptyChat { margin: auto; text-align: center; color: var(--vscode-descriptionForeground); padding: 40px; }
+.emptyChat .big { font-size: 38px; opacity: .5; margin-bottom: 8px; }
+
+.composer { border-top: 1px solid var(--line-soft); padding: 14px 18px; display: flex; gap: 10px; align-items: flex-end; }
+.composer textarea {
+  flex: 1; resize: none; border-radius: 11px; border: 1px solid var(--line); background: var(--vscode-input-background, #2a2a2a);
+  color: var(--vscode-input-foreground, #e6e6e6); font-family: inherit; font-size: 13px; padding: 11px 13px; line-height: 1.5;
+  min-height: 46px; max-height: 160px; outline: none; transition: border-color .14s, box-shadow .14s;
+}
+.composer textarea:focus { border-color: var(--amber); box-shadow: 0 0 0 3px color-mix(in srgb, var(--amber) 16%, transparent); }
+.sendBtn { border: none; cursor: pointer; color: #1a1206; font-weight: 620; font-size: 13px; padding: 12px 20px; border-radius: 11px;
+  background: linear-gradient(150deg, #fbbf24, #f59e0b 60%, #ea7c0b); box-shadow: 0 5px 16px -7px color-mix(in srgb, var(--amber) 70%, transparent); }
+.sendBtn:hover { filter: brightness(1.05); }
+.sendBtn:disabled { opacity: .5; cursor: default; filter: none; }

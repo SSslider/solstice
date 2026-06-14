@@ -93,6 +93,18 @@
         "title": "Open Agent Terminal",
         "category": "Solstice",
         "icon": "$(terminal)"
+      },
+      {
+        "command": "solstice.agent.openGallery",
+        "title": "Open Projects Gallery",
+        "category": "Solstice",
+        "icon": "$(layout-panel)"
+      },
+      {
+        "command": "solstice.agent.openFleet",
+        "title": "Open Fleet",
+        "category": "Solstice",
+        "icon": "$(organization)"
       }
     ],
     "menus": {
@@ -106,6 +118,16 @@
           "command": "solstice.agent.showDiff",
           "when": "view == solstice.agentPanel",
           "group": "navigation@2"
+        },
+        {
+          "command": "solstice.agent.openGallery",
+          "when": "view == solstice.agentPanel",
+          "group": "navigation@0"
+        },
+        {
+          "command": "solstice.agent.openFleet",
+          "when": "view == solstice.agentPanel",
+          "group": "navigation@1"
         },
         {
           "command": "solstice.agent.openManager",
@@ -230,6 +252,16 @@
           "type": "boolean",
           "default": false,
           "description": "Design Elevation layer (OPTIONAL, off by default). When on, the premium design playbook (sector-fit, 10-15 sections, real imagery, GSAP/R3F, reference deconstruction, self-verify) is injected into the agent's instructions on every build. Toggle via 'Solstice: Toggle Design Elevation'. Both the user and the agent can switch it to compare the same build with/without the high-design layer."
+        },
+        "solstice.codex.projectsDir": {
+          "type": "string",
+          "default": "",
+          "description": "Root directory the Projects Gallery scans for projects built on this server. Empty = auto-detect (~/solstice-deploys, then ~/Projects). Each immediate subfolder that looks like a project (package.json / index.html / .git / .solstice) becomes a gallery card."
+        },
+        "solstice.codex.fleetDir": {
+          "type": "string",
+          "default": "",
+          "description": "Root of the fleet agent workspaces, used by the in-IDE Fleet panel to talk to Orion/Jasper/Asher. Empty = auto-detect (~/Julius-cc-x/agents). Messages are dropped into each agent's inbox; the agent's reply channel is mirrored back into the panel."
         }
       }
     }

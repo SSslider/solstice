@@ -920,11 +920,167 @@ class AgentController {
 		}
 	}
 
+	// ---- projects gallery (home view inside Solstice) ----
+	// Roots the gallery scans for projects agents built on this server.
+	galleryRoots() {
+		const cfg = (this.cfg().get("projectsDir") || "").trim();
+		if (cfg) return [cfg];
+		const home = os.homedir();
+		return [path.join(home, "solstice-deploys"), path.join(home, "Projects")]
+			.filter((d) => { try { return fs.statSync(d).isDirectory(); } catch { return false; } });
+	}
+
+	// Find a representative preview image inside a project (best-effort).
+	projectPreview(dir) {
+		const candidates = [
+			".solstice/preview.png", "public/og.png", "public/og.jpg",
+			"public/images/hero.png", "public/images/hero.jpg",
+			"public/preview.png", "preview.png", "screenshot.png",
+		];
+		for (const rel of candidates) {
+			const abs = path.join(dir, rel);
+			try { if (fs.statSync(abs).isFile()) return abs; } catch { }
+		}
+		// otherwise: first image under public/images
+		const imgDir = path.join(dir, "public", "images");
+		try {
+			const f = fs.readdirSync(imgDir).find((n) => /\.(png|jpe?g|webp)$/i.test(n));
+			if (f) return path.join(imgDir, f);
+		} catch { }
+		return null;
+	}
+
+	detectStack(dir) {
+		let pkg = null;
+		try { pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")); } catch { }
+		const deps = pkg ? { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) } : {};
+		const tags = [];
+		if (deps.next) tags.push("Next.js");
+		else if (deps.vite) tags.push("Vite");
+		if (deps.react) tags.push("React");
+		if (deps.three || deps["@react-three/fiber"]) tags.push("three.js");
+		if (deps.gsap || deps["framer-motion"]) tags.push("Motion");
+		if (deps.tailwindcss) tags.push("Tailwind");
+		if (!tags.length) {
+			try { if (fs.statSync(path.join(dir, "index.html")).isFile()) tags.push("Static"); } catch { }
+		}
+		return { pkg, tags };
+	}
+
+	scanProjects(webview) {
+		const out = [];
+		const seen = new Set();
+		for (const root of this.galleryRoots()) {
+			let names;
+			try { names = fs.readdirSync(root); } catch { continue; }
+			for (const name of names) {
+				if (name.startsWith(".")) continue;
+				const dir = path.join(root, name);
+				if (seen.has(dir)) continue;
+				let st;
+				try { st = fs.statSync(dir); } catch { continue; }
+				if (!st.isDirectory()) continue;
+				const isProject = ["package.json", "index.html", ".git", ".solstice"]
+					.some((m) => { try { return fs.existsSync(path.join(dir, m)); } catch { return false; } });
+				if (!isProject) continue;
+				seen.add(dir);
+				const { pkg, tags } = this.detectStack(dir);
+				const preview = this.projectPreview(dir);
+				out.push({
+					name: (pkg && pkg.name) || name,
+					dir,
+					description: (pkg && pkg.description) || "",
+					tags,
+					updatedAt: st.mtimeMs,
+					preview: preview && webview ? webview.asWebviewUri(vscode.Uri.file(preview)).toString() : null,
+				});
+			}
+		}
+		out.sort((a, b) => b.updatedAt - a.updatedAt);
+		return out;
+	}
+
+	openProjectFolder(dir, newWindow) {
+		if (!dir) return;
+		try { if (!fs.statSync(dir).isDirectory()) return; } catch { return; }
+		vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(dir), { forceNewWindow: !!newWindow })
+			.then(undefined, () => { });
+	}
+
+	// ---- Fleet (talk to Orion/Jasper/Asher from inside Solstice) ----
+	// Messages are dropped into each agent's real inbox (agents/<name>/inbox);
+	// replies come back via ~/.solstice/fleet-replies/<agent>/*.json, which the
+	// fleet's outbound relay writes. The panel polls that dir and renders them.
+	fleetDir() {
+		const cfg = (this.cfg().get("fleetDir") || "").trim();
+		if (cfg) return cfg;
+		const guess = path.join(os.homedir(), "Julius-cc-x", "agents");
+		try { if (fs.statSync(guess).isDirectory()) return guess; } catch { }
+		return guess;
+	}
+
+	fleetRepliesDir() {
+		return path.join(os.homedir(), ".solstice", "fleet-replies");
+	}
+
+	fleetAgents() {
+		const roster = [
+			{ id: "orion", name: "Orion", role: "CTO · architecture & planning", glyph: "◆", model: "Opus" },
+			{ id: "jasper", name: "Jasper", role: "Web production · sites & landing pages", glyph: "❖", model: "GPT-5.5" },
+			{ id: "asher", name: "Asher", role: "Systems · CRMs, software, bigger builds", glyph: "▲", model: "Composer 2.5" },
+		];
+		const base = this.fleetDir();
+		for (const a of roster) {
+			a.present = (() => { try { return fs.statSync(path.join(base, a.id)).isDirectory(); } catch { return false; } })();
+		}
+		return roster;
+	}
+
+	sendToFleet(agentId, text) {
+		const id = String(agentId || "").trim();
+		const body = String(text || "").trim();
+		if (!id || !body) return { ok: false, error: "empty" };
+		const inbox = path.join(this.fleetDir(), id, "inbox");
+		try { fs.mkdirSync(inbox, { recursive: true }); } catch (e) { return { ok: false, error: e.message }; }
+		const now = new Date();
+		const stamp = now.toISOString().replace(/[:.]/g, "-");
+		const job = {
+			from: "solstice-ide",
+			kind: "task",
+			task_id: "solstice-" + Date.now().toString(36),
+			title: body.split("\n")[0].slice(0, 80),
+			body,
+			created_at: now.toISOString(),
+		};
+		const file = path.join(inbox, stamp + "_solstice.json");
+		try { fs.writeFileSync(file, JSON.stringify(job, null, 2)); } catch (e) { return { ok: false, error: e.message }; }
+		return { ok: true, ts: now.getTime() };
+	}
+
+	// drain new reply files for an agent; each is {agent, text, ts}
+	scanFleetReplies(agentId) {
+		const dir = path.join(this.fleetRepliesDir(), agentId);
+		const done = path.join(dir, "seen");
+		const out = [];
+		let files;
+		try { files = fs.readdirSync(dir).filter((f) => f.endsWith(".json")).sort(); } catch { return out; }
+		try { fs.mkdirSync(done, { recursive: true }); } catch { }
+		for (const f of files) {
+			const p = path.join(dir, f);
+			let msg;
+			try { msg = JSON.parse(fs.readFileSync(p, "utf8")); } catch { continue; }
+			out.push({ text: String(msg.text || msg.body || ""), ts: msg.ts || Date.now() });
+			try { fs.renameSync(p, path.join(done, Date.now() + "-" + f)); } catch { }
+		}
+		return out;
+	}
+
 	dispose() {
 		for (const resolve of this.pendingApprovals.values()) resolve("abort");
 		this.pendingApprovals.clear();
 		clearTimeout(this.researchDebounce);
 		if (this.researchPanel) this.researchPanel.dispose();
+		if (this.galleryPanel) this.galleryPanel.dispose();
 		if (this.preview) this.preview.dispose();
 		if (this.grokWatcher) this.grokWatcher.dispose();
 		if (this.grok) this.grok.interrupt();
@@ -1047,6 +1203,86 @@ function openManager(controller, extensionUri) {
 	});
 }
 
+let galleryPanel = null;
+
+function openGallery(controller, extensionUri) {
+	if (galleryPanel) { galleryPanel.reveal(vscode.ViewColumn.One); return; }
+	const roots = controller.galleryRoots().map((d) => vscode.Uri.file(d));
+	galleryPanel = vscode.window.createWebviewPanel(
+		"solstice.gallery",
+		"Projects",
+		vscode.ViewColumn.One,
+		{
+			enableScripts: true,
+			retainContextWhenHidden: true,
+			localResourceRoots: [vscode.Uri.joinPath(extensionUri, "media"), ...roots],
+		}
+	);
+	controller.galleryPanel = galleryPanel;
+	const pushProjects = () => galleryPanel.webview.postMessage({
+		type: "projects", projects: controller.scanProjects(galleryPanel.webview),
+	});
+	galleryPanel.webview.html = mediaHtml(galleryPanel.webview, extensionUri, "gallery.js", "gallery.css");
+	galleryPanel.webview.onDidReceiveMessage((msg) => {
+		switch (msg.type) {
+			case "ready": pushProjects(); break;
+			case "refresh": pushProjects(); break;
+			case "openProject": controller.openProjectFolder(msg.dir, msg.newWindow); break;
+			case "newProject": vscode.commands.executeCommand("solstice.agentPanel.focus").then(undefined, () => { }); break;
+		}
+	});
+	galleryPanel.onDidDispose(() => {
+		if (controller.galleryPanel === galleryPanel) controller.galleryPanel = null;
+		galleryPanel = null;
+	});
+}
+
+let fleetPanel = null;
+
+function openFleet(controller, extensionUri) {
+	if (fleetPanel) { fleetPanel.reveal(vscode.ViewColumn.One); return; }
+	fleetPanel = vscode.window.createWebviewPanel(
+		"solstice.fleet",
+		"Fleet",
+		vscode.ViewColumn.One,
+		{
+			enableScripts: true,
+			retainContextWhenHidden: true,
+			localResourceRoots: [vscode.Uri.joinPath(extensionUri, "media")],
+		}
+	);
+	controller.fleetPanel = fleetPanel;
+	fleetPanel.webview.html = mediaHtml(fleetPanel.webview, extensionUri, "fleet.js", "fleet.css");
+	let pollTimer = null;
+	const poll = () => {
+		for (const a of controller.fleetAgents()) {
+			const replies = controller.scanFleetReplies(a.id);
+			for (const r of replies) fleetPanel.webview.postMessage({ type: "reply", agent: a.id, text: r.text, ts: r.ts });
+		}
+	};
+	fleetPanel.webview.onDidReceiveMessage((msg) => {
+		switch (msg.type) {
+			case "ready":
+				fleetPanel.webview.postMessage({ type: "roster", agents: controller.fleetAgents() });
+				if (!pollTimer) pollTimer = setInterval(poll, 2000);
+				break;
+			case "send": {
+				const res = controller.sendToFleet(msg.agent, msg.text);
+				fleetPanel.webview.postMessage({ type: "sent", agent: msg.agent, ok: res.ok, ts: res.ts, error: res.error });
+				break;
+			}
+			case "openAgentPanel":
+				vscode.commands.executeCommand("solstice.agentPanel.focus").then(undefined, () => { });
+				break;
+		}
+	});
+	fleetPanel.onDidDispose(() => {
+		if (pollTimer) clearInterval(pollTimer);
+		if (controller.fleetPanel === fleetPanel) controller.fleetPanel = null;
+		fleetPanel = null;
+	});
+}
+
 function activate(context) {
 	const controller = new AgentController(context);
 	context.subscriptions.push(controller);
@@ -1063,7 +1299,9 @@ function activate(context) {
 		vscode.commands.registerCommand("solstice.agent.selectModel", () => controller.selectModel()),
 		vscode.commands.registerCommand("solstice.agent.selectAutonomy", () => controller.selectAutonomy()),
 		vscode.commands.registerCommand("solstice.agent.toggleDesignElevation", () => controller.toggleDesignElevation()),
-		vscode.commands.registerCommand("solstice.agent.openTerminal", () => controller.openTerminal())
+		vscode.commands.registerCommand("solstice.agent.openTerminal", () => controller.openTerminal()),
+		vscode.commands.registerCommand("solstice.agent.openGallery", () => openGallery(controller, context.extensionUri)),
+		vscode.commands.registerCommand("solstice.agent.openFleet", () => openFleet(controller, context.extensionUri))
 	);
 	// live research dashboard: render DECONSTRUCT.md / RESEARCH.md as the agent writes it
 	// (no brace glob — filter by basename; grok writes from outside the editor)
@@ -1093,6 +1331,8 @@ function activate(context) {
 		if (!task) return;
 		await vscode.commands.executeCommand("solstice.agentPanel.focus").then(undefined, () => { });
 		const text = `\u{1f4e5} \u05de\u05e9\u05d9\u05de\u05d4 \u05de-${from} (\u05e6\u05d9 \u05d4\u05e1\u05d5\u05db\u05e0\u05d9\u05dd):\n\n${task}`;
+		// light up the Fleet panel: a fleet agent just dispatched a build to Solstice
+		if (controller.fleetPanel) controller.fleetPanel.webview.postMessage({ type: "liveTask", from, task });
 		setTimeout(() => controller.post({ type: "injectPrompt", text }), 1200);
 	};
 	const scanInbox = async () => {
@@ -1110,6 +1350,10 @@ function activate(context) {
 	if (!context.globalState.get("solstice.revealedAgentPanel")) {
 		context.globalState.update("solstice.revealedAgentPanel", true);
 		setTimeout(() => vscode.commands.executeCommand("solstice.agentPanel.focus").then(undefined, () => { }), 1500);
+	}
+	// with no folder open, show the Projects gallery as the home view
+	if (!vscode.workspace.workspaceFolders) {
+		setTimeout(() => openGallery(controller, context.extensionUri), 900);
 	}
 	// headless E2E hooks (xvfb, no pointer)
 	if (process.env.SOLSTICE_AGENT_DEV_PROMPT) {
