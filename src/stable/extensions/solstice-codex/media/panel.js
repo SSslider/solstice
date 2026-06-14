@@ -12,7 +12,13 @@
 	// ---------- skeleton ----------
 	app.innerHTML = `
 		<div id="header">
-			<div id="status"><span id="dot" class="dot"></span></div>
+			<div id="brand">
+				<span class="brandMark">☀</span>
+				<div class="brandText">
+					<div class="brandName">Solstice <span id="status"><span id="dot" class="dot"></span></span></div>
+					<div class="brandModel" id="brandModel">—</div>
+				</div>
+			</div>
 			<div id="quota" title=""></div>
 		</div>
 		<div id="messages"></div>
@@ -42,6 +48,7 @@
 	const stopBtn = document.getElementById("stopBtn");
 	const dotEl = document.getElementById("dot");
 	const modelEl = document.getElementById("model");
+	const brandModelEl = document.getElementById("brandModel");
 	const modelBtn = document.getElementById("modelBtn");
 	const autonomyEl = document.getElementById("autonomy");
 	const autonomyBtn = document.getElementById("autonomyBtn");
@@ -743,6 +750,7 @@
 			case "thread":
 				model = msg.model || "";
 				modelEl.textContent = model || "—";
+				if (brandModelEl) brandModelEl.textContent = model || "Solstice Agent";
 				break;
 			case "models":
 				modelChoices = Array.isArray(msg.list) ? msg.list : [];
