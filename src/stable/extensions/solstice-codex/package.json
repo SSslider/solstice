@@ -77,10 +77,22 @@
         "icon": "$(chip)"
       },
       {
+        "command": "solstice.agent.selectAutonomy",
+        "title": "Set Agent Autonomy",
+        "category": "Solstice",
+        "icon": "$(shield)"
+      },
+      {
         "command": "solstice.agent.toggleDesignElevation",
         "title": "Toggle Design Elevation",
         "category": "Solstice",
         "icon": "$(sparkle)"
+      },
+      {
+        "command": "solstice.agent.openTerminal",
+        "title": "Open Agent Terminal",
+        "category": "Solstice",
+        "icon": "$(terminal)"
       }
     ],
     "menus": {
@@ -109,6 +121,16 @@
           "command": "solstice.agent.selectModel",
           "when": "view == solstice.agentPanel",
           "group": "navigation@5"
+        },
+        {
+          "command": "solstice.agent.selectAutonomy",
+          "when": "view == solstice.agentPanel",
+          "group": "navigation@6"
+        },
+        {
+          "command": "solstice.agent.openTerminal",
+          "when": "view == solstice.agentPanel",
+          "group": "navigation@7"
         }
       ]
     },
@@ -162,6 +184,21 @@
           ],
           "default": "on-request",
           "description": "When the agent must ask before running commands."
+        },
+        "solstice.codex.autonomy": {
+          "type": "string",
+          "enum": [
+            "supervised",
+            "auto-edit",
+            "autonomous"
+          ],
+          "enumDescriptions": [
+            "Supervised — ask before every file edit, command, and tool call (safest).",
+            "Auto-edit — apply file edits and reads automatically, but ask before running shell commands and external tools.",
+            "Autonomous — fully trust the agent: approve everything automatically and never interrupt."
+          ],
+          "default": "supervised",
+          "description": "How much the agent can do without asking. Switch live from the agent panel (shield icon) or 'Solstice: Set Agent Autonomy'. 'Autonomous' = the 'I trust the agent, run on its own' mode. Legacy approvalPolicy='never' also forces full autonomy."
         },
         "solstice.codex.sandbox": {
           "type": "string",

@@ -46,6 +46,16 @@ function workspaceCwd() {
 	return f && f[0] ? f[0].uri.fsPath : undefined;
 }
 
+// roots a webview may load files from: bundled media + the workspace + the
+// codex image output dir, so generated images render inline in the agent panel
+function webviewResourceRoots(extensionUri) {
+	const roots = [vscode.Uri.joinPath(extensionUri, "media")];
+	const ws = vscode.workspace.workspaceFolders;
+	if (ws) for (const f of ws) roots.push(f.uri);
+	try { roots.push(vscode.Uri.file(path.join(os.homedir(), ".codex", "generated_images"))); } catch { }
+	return roots;
+}
+
 class AgentController {
 	constructor(context) {
 		this.context = context;
@@ -57,6 +67,7 @@ class AgentController {
 		this.threads = new Map();      // threadId -> {id, preview, status, activeTurnId, plan, diff, updatedAt}
 		this.loaded = new Set();       // threadIds resumed/started in this server process
 		this.pendingApprovals = new Map(); // approvalKey -> resolve(decision)
+		this.terminal = null;          // integrated terminal spawned from the panel
 		this.preview = null;
 		this.previewUrl = "";
 		this.grok = null;
@@ -140,12 +151,89 @@ class AgentController {
 		this.refreshPreview();
 	}
 
+	// resolve an image item's saved location to an absolute path on disk
+	imageAbsPath(item) {
+		const p = item && (item.savedPath || item.path);
+		if (!p) return null;
+		if (path.isAbsolute(p)) return p;
+		const root = workspaceCwd();
+		return root ? path.join(root, p) : p;
+	}
+
+	// attach a webview-loadable URI to an image item so the panel can render it inline
+	withImageUri(item, webview) {
+		const abs = this.imageAbsPath(item);
+		if (!abs || !webview) return item;
+		try { if (!fs.existsSync(abs)) return item; } catch { return item; }
+		return {
+			...item,
+			absPath: abs,
+			webUri: webview.asWebviewUri(vscode.Uri.file(abs)).toString(),
+		};
+	}
+
+	// open a generated image in the center editor (image preview), like PLAN.md
+	openImage(p) {
+		const abs = p && (path.isAbsolute(p) ? p : path.join(workspaceCwd() || "", p));
+		if (!abs) return;
+		try { if (!fs.statSync(abs).isFile()) return; } catch { return; }
+		vscode.commands.executeCommand("vscode.open", vscode.Uri.file(abs), {
+			viewColumn: vscode.ViewColumn.One, preview: true, preserveFocus: true,
+		}).then(undefined, () => { });
+	}
+
+	// spawn (or reveal) an integrated terminal in the workspace root — opens in the
+	// bottom panel by default; the user can drag it anywhere (editor area / sides)
+	openTerminal() {
+		const cwd = workspaceCwd();
+		let term = this.terminal;
+		if (!term || term.exitStatus !== undefined) {
+			term = vscode.window.createTerminal({
+				name: "Solstice", cwd, iconPath: new vscode.ThemeIcon("flame"),
+				location: vscode.TerminalLocation.Panel,
+			});
+			this.terminal = term;
+		}
+		term.show(false);
+		return term;
+	}
+
 	cfg() {
 		return vscode.workspace.getConfiguration("solstice.codex");
 	}
 
+	// Per-window settings (model, autonomy) are stored at Workspace scope when a
+	// folder is open, so each Solstice window can run a different model on its own
+	// project in parallel. With no workspace open we fall back to Global.
+	cfgTarget() {
+		return vscode.workspace.workspaceFolders
+			? vscode.ConfigurationTarget.Workspace
+			: vscode.ConfigurationTarget.Global;
+	}
+
 	claudeAllowed() {
 		return this.cfg().get("allowClaude") === true;
+	}
+
+	autonomyLevel() {
+		// Legacy approvalPolicy="never" means "never prompt" → full autonomy.
+		if (this.cfg().get("approvalPolicy") === "never") return "autonomous";
+		const lvl = this.cfg().get("autonomy") || "supervised";
+		return ["supervised", "auto-edit", "autonomous"].includes(lvl) ? lvl : "supervised";
+	}
+
+	// Decide whether an approval request can be auto-accepted without prompting,
+	// based on the autonomy level and the action category derived from the method.
+	shouldAutoApprove(method, elicitation) {
+		const level = this.autonomyLevel();
+		if (level === "autonomous") return true;
+		if (level === "auto-edit") {
+			// auto-edit trusts file writes/reads; still asks for shell commands and
+			// external/MCP tool calls (the riskier, side-effecting categories).
+			const isEdit = /fileChange/.test(method) || method === "applyPatchApproval";
+			return isEdit && !elicitation;
+		}
+		return false; // supervised: ask for everything
 	}
 
 	providerKey() {
@@ -184,8 +272,9 @@ class AgentController {
 		return k === "gpt-5.5" ? "gpt-5.5" : (GROK_MODELS[k] ? GROK_MODELS[k].label : k);
 	}
 
-	async selectModel() {
-		const cur = this.providerKey();
+	// Single source of truth for the model list — shared by the command-palette
+	// quick-pick and the inline picker rendered at the bottom of the chat panel.
+	modelChoices() {
 		const items = [
 			{ key: "gpt-5.5", label: "GPT-5.5 (Codex)", description: "ChatGPT subscription — full agent: plans, approvals, image gen" },
 			{ key: "grok-build", label: "Grok 4.3 Build", description: "grok CLI — agentic fallback when Codex quota runs out" },
@@ -195,17 +284,56 @@ class AgentController {
 		if (this.claudeAllowed()) {
 			items.splice(1, 0, { key: "claude", label: "Claude Code", description: "claude CLI — opt-in via solstice.codex.allowClaude" });
 		}
-		items.forEach((it, i) => { if (it.key === cur) items[i] = { ...it, label: "$(check) " + it.label }; });
+		return items;
+	}
+
+	async selectModel() {
+		const cur = this.providerKey();
+		const items = this.modelChoices().map((it) => (it.key === cur ? { ...it, label: "$(check) " + it.label } : it));
 		const pick = await vscode.window.showQuickPick(items, { placeHolder: "Solstice agent model" });
 		if (!pick) return;
-		await this.cfg().update("provider", pick.key, vscode.ConfigurationTarget.Global);
+		await this.cfg().update("provider", pick.key, this.cfgTarget());
 		this.applyProviderToWebviews();
+	}
+
+	// Inline picker (bottom of chat panel) → set the model directly, no quick-pick.
+	async setModel(key) {
+		if (!key || !this.modelChoices().some((it) => it.key === key)) return;
+		await this.cfg().update("provider", key, this.cfgTarget());
+		this.applyProviderToWebviews();
+	}
+
+	async selectAutonomy() {
+		const cur = this.autonomyLevel();
+		const items = [
+			{ key: "supervised", label: "Supervised", description: "Ask before every edit, command, and tool call" },
+			{ key: "auto-edit", label: "Auto-edit", description: "Apply edits automatically — ask before shell commands & tools" },
+			{ key: "autonomous", label: "Autonomous", description: "I trust the agent — approve everything, never interrupt" },
+		];
+		items.forEach((it, i) => { if (it.key === cur) items[i] = { ...it, label: "$(check) " + it.label }; });
+		const pick = await vscode.window.showQuickPick(items, { placeHolder: "Solstice agent autonomy" });
+		if (!pick) return;
+		// Clear the legacy "never" escape hatch so the autonomy setting is authoritative.
+		if (this.cfg().get("approvalPolicy") === "never" && pick.key !== "autonomous") {
+			await this.cfg().update("approvalPolicy", "on-request", this.cfgTarget());
+		}
+		await this.cfg().update("autonomy", pick.key, this.cfgTarget());
+		this.applyAutonomyToWebviews();
+	}
+
+	applyAutonomyToWebviews() {
+		const msg = { type: "autonomy", level: this.autonomyLevel() };
+		this.post(msg);
+		this.postManager(msg);
 	}
 
 	applyProviderToWebviews() {
 		const mt = { type: "thread", model: this.providerLabel() };
 		this.post(mt);
 		this.postManager(mt);
+		const models = { type: "models", list: this.modelChoices(), current: this.providerKey() };
+		this.post(models);
+		this.postManager(models);
 		if (this.providerKey() !== "gpt-5.5") {
 			const auth = { type: "auth", authMethod: this.providerKey() === "claude" ? "claude-cli" : "grok-cli" };
 			this.post(auth);
@@ -227,7 +355,7 @@ class AgentController {
 		).then(async (pick) => {
 			const key = pick === "Claude Code" ? "claude" : pick === "Grok 4.3 Build" ? "grok-build" : pick === "Composer 2.5 Fast" ? "composer-2.5" : null;
 			if (!key) return;
-			await this.cfg().update("provider", key, vscode.ConfigurationTarget.Global);
+			await this.cfg().update("provider", key, this.cfgTarget());
 			this.applyProviderToWebviews();
 		});
 	}
@@ -471,15 +599,21 @@ class AgentController {
 		if (method === "item/completed" && params.item && params.item.type === "fileChange") {
 			this.onFilesChanged(params.item);
 		}
+		const isImageItem = method === "item/completed" && params.item &&
+			(params.item.type === "imageGeneration" || params.item.type === "imageView") &&
+			params.item.status !== "failed";
+		if (isImageItem) this.openImage(this.imageAbsPath(params.item));
 		if (method === "error" && params && params.error &&
 			/usage limit|rate limit/i.test(params.error.message || "") && this.providerKey() === "gpt-5.5") {
 			this.suggestFallback();
 		}
 		if (SIDEBAR_FORWARDED.has(method) && (!tid || tid === this.threadId)) {
-			this.post({ type: "notification", method, params });
+			const p = isImageItem ? { ...params, item: this.withImageUri(params.item, this.webview) } : params;
+			this.post({ type: "notification", method, params: p });
 		}
 		if (MANAGER_FORWARDED.has(method)) {
-			this.postManager({ type: "notification", method, params });
+			const p = isImageItem ? { ...params, item: this.withImageUri(params.item, this.manager) } : params;
+			this.postManager({ type: "notification", method, params: p });
 		}
 	}
 
@@ -499,9 +633,10 @@ class AgentController {
 		const toResult = (decision) => elicitation
 			? { action: decision === "decline" ? "decline" : "accept" }
 			: { decision: map[decision] || map.decline };
-		// approvalPolicy "never" = user opted out of prompts, but codex still asks
-		// for MCP tool calls — honor the policy by auto-accepting
-		if (this.cfg().get("approvalPolicy") === "never") {
+		// Autonomy gate: depending on the selected autonomy level (and the legacy
+		// approvalPolicy "never" escape hatch) some action categories are
+		// auto-approved without interrupting the user.
+		if (this.shouldAutoApprove(method, elicitation)) {
 			return Promise.resolve(toResult("accept"));
 		}
 		return new Promise((resolve) => {
@@ -826,19 +961,27 @@ class AgentViewProvider {
 		this.controller.webview = view.webview;
 		view.webview.options = {
 			enableScripts: true,
-			localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "media")],
+			localResourceRoots: webviewResourceRoots(this.extensionUri),
 		};
 		view.webview.html = mediaHtml(view.webview, this.extensionUri, "panel.js", "panel.css");
 		view.webview.onDidReceiveMessage(async (msg) => {
 			try {
 				switch (msg.type) {
-					case "ready": await this.controller.refreshAccount(); break;
+					case "ready":
+						await this.controller.refreshAccount();
+						this.controller.applyAutonomyToWebviews();
+						this.controller.applyProviderToWebviews();
+						break;
 					case "send": await this.controller.send(msg.text); break;
 					case "login": await this.controller.login(); break;
 					case "approval": this.controller.resolveApproval(msg.key, msg.decision); break;
 					case "interrupt": await this.controller.interrupt(); break;
 					case "newThread": this.controller.newThread(); break;
 					case "showDiff": await this.controller.showDiff(); break;
+					case "selectModel": await this.controller.selectModel(); break;
+					case "setModel": await this.controller.setModel(msg.key); break;
+					case "selectAutonomy": await this.controller.selectAutonomy(); break;
+					case "openImage": this.controller.openImage(msg.path); break;
 				}
 			} catch (e) {
 				this.controller.post({ type: "fatal", message: String(e && e.message || e) });
@@ -864,7 +1007,7 @@ function openManager(controller, extensionUri) {
 		{
 			enableScripts: true,
 			retainContextWhenHidden: true,
-			localResourceRoots: [vscode.Uri.joinPath(extensionUri, "media")],
+			localResourceRoots: webviewResourceRoots(extensionUri),
 		}
 	);
 	controller.manager = managerPanel.webview;
@@ -890,6 +1033,8 @@ function openManager(controller, extensionUri) {
 				case "openDiff": await controller.showDiff(msg.threadId); break;
 				case "openPreview": await controller.openPreview(""); break;
 				case "archiveThread": await controller.archiveThread(msg.threadId); break;
+				case "setModel": await controller.setModel(msg.key); break;
+				case "selectModel": await controller.selectModel(); break;
 				case "login": await controller.login(); break;
 			}
 		} catch (e) {
@@ -916,7 +1061,9 @@ function activate(context) {
 		vscode.commands.registerCommand("solstice.agent.openManager", () => openManager(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.openPreview", (url) => controller.openPreview(typeof url === "string" ? url : "")),
 		vscode.commands.registerCommand("solstice.agent.selectModel", () => controller.selectModel()),
-		vscode.commands.registerCommand("solstice.agent.toggleDesignElevation", () => controller.toggleDesignElevation())
+		vscode.commands.registerCommand("solstice.agent.selectAutonomy", () => controller.selectAutonomy()),
+		vscode.commands.registerCommand("solstice.agent.toggleDesignElevation", () => controller.toggleDesignElevation()),
+		vscode.commands.registerCommand("solstice.agent.openTerminal", () => controller.openTerminal())
 	);
 	// live research dashboard: render DECONSTRUCT.md / RESEARCH.md as the agent writes it
 	// (no brace glob — filter by basename; grok writes from outside the editor)

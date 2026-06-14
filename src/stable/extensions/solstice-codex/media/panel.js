@@ -6,19 +6,22 @@
 	let authMethod;            // undefined = unknown, null = signed out, string = signed in
 	let busy = false;
 	let model = "";
+	const AUTONOMY_LABELS = { supervised: "Supervised", "auto-edit": "Auto-edit", autonomous: "Autonomous" };
 	const items = new Map();   // itemId -> { el, type, text }
 
 	// ---------- skeleton ----------
 	app.innerHTML = `
 		<div id="header">
-			<div id="status"><span id="dot" class="dot"></span><span id="model"></span></div>
+			<div id="status"><span id="dot" class="dot"></span></div>
 			<div id="quota" title=""></div>
 		</div>
 		<div id="messages"></div>
 		<div id="composer">
 			<textarea id="input" rows="3" placeholder="Describe a task for the agent…"></textarea>
 			<div id="composerBar">
-				<span id="hint">Enter to send · Shift+Enter for newline</span>
+				<button id="modelBtn" class="pickBtn" title="Select agent model">⌬ <span id="model">—</span> <span class="caret">▾</span></button>
+				<button id="autonomyBtn" class="pickBtn" title="Set agent autonomy">🛡 <span id="autonomy">Supervised</span> <span class="caret">▾</span></button>
+				<span id="hint">Enter to send</span>
 				<button id="stopBtn" class="btn danger hidden">Stop</button>
 				<button id="sendBtn" class="btn primary">Send</button>
 			</div>
@@ -39,15 +42,60 @@
 	const stopBtn = document.getElementById("stopBtn");
 	const dotEl = document.getElementById("dot");
 	const modelEl = document.getElementById("model");
+	const modelBtn = document.getElementById("modelBtn");
+	const autonomyEl = document.getElementById("autonomy");
+	const autonomyBtn = document.getElementById("autonomyBtn");
 	const quotaEl = document.getElementById("quota");
 	const overlayEl = document.getElementById("loginOverlay");
 	const loginNoteEl = document.getElementById("loginNote");
+
+	// ---------- inline model picker (opens upward from the composer) ----------
+	let modelChoices = [];
+	let currentModelKey = "";
+	const modelMenuEl = el("div", "pickMenu hidden");
+	modelMenuEl.id = "modelMenu";
+	document.getElementById("composer").appendChild(modelMenuEl);
+
+	function renderModelMenu() {
+		modelMenuEl.innerHTML = "";
+		for (const c of modelChoices) {
+			const row = el("div", "pickItem" + (c.key === currentModelKey ? " active" : ""));
+			row.appendChild(el("span", "pickCheck", c.key === currentModelKey ? "✓" : ""));
+			const txt = el("div", "pickText");
+			txt.appendChild(el("div", "pickLabel", c.label));
+			if (c.description) txt.appendChild(el("div", "pickDesc", c.description));
+			row.appendChild(txt);
+			row.addEventListener("click", (e) => {
+				e.stopPropagation();
+				closeModelMenu();
+				if (c.key !== currentModelKey) vscode.postMessage({ type: "setModel", key: c.key });
+			});
+			modelMenuEl.appendChild(row);
+		}
+	}
+	function openModelMenu() {
+		if (!modelChoices.length) { vscode.postMessage({ type: "selectModel" }); return; }
+		renderModelMenu();
+		modelMenuEl.classList.remove("hidden");
+		modelBtn.classList.add("open");
+	}
+	function closeModelMenu() {
+		modelMenuEl.classList.add("hidden");
+		modelBtn.classList.remove("open");
+	}
+	function toggleModelMenu() {
+		if (modelMenuEl.classList.contains("hidden")) openModelMenu(); else closeModelMenu();
+	}
+	document.addEventListener("click", () => closeModelMenu());
+	document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModelMenu(); });
 
 	document.getElementById("loginBtn").addEventListener("click", () => {
 		loginNoteEl.textContent = "Complete the sign-in in your browser…";
 		vscode.postMessage({ type: "login" });
 	});
 	sendBtn.addEventListener("click", send);
+	modelBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleModelMenu(); });
+	autonomyBtn.addEventListener("click", () => vscode.postMessage({ type: "selectAutonomy" }));
 	stopBtn.addEventListener("click", () => vscode.postMessage({ type: "interrupt" }));
 	inputEl.addEventListener("keydown", (e) => {
 		if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
@@ -281,6 +329,26 @@
 		entry.argEl.textContent = head.arg || "";
 	}
 
+	// render a generated/viewed image inline under its tool card; clicking it asks
+	// the extension to open the file in the center editor (mirrors PLAN.md behaviour)
+	function addInlineImage(entry, item) {
+		const src = item.webUri;
+		if (!src || entry.imgDone) return;
+		entry.imgDone = true;
+		const fig = el("div", "tcImg");
+		const img = document.createElement("img");
+		img.src = src;
+		img.alt = item.revisedPrompt || "generated image";
+		img.loading = "lazy";
+		img.addEventListener("click", () => vscode.postMessage({
+			type: "openImage", path: item.absPath || item.savedPath || item.path,
+		}));
+		fig.appendChild(img);
+		entry.root.appendChild(fig);
+		entry.root.classList.add("hasImg");
+		scroll();
+	}
+
 	function setRes(entry, text, live) {
 		entry.resTxtEl.textContent = text || "";
 		entry.resEl.classList.toggle("hidden", !text);
@@ -370,7 +438,7 @@
 		} else if (item.type === "reasoning") {
 			const d = el("details", "reasoning");
 			d.open = true;
-			d.appendChild(el("summary", "", "✳ Thinking…"));
+			d.appendChild(el("summary", "", "✻ Thinking…"));
 			const body = el("div", "reasonText", "");
 			d.appendChild(body);
 			messagesEl.appendChild(d);
@@ -529,7 +597,7 @@
 			entry.root.classList.add("done");
 			entry.root.open = false;
 			const secs = entry.t0 ? Math.max(1, Math.round((Date.now() - entry.t0) / 1000)) : 0;
-			entry.root.querySelector("summary").textContent = secs ? `✳ Thought for ${secs}s` : "✳ Thought";
+			entry.root.querySelector("summary").textContent = secs ? `✻ Thought for ${secs}s` : "✻ Thought";
 			if (!entry.text) entry.root.classList.add("hidden");
 		}
 		if (item.type === "commandExecution") {
@@ -592,8 +660,13 @@
 			const ok = item.status !== "failed";
 			setHead(entry, toolHead(item));
 			finishToolCard(entry, item, ok, ok ? (item.savedPath ? relPath(item.savedPath) : "") : "generation failed");
+			if (ok) addInlineImage(entry, item);
 		}
-		if (item.type === "imageView" || item.type === "enteredReviewMode" ||
+		if (item.type === "imageView") {
+			finishToolCard(entry, item, true, "");
+			addInlineImage(entry, item);
+		}
+		if (item.type === "enteredReviewMode" ||
 			item.type === "exitedReviewMode" || item.type === "contextCompaction") {
 			finishToolCard(entry, item, true, "");
 		}
@@ -669,7 +742,16 @@
 				break;
 			case "thread":
 				model = msg.model || "";
-				modelEl.textContent = model;
+				modelEl.textContent = model || "—";
+				break;
+			case "models":
+				modelChoices = Array.isArray(msg.list) ? msg.list : [];
+				currentModelKey = msg.current || "";
+				if (!modelMenuEl.classList.contains("hidden")) renderModelMenu();
+				break;
+			case "autonomy":
+				autonomyEl.textContent = AUTONOMY_LABELS[msg.level] || "Supervised";
+				autonomyBtn.classList.toggle("trusted", msg.level === "autonomous");
 				break;
 			case "reset":
 				messagesEl.innerHTML = "";
