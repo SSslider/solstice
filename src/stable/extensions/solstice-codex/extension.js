@@ -75,6 +75,7 @@ class AgentController {
 		this.grokWatcher = null;
 		this.grokChanged = null;
 		this.fallbackPrompted = false;
+		this.steerQueue = [];          // grok/claude: mid-turn messages queued as next-priority follow-up
 		this.output = vscode.window.createOutputChannel("Solstice Agent");
 	}
 
@@ -83,7 +84,9 @@ class AgentController {
 		if (!url) {
 			const root = workspaceCwd();
 			if (!root) { vscode.window.showWarningMessage("Open a folder to preview."); return; }
-			if (!this.preview) this.preview = new PreviewServer(root);
+			if (!this.preview) this.preview = new PreviewServer(root, {
+				onSelect: (pick) => this.post({ type: "elementSelected", pick }),
+			});
 			const port = await this.preview.ensure();
 			let rel = "index.html";
 			if (!fs.existsSync(path.join(root, rel))) {
@@ -587,6 +590,7 @@ class AgentController {
 			th.activeTurnId = null;
 			th.status = "idle";
 			this.pushThreads();
+			if (tid === this.threadId) this.drainSteerQueue();
 		} else if (method === "turn/diff/updated" && tid) {
 			const th = this.upsertThread({ id: tid });
 			th.diff = params.diff || "";
@@ -786,6 +790,22 @@ class AgentController {
 	}
 
 	async steer(threadId, text) {
+		const provider = this.providerKey();
+		// grok / claude run as spawned CLIs with no native mid-turn injection.
+		// While they're busy, queue the steer and drain it into a follow-up turn
+		// the moment the current turn completes (re-prioritised next).
+		if (provider !== "gpt-5.5") {
+			const prov = provider === "claude" ? this.claude : this.grok;
+			if (prov && prov.busy) {
+				this.steerQueue.push(text);
+				this.post({ type: "steerQueued", count: this.steerQueue.length });
+				return;
+			}
+			// not actually busy — treat as a normal message
+			await this.send(text);
+			return;
+		}
+		// codex: inject straight into the running turn
 		const client = await this.ensureClient();
 		const th = this.threads.get(threadId);
 		if (!th || !th.activeTurnId) {
@@ -798,6 +818,16 @@ class AgentController {
 			expectedTurnId: th.activeTurnId,
 			input: [{ type: "text", text, text_elements: [] }],
 		});
+	}
+
+	// grok/claude: after a turn finishes, fold any queued steers into one
+	// follow-up turn so the agent picks them up as the next priority.
+	drainSteerQueue() {
+		if (!this.steerQueue.length) return;
+		const text = this.steerQueue.join("\n\n");
+		this.steerQueue = [];
+		this.post({ type: "steerQueued", count: 0 });
+		this.send(text).catch((e) => this.output.append(`\n[steer drain] ${e && e.message || e}\n`));
 	}
 
 	async interrupt(threadId) {
@@ -1129,6 +1159,7 @@ class AgentViewProvider {
 						this.controller.applyProviderToWebviews();
 						break;
 					case "send": await this.controller.send(msg.text); break;
+						case "steer": await this.controller.steer(this.controller.threadId, msg.text); break;
 					case "login": await this.controller.login(); break;
 					case "approval": this.controller.resolveApproval(msg.key, msg.decision); break;
 					case "interrupt": await this.controller.interrupt(); break;

@@ -56,6 +56,58 @@
 	const overlayEl = document.getElementById("loginOverlay");
 	const loginNoteEl = document.getElementById("loginNote");
 
+	// ---------- visual selection (click-to-edit from the preview) ----------
+	let pendingPick = null;
+	const composerEl = document.getElementById("composer");
+	const steerBar = el("div", "steerBar hidden");
+	const pickBar = el("div", "pickBar hidden");
+	composerEl.insertBefore(steerBar, inputEl);
+	composerEl.insertBefore(pickBar, inputEl);
+
+	function pickLabel(p) {
+		return (p.tag || "element") + (p.id ? "#" + p.id : "") +
+			(p.classes ? " ." + String(p.classes).split(" ")[0] : "");
+	}
+	function pickPrefix(p) {
+		let attrs = "<" + (p.tag || "");
+		if (p.id) attrs += ' id="' + p.id + '"';
+		if (p.classes) attrs += ' class="' + p.classes + '"';
+		attrs += ">";
+		let s = "[Selected element in the live preview: " + attrs;
+		if (p.pathDesc) s += " inside " + p.pathDesc;
+		if (p.src) s += ', src="' + p.src + '"';
+		if (p.text) s += ', text: "' + p.text + '"';
+		return s + "] — apply the change below to THIS element only.";
+	}
+	function showPick(p) {
+		pendingPick = p;
+		pickBar.innerHTML = "";
+		pickBar.appendChild(el("span", "pickIcon", "🎯"));
+		pickBar.appendChild(el("span", "pickTxt", pickLabel(p)));
+		const x = el("button", "pickX", "✕");
+		x.addEventListener("click", clearPick);
+		pickBar.appendChild(x);
+		pickBar.classList.remove("hidden");
+		inputEl.placeholder = "Tell the agent what to change about this element…";
+		inputEl.focus();
+	}
+	function clearPick() {
+		pendingPick = null;
+		pickBar.classList.add("hidden");
+		pickBar.innerHTML = "";
+		updatePlaceholder();
+	}
+	function renderSteerQueued(count) {
+		if (!count) { steerBar.classList.add("hidden"); steerBar.textContent = ""; return; }
+		steerBar.textContent = "↪ " + count + " steering message" + (count > 1 ? "s" : "") +
+			" queued — applies right after the current step";
+		steerBar.classList.remove("hidden");
+	}
+	function updatePlaceholder() {
+		if (pendingPick) return;
+		inputEl.placeholder = busy ? "Steer the agent — redirect or add a task…" : "Describe a task for the agent…";
+	}
+
 	// ---------- inline model picker (opens upward from the composer) ----------
 	let modelChoices = [];
 	let currentModelKey = "";
@@ -109,12 +161,20 @@
 	});
 
 	function send() {
-		const text = inputEl.value.trim();
-		if (!text || busy) return;
+		const shown = inputEl.value.trim();
+		if (!shown) return;
+		const steering = busy;            // a turn is already running → steer it
+		const pick = pendingPick;
+		const text = pick ? pickPrefix(pick) + "\n" + shown : shown;
 		inputEl.value = "";
-		addUserMessage(text);
-		setBusy(true);
-		vscode.postMessage({ type: "send", text });
+		addUserMessage(shown, { steer: steering, pick });
+		clearPick();
+		if (steering) {
+			vscode.postMessage({ type: "steer", text });
+		} else {
+			setBusy(true);
+			vscode.postMessage({ type: "send", text });
+		}
 	}
 
 	const SPIN_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -134,8 +194,10 @@
 	function setBusy(b) {
 		busy = b;
 		dotEl.className = "dot " + (b ? "busy" : "idle");
-		sendBtn.disabled = b;
+		sendBtn.disabled = false;        // stays usable while busy so the user can steer
+		sendBtn.textContent = b ? "Steer" : "Send";
 		stopBtn.classList.toggle("hidden", !b);
+		updatePlaceholder();
 		if (b && !busyEl) {
 			actionCount = 0;
 			explicitActivity = null;
@@ -202,9 +264,14 @@
 		return e;
 	}
 
-	function addUserMessage(text) {
+	function addUserMessage(text, opts) {
+		opts = opts || {};
 		const m = el("div", "msg user");
-		m.appendChild(el("div", "bubble", text));
+		if (opts.pick) m.appendChild(el("div", "pickChip", "🎯 " + pickLabel(opts.pick)));
+		const bubble = el("div", "bubble" + (opts.steer ? " steerMsg" : ""));
+		if (opts.steer) bubble.appendChild(el("span", "steerTag", "↪ "));
+		bubble.appendChild(document.createTextNode(text));
+		m.appendChild(bubble);
 		messagesEl.appendChild(m);
 		scroll();
 	}
@@ -779,6 +846,12 @@
 			case "injectPrompt":
 				inputEl.value = msg.text;
 				send();
+				break;
+			case "elementSelected":
+				showPick(msg.pick);
+				break;
+			case "steerQueued":
+				renderSteerQueued(msg.count);
 				break;
 			case "notification":
 				handleNotification(msg.method, msg.params);
