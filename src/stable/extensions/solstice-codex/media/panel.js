@@ -29,6 +29,7 @@
 				<button id="autonomyBtn" class="pickBtn" title="Set agent autonomy">🛡 <span id="autonomy">Supervised</span> <span class="caret">▾</span></button>
 				<span id="hint">Enter to send</span>
 				<button id="stopBtn" class="btn danger hidden">Stop</button>
+				<button id="micBtn" class="btn mic" title="Record a voice message (Groq Whisper)" aria-label="Record voice">🎤</button>
 				<button id="sendBtn" class="btn primary">Send</button>
 			</div>
 		</div>
@@ -156,6 +157,61 @@
 	modelBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleModelMenu(); });
 	autonomyBtn.addEventListener("click", () => vscode.postMessage({ type: "selectAutonomy" }));
 	stopBtn.addEventListener("click", () => vscode.postMessage({ type: "interrupt" }));
+
+	// ---------- voice dictation (mic → Groq Whisper) ----------
+	const micBtn = document.getElementById("micBtn");
+	let mediaRecorder = null, audioChunks = [], micStream = null, recording = false;
+	function resetMic() {
+		micBtn.classList.remove("recording", "transcribing");
+		micBtn.disabled = false;
+		micBtn.textContent = "🎤";
+		micBtn.title = "Record a voice message (Groq Whisper)";
+	}
+	function bytesToBase64(bytes) {
+		let bin = ""; const chunk = 0x8000;
+		for (let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+		return btoa(bin);
+	}
+	async function startRecording() {
+		if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { sysLine("Microphone not available in this view.", "error"); return; }
+		try { micStream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+		catch (e) { sysLine("Microphone blocked — " + ((e && e.message) || e), "error"); return; }
+		audioChunks = [];
+		const mime = (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) ? "audio/webm;codecs=opus"
+			: (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported("audio/ogg;codecs=opus")) ? "audio/ogg;codecs=opus" : "";
+		try { mediaRecorder = mime ? new MediaRecorder(micStream, { mimeType: mime }) : new MediaRecorder(micStream); }
+		catch (e) { sysLine("Recorder unavailable — " + ((e && e.message) || e), "error"); stopTracks(); return; }
+		mediaRecorder.addEventListener("dataavailable", (e) => { if (e.data && e.data.size) audioChunks.push(e.data); });
+		mediaRecorder.addEventListener("stop", onRecordingStop);
+		mediaRecorder.start();
+		recording = true;
+		micBtn.classList.add("recording");
+		micBtn.textContent = "⏺";
+		micBtn.title = "Stop & transcribe";
+	}
+	function stopTracks() { if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; } }
+	function stopRecording() {
+		recording = false;
+		micBtn.classList.remove("recording");
+		if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+	}
+	async function onRecordingStop() {
+		const type = (mediaRecorder && mediaRecorder.mimeType) || "audio/webm";
+		stopTracks();
+		const blob = new Blob(audioChunks, { type });
+		audioChunks = [];
+		if (!blob.size) { resetMic(); return; }
+		micBtn.classList.add("transcribing");
+		micBtn.disabled = true;
+		micBtn.textContent = "⋯";
+		micBtn.title = "Transcribing…";
+		const buf = await blob.arrayBuffer();
+		vscode.postMessage({ type: "transcribe", audio: bytesToBase64(new Uint8Array(buf)), mime: blob.type });
+	}
+	micBtn.addEventListener("click", () => {
+		if (micBtn.disabled) return;
+		if (recording) stopRecording(); else startRecording();
+	});
 	inputEl.addEventListener("keydown", (e) => {
 		if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 	});
@@ -855,6 +911,19 @@
 				break;
 			case "notification":
 				handleNotification(msg.method, msg.params);
+				break;
+			case "transcribed": {
+				resetMic();
+				const t = String(msg.text || "").trim();
+				if (!t) { sysLine("No speech detected.", "error"); break; }
+				inputEl.value = inputEl.value ? (inputEl.value.replace(/\s*$/, "") + " " + t) : t;
+				inputEl.focus();
+				try { inputEl.dispatchEvent(new Event("input")); } catch (e) {}
+				break;
+			}
+			case "transcribeError":
+				resetMic();
+				sysLine("Transcription failed — " + (msg.message || "unknown error"), "error");
 				break;
 		}
 	});

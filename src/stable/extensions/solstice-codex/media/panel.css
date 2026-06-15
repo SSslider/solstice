@@ -287,6 +287,10 @@ details.reasoning.done summary { opacity: 0.5; }
 .btn.danger { background: rgba(248,81,73,0.18); color: #f85149; border-color: rgba(248,81,73,0.4); }
 .btn:disabled { opacity: 0.45; cursor: default; filter: none; }
 .btn.big { padding: 9px 24px; font-size: 13px; }
+.btn.mic { padding: 5px 10px; font-size: 14px; line-height: 1; background: var(--sol-surface-2); }
+.btn.mic.recording { background: rgba(248,81,73,0.18); color: #f85149; border-color: rgba(248,81,73,0.5); animation: micPulse 1.1s ease-in-out infinite; }
+.btn.mic.transcribing { color: var(--sol-accent); border-color: var(--sol-accent); }
+@keyframes micPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(248,81,73,0.45); } 50% { box-shadow: 0 0 0 5px rgba(248,81,73,0); } }
 
 /* ---------- login overlay ---------- */
 #loginOverlay {
