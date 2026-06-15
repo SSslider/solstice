@@ -29,6 +29,19 @@ html, body { margin: 0; height: 100%; background: var(--vscode-editor-background
 .rVer { margin-left: auto; align-self: flex-start; font-size: 10.5px; font-weight: 600; letter-spacing: .2px;
   padding: 2px 8px; border-radius: 999px; background: var(--surface); color: var(--vscode-descriptionForeground);
   border: 1px solid var(--line); white-space: nowrap; cursor: help; }
+.tokMeter { margin: 2px 6px 14px; padding: 9px 11px; border-radius: 11px; background: var(--surface);
+  border: 1px solid var(--line-soft); cursor: help; }
+.tokLab { display: flex; align-items: center; gap: 7px; font-size: 10.5px; font-weight: 600;
+  color: var(--vscode-descriptionForeground); }
+.tokIcon { color: color-mix(in srgb, var(--amber) 90%, #fff); }
+.tokVal { margin-inline-start: auto; font-size: 11.5px; font-weight: 700; color: var(--vscode-foreground); }
+.tokBar { display: flex; height: 6px; margin-top: 8px; border-radius: 999px; overflow: hidden;
+  background: var(--line-soft); }
+.tokSeg--in { background: color-mix(in srgb, var(--amber) 85%, #fff); }
+.tokSeg--out { background: #60a5fa; }
+.tokLeg { display: flex; gap: 12px; margin-top: 6px; font-size: 9.5px; font-weight: 600; }
+.tokLegIn { color: color-mix(in srgb, var(--amber) 90%, #fff); }
+.tokLegOut { color: #60a5fa; }
 .agent {
   position: relative;
   display: flex; gap: 11px; align-items: center; padding: 11px 11px; border-radius: 11px;

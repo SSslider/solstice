@@ -686,6 +686,9 @@ class AgentController {
 			th.plan = params.plan || null;
 			this.writePlanFile(th);
 		}
+		if (method === "usage" && params && params.total) {
+			this.recordTokenUsage(params);
+		}
 		if (method === "item/completed" && params.item && params.item.type === "fileChange") {
 			this.onFilesChanged(params.item);
 		}
@@ -1305,6 +1308,34 @@ class AgentController {
 		this.noteWatch(agentId, state);
 		if (!this.fleetPanel) return;
 		this.fleetPanel.webview.postMessage({ type: "activity", agent: agentId, state, text: String(text || ""), ts: Date.now() });
+	}
+
+	// ---- xAI/Grok token meter ----------------------------------------------
+	// Surfaces session token usage (real if the CLI reports it, else an
+	// estimate) in the status bar + Fleet, so heavy Composer 2.5 builds don't
+	// silently drain the xAI plan.
+	fmtTokens(n) {
+		n = Number(n || 0);
+		if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
+		if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "k";
+		return String(n);
+	}
+	recordTokenUsage(params) {
+		const t = params.total || {};
+		this.tokenTotal = { in: Number(t.in || 0), out: Number(t.out || 0), exact: !!params.exact };
+		const total = this.tokenTotal.in + this.tokenTotal.out;
+		const modelLabel = (params.model && params.model.label) || this.providerLabel();
+		if (!this.tokenStatus) {
+			try { this.tokenStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 999); this.tokenStatus.command = "solstice.agent.openFleet"; } catch { }
+		}
+		if (this.tokenStatus) {
+			this.tokenStatus.text = "$(symbol-numeric) " + this.fmtTokens(total) + " tok";
+			this.tokenStatus.tooltip = `${modelLabel} · session ${params.exact ? "" : "≈"}${this.fmtTokens(total)} tokens (in ${this.fmtTokens(this.tokenTotal.in)} / out ${this.fmtTokens(this.tokenTotal.out)})`;
+			this.tokenStatus.show();
+		}
+		if (this.fleetPanel) {
+			this.fleetPanel.webview.postMessage({ type: "tokens", inT: this.tokenTotal.in, outT: this.tokenTotal.out, exact: !!params.exact, model: modelLabel });
+		}
 	}
 
 	// ---- desktop notifications ---------------------------------------------

@@ -33,6 +33,34 @@
 		exploring: "חוקר…", thinking: "חושב…", planning: "מתכנן…", stuck: "תקוע",
 	};
 	const stuckAgents = new Map(); // agentId -> {state, mins}
+	let tokenMeter = { in: 0, out: 0, total: 0, exact: false, model: "" };
+	function fmtTok(n) {
+		n = Number(n || 0);
+		if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
+		if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "k";
+		return String(n);
+	}
+	function tokenMeterRow() {
+		const row = el("div", "tokMeter");
+		row.title = (tokenMeter.model ? tokenMeter.model + " · " : "") + "session " + (tokenMeter.exact ? "" : "≈")
+			+ fmtTok(tokenMeter.total) + " tokens (in " + fmtTok(tokenMeter.in) + " / out " + fmtTok(tokenMeter.out) + ")";
+		const lab = el("div", "tokLab");
+		lab.appendChild(el("span", "tokIcon", "⊟"));
+		lab.appendChild(el("span", "", "xAI tokens · session"));
+		lab.appendChild(el("span", "tokVal", (tokenMeter.exact ? "" : "≈") + fmtTok(tokenMeter.total)));
+		row.appendChild(lab);
+		const bar = el("div", "tokBar");
+		const inPct = tokenMeter.total ? Math.round((tokenMeter.in / tokenMeter.total) * 100) : 0;
+		const segIn = el("div", "tokSeg tokSeg--in"); segIn.style.width = inPct + "%";
+		const segOut = el("div", "tokSeg tokSeg--out"); segOut.style.width = (100 - inPct) + "%";
+		bar.appendChild(segIn); bar.appendChild(segOut);
+		row.appendChild(bar);
+		const leg = el("div", "tokLeg");
+		leg.appendChild(el("span", "tokLegIn", "in " + fmtTok(tokenMeter.in)));
+		leg.appendChild(el("span", "tokLegOut", "out " + fmtTok(tokenMeter.out)));
+		row.appendChild(leg);
+		return row;
+	}
 	function statusClass(a) {
 		const ls = liveState.get(a.id);
 		if (ls && ls.state) return ls.state;
@@ -62,6 +90,7 @@
 			rh.appendChild(ver);
 		}
 		roster.appendChild(rh);
+		if (tokenMeter.total > 0) roster.appendChild(tokenMeterRow());
 		const list = el("div", "rosterList");
 		for (const a of agents) list.appendChild(agentRow(a));
 		roster.appendChild(list);
@@ -423,6 +452,10 @@
 				break;
 			case "stuckCleared":
 				stuckAgents.delete(msg.agent);
+				shell();
+				break;
+			case "tokens":
+				tokenMeter = { in: Number(msg.inT || 0), out: Number(msg.outT || 0), total: Number(msg.inT || 0) + Number(msg.outT || 0), exact: !!msg.exact, model: String(msg.model || "") };
 				shell();
 				break;
 			case "version":

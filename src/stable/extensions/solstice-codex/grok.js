@@ -123,6 +123,8 @@ class GrokProvider {
 		this.child = null;
 		this.turns = 0;
 		this.seq = 0;
+		this.tokens = { in: 0, out: 0 }; // session-cumulative (real if CLI emits usage, else estimate)
+		this.tokensExact = false;
 	}
 
 	get busy() { return !!this.child; }
@@ -140,6 +142,9 @@ class GrokProvider {
 		if (this.turns > 0) args.push("-c");
 		args.push("-p", prompt);
 		this.turns++;
+		const turnIn = Math.ceil((prompt || "").length / 4);
+		let turnOut = 0; // estimated from streamed deltas unless the CLI reports real usage
+		this.tokens.in += turnIn;
 		const env = { ...process.env };
 		delete env.XAI_API_KEY;    // force grok CLI OAuth, never API-key billing
 		delete env.OPENAI_API_KEY;
@@ -167,7 +172,13 @@ class GrokProvider {
 					this.notify("item/started", { threadId: tid, item: { id: reasoning.id, type: "reasoning" } });
 				}
 				reasoning.text += e.data || "";
+				turnOut += Math.ceil((e.data || "").length / 4);
 				this.notify("item/reasoning/textDelta", { threadId: tid, itemId: reasoning.id, delta: e.data || "" });
+			} else if (e.type === "usage" && e.data && typeof e.data === "object") {
+				// real token usage if the grok CLI ever reports it — overrides the estimate
+				const inT = Number(e.data.input_tokens || e.data.prompt_tokens || 0);
+				const outT = Number(e.data.output_tokens || e.data.completion_tokens || 0);
+				if (inT || outT) { this.tokens.in += inT - turnIn; this.tokens.out += outT; turnOut = -1; this.tokensExact = true; }
 			} else if (e.type === "text") {
 				closeReasoning();
 				if (!message) {
@@ -175,6 +186,7 @@ class GrokProvider {
 					this.notify("item/started", { threadId: tid, item: { id: message.id, type: "agentMessage" } });
 				}
 				message.text += e.data || "";
+				turnOut += Math.ceil((e.data || "").length / 4);
 				this.notify("item/agentMessage/delta", { threadId: tid, itemId: message.id, delta: e.data || "" });
 			} else if (e.type === "error") {
 				this.notify("error", { threadId: tid, error: { message: e.message || "grok error" } });
@@ -317,6 +329,8 @@ class GrokProvider {
 				if (code !== 0 && code !== null) {
 					this.notify("error", { threadId: tid, error: { message: `grok exited with code ${code} — check the Solstice Agent output log.` } });
 				}
+				if (turnOut >= 0) this.tokens.out += turnOut; // estimate path (real usage already applied)
+				this.notify("usage", { threadId: tid, model, exact: this.tokensExact, turn: { in: turnIn, out: turnOut < 0 ? null : turnOut }, total: { in: this.tokens.in, out: this.tokens.out } });
 				this.notify("turn/completed", { threadId: tid, turn: { id: turnId } });
 				resolve();
 			});
