@@ -54,3 +54,18 @@ A single verification pass that checks colors is NOT verification. Run this loop
    `codex exec --skip-git-repo-check -i sidebyside.png "Left = reference design, right = rebuild. Score the rebuild 0-10 on each axis: composition pattern fidelity, typographic scale & hierarchy, color/grade, imagery subject & framing, spacing/density. For every axis below 8, give the exact CSS/markup change needed."`
 3. Record the scores as a table in DECONSTRUCT.md (the dashboard shows it live), apply the fixes, re-screenshot.
 4. Repeat until every axis ≥ 8/10, or 3 full rounds — whichever comes first. Report the final scorecard. Declaring "done" after one cosmetic check (e.g. background hex matches) is a failure.
+
+## Design-token capture (do this before writing any markup)
+When mirroring a reference, first extract a precise token sheet into DECONSTRUCT.md — the rebuild references these tokens, never eyeballed values:
+- **Color** — pull the ACTUAL values from the rendered site, not a brand-board swatch: use `dom` mode and grep computed CSS, or sample pixels from screenshots. Record every token as hex with its role: `--bg`, `--fg`, `--accent`, gradient stops, dark-section bg, border/hairline colors, overlay scrims (with alpha). Note where each is used.
+- **Typography** — font families WITH their `@font-face`/`<link>` source URLs (so the rebuild loads the same faces, not a lookalike), every weight in use, the display→body size ramp measured in vw/rem, letter-spacing, line-height, and the per-heading reveal animation (word-by-word? letter-by-letter? mask-up?).
+- **Copy** — capture the real text VERBATIM, section by section, page by page. Mirroring means the same words, not paraphrased filler. Put it in a copy table per page.
+- **Spacing & grid** — the spacing scale, max content width, column count, gutter, and breakpoints where layout changes.
+
+## 3D / WebGL deconstruction (when the reference uses 3D)
+Treat 3D as first-class, not decoration. Detect it, classify it, then rebuild it:
+1. **Detect** — look in the `dom` output for `<canvas>`, and in the page's network/script list for three.js / react-three-fiber (`@react-three/fiber`, `drei`), babylon, GSAP, or shader code. Record which library and why you concluded it.
+2. **Classify the scene** — name what the 3D actually is: a hero object that rotates on pointer-move; a scroll-linked camera fly-through; an **explosive / exploded view** (parts separate out as you scroll — common in product/hardware sites); a particle field; a displacement/shader background; an interactive configurator. The rebuild must reproduce the SAME interaction model, not a generic spinning cube.
+3. **Capture the motion** — 3D is defined by how it moves. Sample the scroll/interaction with `videoframes` (or scroll-shots) at several depths and write a motion spec to DECONSTRUCT.md: what triggers each transform (scroll progress %, pointer, autoplay), camera path, which parts move and when, easing feel.
+4. **Assets** — identify model formats (`.glb`/`.gltf`, draco-compressed?), textures, and HDRI/env maps from the network list; note them in the asset list to re-source or rebuild.
+5. **Rebuild with react-three-fiber + drei** by default (scroll-linked: `@react-three/drei` `ScrollControls`/`useScroll`; pointer-parallax: `useFrame` + pointer; exploded view: animate per-part position offsets along scroll progress). Match the reference's lighting/material feel (metalness/roughness, env map) — a flat-lit model reads as a different design. Verify in the fidelity loop with scroll-shots, not a single static frame.
