@@ -1025,11 +1025,31 @@ class AgentController {
 					tags,
 					updatedAt: st.mtimeMs,
 					preview: preview && webview ? webview.asWebviewUri(vscode.Uri.file(preview)).toString() : null,
+					agent: this.projectAgent(dir),
 				});
 			}
 		}
 		out.sort((a, b) => b.updatedAt - a.updatedAt);
 		return out;
+	}
+
+	// ---- project ↔ agent ownership (Batch 3) -------------------------------
+	projectAgentsKey() { return "solstice.fleet.projectAgents"; }
+	loadProjectAgents() {
+		try { return this.context.globalState.get(this.projectAgentsKey()) || {}; } catch { return {}; }
+	}
+	setProjectAgent(dir, agentId) {
+		const d = String(dir || ""); if (!d) return;
+		const all = this.loadProjectAgents();
+		if (agentId) all[d] = String(agentId); else delete all[d];
+		try { this.context.globalState.update(this.projectAgentsKey(), all); } catch { }
+	}
+	// {id,name,glyph} for an assigned agent, or null.
+	projectAgent(dir) {
+		const id = this.loadProjectAgents()[String(dir || "")];
+		if (!id) return null;
+		const a = this.fleetAgents().find((x) => x.id === id);
+		return a ? { id: a.id, name: a.name, glyph: a.glyph } : { id, name: id, glyph: "◆" };
 	}
 
 	openProjectFolder(dir, newWindow) {
@@ -1646,11 +1666,14 @@ function openGallery(controller, extensionUri) {
 		}
 	);
 	controller.galleryPanel = galleryPanel;
+	const roster = () => controller.fleetAgents().map((a) => ({ id: a.id, name: a.name, glyph: a.glyph }));
 	const pushProjects = async () => {
+		galleryPanel.webview.postMessage({ type: "agents", agents: roster() });
 		const serverUrl = (controller.cfg().get("galleryServerUrl") || "").trim();
 		if (serverUrl) {
 			try {
 				const projects = await fetchServerProjects(serverUrl);
+				for (const p of projects) if (p && p.dir) p.agent = controller.projectAgent(p.dir);
 				galleryPanel.webview.postMessage({ type: "projects", projects });
 				return;
 			} catch (e) {
@@ -1671,12 +1694,75 @@ function openGallery(controller, extensionUri) {
 					{ viewColumn: vscode.ViewColumn.Two }).then(undefined, () => vscode.commands.executeCommand("simpleBrowser.show", msg.url));
 				break;
 			case "newProject": vscode.commands.executeCommand("solstice.agentPanel.focus").then(undefined, () => { }); break;
+			case "openConnectors": openConnectors(controller, extensionUri); break;
+			case "assignAgent":
+				controller.setProjectAgent(msg.dir, msg.agent);
+				pushProjects();
+				break;
+			case "openInFleet": {
+				openFleet(controller, extensionUri);
+				if (controller.fleetPanel) {
+					controller.fleetPanel.reveal(vscode.ViewColumn.One);
+					controller.fleetPanel.webview.postMessage({ type: "focusAgent", agent: msg.agent });
+					if (msg.dir) {
+						const name = String(msg.dir).split(/[\\/]/).pop();
+						controller.fleetPanel.webview.postMessage({ type: "reply", agent: msg.agent, kind: "progress", text: "📂 פרויקט פעיל: " + name, ts: Date.now() });
+					}
+				}
+				break;
+			}
 		}
 	});
 	galleryPanel.onDidDispose(() => {
 		if (controller.galleryPanel === galleryPanel) controller.galleryPanel = null;
 		galleryPanel = null;
 	});
+}
+
+let connectorsPanel = null;
+
+// Built-in connector catalog. UI/config only — the actual integration is gated
+// on Thomas providing each provider's secret token (env/setting), so a click
+// just records "requested" until a token lands.
+const CONNECTOR_CATALOG = [
+	{ id: "vercel", name: "Vercel", glyph: "▲", blurb: "פריסת אתרים ואפליקציות בלחיצה", tokenKey: "VERCEL_TOKEN" },
+	{ id: "email", name: "Email (SMTP/Resend)", glyph: "✉", blurb: "שליחת מיילים מפרויקטים", tokenKey: "EMAIL_API_KEY" },
+	{ id: "stripe", name: "Stripe", glyph: "❡", blurb: "תשלומים וצ'קאאוט", tokenKey: "STRIPE_SECRET_KEY" },
+];
+
+function connectorState(controller) {
+	const req = controller.context.globalState.get("solstice.fleet.connectorsRequested") || {};
+	return CONNECTOR_CATALOG.map((c) => {
+		const hasToken = !!String(process.env[c.tokenKey] || controller.cfg().get("connector." + c.id + "Token") || "").trim();
+		return { ...c, status: hasToken ? "connected" : (req[c.id] ? "requested" : "disconnected") };
+	});
+}
+
+function openConnectors(controller, extensionUri) {
+	if (connectorsPanel) { connectorsPanel.reveal(vscode.ViewColumn.One); return; }
+	connectorsPanel = vscode.window.createWebviewPanel(
+		"solstice.connectors",
+		"Connectors",
+		vscode.ViewColumn.One,
+		{ enableScripts: true, retainContextWhenHidden: true, localResourceRoots: webviewResourceRoots(extensionUri) }
+	);
+	connectorsPanel.webview.html = mediaHtml(connectorsPanel.webview, extensionUri, "connectors.js", "connectors.css");
+	const push = () => connectorsPanel.webview.postMessage({ type: "connectors", connectors: connectorState(controller) });
+	connectorsPanel.webview.onDidReceiveMessage((msg) => {
+		switch (msg.type) {
+			case "ready": push(); break;
+			case "connect": {
+				const req = controller.context.globalState.get("solstice.fleet.connectorsRequested") || {};
+				req[msg.id] = Date.now();
+				controller.context.globalState.update("solstice.fleet.connectorsRequested", req);
+				const c = CONNECTOR_CATALOG.find((x) => x.id === msg.id);
+				vscode.window.showInformationMessage(`חיבור ${c ? c.name : msg.id} ממתין ל-${c ? c.tokenKey : "token"} מ-Thomas.`);
+				push();
+				break;
+			}
+		}
+	});
+	connectorsPanel.onDidDispose(() => { connectorsPanel = null; });
 }
 
 let fleetPanel = null;
@@ -1777,6 +1863,7 @@ function activate(context) {
 		vscode.commands.registerCommand("solstice.agent.toggleDesignElevation", () => controller.toggleDesignElevation()),
 		vscode.commands.registerCommand("solstice.agent.openTerminal", () => controller.openTerminal()),
 		vscode.commands.registerCommand("solstice.agent.openGallery", () => openGallery(controller, context.extensionUri)),
+		vscode.commands.registerCommand("solstice.agent.openConnectors", () => openConnectors(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.openFleet", () => openFleet(controller, context.extensionUri))
 	);
 	// live research dashboard: render DECONSTRUCT.md / RESEARCH.md as the agent writes it

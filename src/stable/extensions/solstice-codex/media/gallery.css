@@ -117,6 +117,19 @@ html, body {
 }
 .ptime { margin-left: auto; font-size: 11px; color: var(--vscode-descriptionForeground, #9d9d9d); }
 
+/* ---------- project ↔ agent owner row ---------- */
+.owner { display: flex; align-items: center; gap: 8px; margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--line-soft); flex-wrap: wrap; }
+.ownerBadge { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-family: inherit;
+  font-size: 11px; font-weight: 580; padding: 3px 10px; border-radius: 999px;
+  background: var(--amber-soft); color: color-mix(in srgb, var(--amber) 92%, #fff);
+  border: 1px solid color-mix(in srgb, var(--amber) 32%, transparent); }
+.ownerBadge:hover { background: color-mix(in srgb, var(--amber) 24%, transparent); }
+.ownerGlyph { font-size: 11px; opacity: .9; }
+.ownerNone { font-size: 11px; color: var(--vscode-descriptionForeground); }
+.ownerSel { margin-left: auto; appearance: none; cursor: pointer; font-family: inherit; font-size: 11px;
+  padding: 3px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface-2); color: var(--vscode-foreground); }
+.ownerSel:hover { border-color: color-mix(in srgb, var(--amber) 40%, var(--line)); }
+
 /* ---------- empty ---------- */
 .empty { text-align: center; padding: 90px 24px; color: var(--vscode-descriptionForeground); }
 .empty .big { font-size: 40px; margin-bottom: 10px; opacity: .55; }

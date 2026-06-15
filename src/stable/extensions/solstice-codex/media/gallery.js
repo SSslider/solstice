@@ -3,6 +3,7 @@
 	const vscode = acquireVsCodeApi();
 	const app = document.getElementById("app");
 	let projects = [];
+	let fleetAgents = [];
 
 	function el(tag, cls, text) {
 		const e = document.createElement(tag);
@@ -40,10 +41,13 @@
 		const refresh = el("button", "gBtn", "");
 		refresh.innerHTML = "↻ Refresh";
 		refresh.addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
+		const conn = el("button", "gBtn", "");
+		conn.innerHTML = "🔌 Connectors";
+		conn.addEventListener("click", () => vscode.postMessage({ type: "openConnectors" }));
 		const nb = el("button", "gBtn primary", "");
 		nb.innerHTML = "✦ New build";
 		nb.addEventListener("click", () => vscode.postMessage({ type: "newProject" }));
-		actions.append(refresh, nb);
+		actions.append(refresh, conn, nb);
 		head.appendChild(actions);
 		app.appendChild(head);
 
@@ -86,6 +90,7 @@
 		for (const t of (p.tags || []).slice(0, 3)) meta.appendChild(el("span", "chip", t));
 		meta.appendChild(el("span", "ptime", relTime(p.updatedAt)));
 		body.appendChild(meta);
+		body.appendChild(ownerRow(p));
 		c.appendChild(body);
 
 		c.addEventListener("click", (e) => {
@@ -95,9 +100,40 @@
 		return c;
 	}
 
+	// Project ↔ agent ownership row: who owns it + assign + open-in-Fleet.
+	function ownerRow(p) {
+		const row = el("div", "owner");
+		const stop = (e) => e.stopPropagation();
+		if (p.agent) {
+			const badge = el("button", "ownerBadge", "");
+			badge.append(el("span", "ownerGlyph", p.agent.glyph || "◆"), document.createTextNode(p.agent.name));
+			badge.title = "פתח את " + p.agent.name + " ב-Fleet";
+			badge.addEventListener("click", (e) => { stop(e); vscode.postMessage({ type: "openInFleet", agent: p.agent.id, dir: p.dir }); });
+			row.appendChild(badge);
+		} else {
+			row.appendChild(el("span", "ownerNone", "ללא סוכן"));
+		}
+		const sel = document.createElement("select");
+		sel.className = "ownerSel";
+		const none = document.createElement("option");
+		none.value = ""; none.textContent = p.agent ? "שנה סוכן…" : "שייך לסוכן…";
+		sel.appendChild(none);
+		for (const a of fleetAgents) {
+			const o = document.createElement("option");
+			o.value = a.id; o.textContent = a.glyph + " " + a.name;
+			if (p.agent && p.agent.id === a.id) o.selected = true;
+			sel.appendChild(o);
+		}
+		sel.addEventListener("click", stop);
+		sel.addEventListener("change", (e) => { stop(e); vscode.postMessage({ type: "assignAgent", dir: p.dir, agent: sel.value }); });
+		row.appendChild(sel);
+		return row;
+	}
+
 	window.addEventListener("message", (event) => {
 		const msg = event.data;
-		if (msg.type === "projects") { projects = Array.isArray(msg.projects) ? msg.projects : []; render(); }
+		if (msg.type === "agents") { fleetAgents = Array.isArray(msg.agents) ? msg.agents : []; }
+		else if (msg.type === "projects") { projects = Array.isArray(msg.projects) ? msg.projects : []; render(); }
 		else if (msg.type === "serverError") {
 			const note = el("div", "galErr", "Gallery server unreachable (" + (msg.message || "error") + ") — showing local projects.");
 			app.prepend(note);
