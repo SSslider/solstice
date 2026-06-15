@@ -97,9 +97,33 @@ html, body { margin: 0; height: 100%; background: var(--vscode-editor-background
 .chatHead .aGlyph { width: 38px; height: 38px; font-size: 18px; }
 .chatHeadName { font-size: 15.5px; font-weight: 650; }
 .chatHeadRole { font-size: 11.5px; color: var(--vscode-descriptionForeground); }
-.chatClear { margin-left: auto; border: 1px solid var(--line); background: transparent; color: var(--vscode-descriptionForeground);
+.chatClear { border: 1px solid var(--line); background: transparent; color: var(--vscode-descriptionForeground);
   cursor: pointer; font-size: 11px; padding: 6px 12px; border-radius: 8px; font-family: inherit; transition: background .12s, color .12s; }
 .chatClear:hover { background: var(--surface); color: var(--vscode-foreground); }
+.chatCtx { margin-left: auto; border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--line)); background: transparent;
+  color: color-mix(in srgb, var(--amber) 90%, #fff); cursor: pointer; font-size: 11px; padding: 6px 12px; border-radius: 8px;
+  font-family: inherit; transition: background .12s; }
+.chatCtx:hover { background: color-mix(in srgb, var(--amber) 14%, transparent); }
+
+/* inline approval gate */
+.apprWrap { display: flex; flex-direction: column; gap: 8px; padding: 0 22px; }
+.apprWrap:not(:empty) { margin-top: 14px; }
+.apprCard { border: 1px solid color-mix(in srgb, var(--amber) 42%, transparent); border-radius: 12px; padding: 12px 14px;
+  background: linear-gradient(120deg, color-mix(in srgb, var(--amber) 14%, transparent), color-mix(in srgb, var(--amber) 5%, transparent));
+  animation: pop .2s ease; }
+.apprCard--run { border-color: color-mix(in srgb, #f87171 46%, transparent);
+  background: linear-gradient(120deg, color-mix(in srgb, #f87171 13%, transparent), color-mix(in srgb, #f87171 4%, transparent)); }
+.apprTop { display: flex; align-items: center; gap: 9px; margin-bottom: 6px; }
+.apprKind { font-size: 11.5px; font-weight: 650; color: var(--vscode-foreground); }
+.apprName { font-size: 11px; color: var(--vscode-descriptionForeground); }
+.apprLabel { font-size: 12.5px; line-height: 1.5; color: var(--vscode-foreground); word-break: break-word;
+  font-family: var(--vscode-editor-font-family, monospace); }
+.apprActs { display: flex; gap: 8px; margin-top: 11px; }
+.apprYes, .apprNo { cursor: pointer; font-size: 12px; font-weight: 600; padding: 6px 18px; border-radius: 8px; font-family: inherit; border: 1px solid transparent; }
+.apprYes { background: var(--amber); color: #1a1205; }
+.apprYes:hover { filter: brightness(1.08); }
+.apprNo { background: transparent; border-color: var(--line); color: var(--vscode-descriptionForeground); }
+.apprNo:hover { background: var(--surface); color: var(--vscode-foreground); }
 
 .liveBanner {
   display: none; align-items: center; gap: 10px; margin: 14px 22px 0; padding: 11px 15px; border-radius: 11px;
@@ -164,6 +188,7 @@ html, body { margin: 0; height: 100%; background: var(--vscode-editor-background
 .actItem--working .actGlyph, .actItem--connecting .actGlyph { color: var(--amber); }
 .actItem--error .actGlyph { color: #f87171; }
 .actItem--local .actGlyph { color: #60a5fa; }
+.actItem--dispatch .actGlyph { color: #c084fc; }
 .actBody { min-width: 0; flex: 1; }
 .actTop { display: flex; align-items: baseline; gap: 8px; }
 .actName { font-size: 12px; font-weight: 600; }

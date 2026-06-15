@@ -1224,12 +1224,140 @@ class AgentController {
 
 	// ---- agent-driven IDE actions (Batch 2) --------------------------------
 	// An agent brain can push {type:"action", action, ...} frames to actually
-	// drive the editor: open/edit files, run a terminal command, etc. Fully
-	// wired in runFleetAction; batch-1 ships the receiver + activity echo.
+	// drive the editor: open/edit files, run a terminal command, dispatch a
+	// sub-task to a peer agent, etc. Mutating actions pass through an inline
+	// approval gate rendered in the Fleet webview before they run.
 	async runFleetAction(agentId, f) {
-		const action = String(f && f.action || "").trim();
+		const action = String(f && f.action || "").trim().toLowerCase();
 		if (!action) return;
-		this.postFleetActivity(agentId, "working", "פעולה ב-IDE: " + action);
+		const name = (() => { const a = this.fleetAgents().find((x) => x.id === agentId); return a ? a.name : agentId; })();
+		try {
+			if (action === "open") {
+				const uri = this.resolveWorkspacePath(f.path);
+				if (!uri) return this.postFleetActivity(agentId, "error", "נתיב לא חוקי");
+				this.postFleetActivity(agentId, "working", "פותח " + this.relPath(uri));
+				const doc = await vscode.workspace.openTextDocument(uri);
+				await vscode.window.showTextDocument(doc, { preview: true, viewColumn: vscode.ViewColumn.Beside });
+				return;
+			}
+			if (action === "write" || action === "edit") {
+				const uri = this.resolveWorkspacePath(f.path);
+				if (!uri) return this.postFleetActivity(agentId, "error", "נתיב לא חוקי");
+				const rel = this.relPath(uri);
+				const ok = await this.requestFleetApproval(agentId, name, "edit", rel, "כתיבה לקובץ " + rel);
+				if (!ok) return this.postFleetActivity(agentId, "idle", "נדחתה כתיבה ל-" + rel);
+				this.postFleetActivity(agentId, "working", "כותב " + rel);
+				await this.writeWorkspaceFile(uri, String(f.content || ""));
+				const doc = await vscode.workspace.openTextDocument(uri);
+				await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+				this.postFleetActivity(agentId, "replied", "עודכן " + rel);
+				return;
+			}
+			if (action === "run" || action === "terminal") {
+				const cmd = String(f.command || "").trim();
+				if (!cmd) return;
+				const ok = await this.requestFleetApproval(agentId, name, "run", cmd, "הרצת פקודה: " + cmd);
+				if (!ok) return this.postFleetActivity(agentId, "idle", "נדחתה פקודה");
+				this.postFleetActivity(agentId, "working", "מריץ: " + cmd.slice(0, 60));
+				this.runFleetTerminal(name, cmd, f.cwd);
+				return;
+			}
+			if (action === "dispatch") {
+				const to = String(f.to || "").trim();
+				const text = String(f.text || "").trim();
+				if (!to || !text) return;
+				const toName = (() => { const a = this.fleetAgents().find((x) => x.id === to); return a ? a.name : to; })();
+				const ok = await this.requestFleetApproval(agentId, name, "dispatch", to, name + " → " + toName + ": " + text.slice(0, 80));
+				if (!ok) return this.postFleetActivity(agentId, "idle", "נדחה שיגור ל-" + toName);
+				this.postFleetActivity(agentId, "working", "משגר ל-" + toName + ": " + text.slice(0, 50));
+				const res = this.sendToFleet(to, text);
+				this.appendFleetThread(to, { who: "me", text: "[מ-" + name + "] " + text, ts: Date.now() });
+				if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "reply", agent: to, text: "↳ משימה מ-" + name + ": " + text, ts: Date.now(), kind: "dispatch" });
+				if (res.live) this.postFleetActivity(to, "working", "קיבל משימה מ-" + name);
+				return;
+			}
+			// unknown action — just echo it
+			this.postFleetActivity(agentId, "working", "פעולה ב-IDE: " + action);
+		} catch (e) {
+			this.postFleetActivity(agentId, "error", String(e && e.message || e).slice(0, 80));
+		}
+	}
+
+	// Resolve an agent-supplied path to a Uri inside the workspace; reject escapes.
+	resolveWorkspacePath(p) {
+		const raw = String(p || "").trim();
+		if (!raw) return null;
+		const roots = vscode.workspace.workspaceFolders || [];
+		if (!roots.length) return null;
+		const root = roots[0].uri.fsPath;
+		const abs = path.isAbsolute(raw) ? raw : path.join(root, raw);
+		const norm = path.normalize(abs);
+		if (norm !== root && !norm.startsWith(root + path.sep)) return null;
+		return vscode.Uri.file(norm);
+	}
+	relPath(uri) {
+		try { return vscode.workspace.asRelativePath(uri, false); } catch { return uri.fsPath; }
+	}
+	async writeWorkspaceFile(uri, content) {
+		const dir = vscode.Uri.file(path.dirname(uri.fsPath));
+		try { await vscode.workspace.fs.createDirectory(dir); } catch { }
+		await vscode.workspace.fs.writeFile(uri, Buffer.from(content, "utf8"));
+	}
+	runFleetTerminal(name, cmd, cwd) {
+		const key = "Fleet · " + name;
+		let term = (vscode.window.terminals || []).find((t) => t.name === key);
+		if (!term) {
+			const opts = { name: key };
+			const roots = vscode.workspace.workspaceFolders || [];
+			if (cwd) opts.cwd = cwd; else if (roots.length) opts.cwd = roots[0].uri.fsPath;
+			term = vscode.window.createTerminal(opts);
+		}
+		term.show(true);
+		term.sendText(cmd, true);
+	}
+
+	// ---- inline approval gate ----------------------------------------------
+	// Posts an approval card to the Fleet webview and resolves when the user
+	// clicks אשר/דחה. Falls back to auto-approve only if no panel is open.
+	requestFleetApproval(agentId, name, kind, detail, label) {
+		if (!this.fleetApprovals) this.fleetApprovals = new Map();
+		if (!this.fleetPanel) return Promise.resolve(true);
+		const key = "a" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+		return new Promise((resolve) => {
+			let done = false;
+			const finish = (v) => { if (done) return; done = true; this.fleetApprovals.delete(key); resolve(v); };
+			this.fleetApprovals.set(key, finish);
+			this.fleetPanel.webview.postMessage({ type: "approval", key, agent: agentId, name, kind, detail: String(detail || ""), label: String(label || ""), ts: Date.now() });
+			// safety timeout: auto-deny after 2 min so an agent never hangs forever
+			setTimeout(() => finish(false), 120000);
+		});
+	}
+	resolveFleetApproval(key, decision) {
+		if (!this.fleetApprovals) return;
+		const fn = this.fleetApprovals.get(String(key || ""));
+		if (fn) fn(decision === "approve" || decision === true);
+	}
+
+	// ---- editor context → agent --------------------------------------------
+	// Grab the active editor's file + selection and feed it to an agent as a
+	// context-tagged message, so the agent "sees" what the user is looking at.
+	sendEditorContext(agentId) {
+		const ed = vscode.window.activeTextEditor;
+		if (!ed) return { ok: false, error: "אין עורך פעיל" };
+		const rel = this.relPath(ed.document.uri);
+		const sel = ed.selection;
+		const hasSel = sel && !sel.isEmpty;
+		const body = hasSel ? ed.document.getText(sel) : ed.document.getText();
+		const range = hasSel ? ` (שורות ${sel.start.line + 1}-${sel.end.line + 1})` : "";
+		const lang = ed.document.languageId || "";
+		const clipped = body.length > 6000 ? body.slice(0, 6000) + "\n… (קוצר)" : body;
+		const text = `קונטקסט מהעורך — ${rel}${range}:\n\`\`\`${lang}\n${clipped}\n\`\`\``;
+		const res = this.sendToFleet(agentId, text);
+		if (res.ok) {
+			this.appendFleetThread(agentId, { who: "me", text: "📎 " + rel + range, ts: Date.now() });
+			this.postFleetActivity(agentId, "working", "קיבל קונטקסט: " + rel);
+		}
+		return { ok: res.ok, error: res.error, rel, range };
 	}
 
 	// Manually add an agent to the Fleet roster. A wsUrl makes it a live bridge
@@ -1601,6 +1729,14 @@ function openFleet(controller, extensionUri) {
 			case "clearThread":
 				controller.clearFleetThread(msg.agent);
 				break;
+			case "approval":
+				controller.resolveFleetApproval(msg.key, msg.decision);
+				break;
+			case "sendContext": {
+				const res = controller.sendEditorContext(msg.agent);
+				fleetPanel.webview.postMessage({ type: "contextSent", agent: msg.agent, ok: res.ok, error: res.error, rel: res.rel, range: res.range });
+				break;
+			}
 			case "addAgent":
 				controller.addFleetAgent(msg.agent || {}).then((res) => {
 					fleetPanel.webview.postMessage({ type: "rosterUpdate", agents: controller.fleetAgents(), select: res.ok ? res.id : null, error: res.error });

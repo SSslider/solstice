@@ -8,6 +8,7 @@
 	const working = new Set(); // agentIds awaiting a live brain reply
 	const activity = [];       // [{agent, state, text, ts}] newest last, capped
 	const liveState = new Map(); // agentId -> {state, text, ts} latest per agent
+	let pendingApprovals = []; // [{key, agent, name, kind, detail, label, ts}] inline gates
 
 	function el(tag, cls, text) {
 		const e = document.createElement(tag);
@@ -140,7 +141,7 @@
 	// ---- activity rail ------------------------------------------------------
 	const ACT_GLYPH = {
 		online: "●", connecting: "◐", working: "◆", replied: "✓",
-		offline: "○", error: "⚠", idle: "·", local: "◇",
+		offline: "○", error: "⚠", idle: "·", local: "◇", dispatch: "➦",
 	};
 	function activityPane() {
 		const pane = el("div", "activity");
@@ -219,6 +220,36 @@
 		}
 	}
 
+	// ---- inline approval gate ----------------------------------------------
+	const APPR_KIND = { edit: "✎ כתיבת קובץ", run: "⌘ הרצת פקודה", dispatch: "➦ שיגור לסוכן", open: "▣ פתיחת קובץ" };
+	function approvalCard(ap) {
+		const card = el("div", "apprCard apprCard--" + ap.kind);
+		const top = el("div", "apprTop");
+		top.appendChild(el("span", "apprKind", APPR_KIND[ap.kind] || ap.kind));
+		top.appendChild(el("span", "apprName", ap.name || ap.agent));
+		card.appendChild(top);
+		card.appendChild(el("div", "apprLabel", ap.label || ap.detail || ""));
+		const acts = el("div", "apprActs");
+		const yes = el("button", "apprYes", "אשר");
+		yes.addEventListener("click", () => decideApproval(ap.key, "approve"));
+		const no = el("button", "apprNo", "דחה");
+		no.addEventListener("click", () => decideApproval(ap.key, "deny"));
+		acts.append(yes, no);
+		card.appendChild(acts);
+		return card;
+	}
+	function decideApproval(key, decision) {
+		vscode.postMessage({ type: "approval", key, decision });
+		pendingApprovals = pendingApprovals.filter((a) => a.key !== key);
+		renderApprovals();
+	}
+	function renderApprovals() {
+		const wrap = document.getElementById("apprWrap");
+		if (!wrap) return;
+		wrap.innerHTML = "";
+		for (const ap of pendingApprovals) if (ap.agent === activeId) wrap.appendChild(approvalCard(ap));
+	}
+
 	function chatPane() {
 		const chat = el("div", "chat");
 		const a = agentById(activeId);
@@ -236,6 +267,10 @@
 		ht.appendChild(el("div", "chatHeadName", a.name));
 		ht.appendChild(el("div", "chatHeadRole", a.role + " · " + a.model));
 		head.appendChild(ht);
+		const ctx = el("button", "chatCtx", "📎 קונטקסט");
+		ctx.title = "שלח לסוכן את הקובץ/הקטע הפעיל בעורך";
+		ctx.addEventListener("click", () => vscode.postMessage({ type: "sendContext", agent: a.id }));
+		head.appendChild(ctx);
 		const clear = el("button", "chatClear", "נקה");
 		clear.title = "נקה היסטוריה";
 		clear.addEventListener("click", () => {
@@ -245,6 +280,11 @@
 		});
 		head.appendChild(clear);
 		chat.appendChild(head);
+
+		const appr = el("div", "apprWrap");
+		appr.id = "apprWrap";
+		for (const ap of pendingApprovals) if (ap.agent === a.id) appr.appendChild(approvalCard(ap));
+		chat.appendChild(appr);
 
 		const banner = el("div", "liveBanner");
 		banner.id = "liveBanner";
@@ -382,6 +422,15 @@
 				break;
 			case "liveTask":
 				showLive(msg.from, msg.task);
+				break;
+			case "approval":
+				pendingApprovals.push({ key: msg.key, agent: msg.agent, name: msg.name, kind: msg.kind, detail: msg.detail, label: msg.label, ts: msg.ts });
+				if (msg.agent === activeId) renderApprovals();
+				else { activeId = msg.agent; shell(); }
+				break;
+			case "contextSent":
+				if (msg.ok) appendMsg(msg.agent, { who: "sys", text: "📎 נשלח קונטקסט: " + (msg.rel || "") + (msg.range || ""), ts: Date.now() });
+				else appendMsg(msg.agent, { who: "sys", text: "⚠ " + (msg.error || "לא ניתן לשלוח קונטקסט"), ts: Date.now() });
 				break;
 		}
 	});
