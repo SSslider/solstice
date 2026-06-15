@@ -8,6 +8,7 @@ const { CodexClient, resolveCodexBinary } = require("./codexClient");
 const { PreviewServer } = require("./preview");
 const { GrokProvider, GROK_MODELS } = require("./grok");
 const { ClaudeProvider, CLAUDE_LABEL } = require("./claude");
+const { FleetBridge } = require("./fleetBridge");
 
 const SIDEBAR_FORWARDED = new Set([
 	"thread/started",
@@ -76,6 +77,7 @@ class AgentController {
 		this.grokChanged = null;
 		this.fallbackPrompted = false;
 		this.steerQueue = [];          // grok/claude: mid-turn messages queued as next-priority follow-up
+		this.fleetBridges = new Map(); // agentId -> { ws:FleetBridge, status:"connecting"|"online"|"offline" }
 		this.output = vscode.window.createOutputChannel("Solstice Agent");
 	}
 
@@ -1038,9 +1040,33 @@ class AgentController {
 	}
 
 	// ---- Fleet (talk to Orion/Jasper/Asher from inside Solstice) ----
-	// Messages are dropped into each agent's real inbox (agents/<name>/inbox);
-	// replies come back via ~/.solstice/fleet-replies/<agent>/*.json, which the
-	// fleet's outbound relay writes. The panel polls that dir and renders them.
+	// Primary transport is a live WebSocket straight to the agent's brain
+	// (SolsticeBridgeChannel on the server, reached over Tailscale). Bridges are
+	// declared in the `solstice.fleet.bridges` setting; the shared token comes
+	// from `solstice.fleet.token` or ~/.solstice/fleet-token. Agents with no
+	// bridge fall back to the legacy file-drop inbox (only works when the IDE and
+	// the fleet share a filesystem).
+	fleetCfg() {
+		return vscode.workspace.getConfiguration("solstice.fleet");
+	}
+
+	fleetToken() {
+		const fromCfg = String(this.fleetCfg().get("token") || "").trim();
+		if (fromCfg) return fromCfg;
+		try { return fs.readFileSync(path.join(os.homedir(), ".solstice", "fleet-token"), "utf8").trim(); } catch { return ""; }
+	}
+
+	// Declared WebSocket bridges, keyed by agent id.
+	fleetBridgeConfigs() {
+		const raw = this.fleetCfg().get("bridges");
+		const list = Array.isArray(raw) ? raw : [];
+		const map = new Map();
+		for (const b of list) {
+			if (b && b.id && b.wsUrl) map.set(String(b.id), b);
+		}
+		return map;
+	}
+
 	fleetDir() {
 		const cfg = (this.cfg().get("fleetDir") || "").trim();
 		if (cfg) return cfg;
@@ -1059,17 +1085,97 @@ class AgentController {
 			{ id: "jasper", name: "Jasper", role: "Web production · sites & landing pages", glyph: "❖", model: "GPT-5.5" },
 			{ id: "asher", name: "Asher", role: "Systems · CRMs, software, bigger builds", glyph: "▲", model: "Composer 2.5" },
 		];
+		const bridges = this.fleetBridgeConfigs();
 		const base = this.fleetDir();
+		// surface any bridge-only agents not already in the static roster
+		for (const [id, b] of bridges) {
+			if (!roster.some((a) => a.id === id)) {
+				roster.push({ id, name: b.name || id, role: b.role || "Fleet agent", glyph: b.glyph || "◆", model: b.model || "" });
+			}
+		}
 		for (const a of roster) {
-			a.present = (() => { try { return fs.statSync(path.join(base, a.id)).isDirectory(); } catch { return false; } })();
+			const b = bridges.get(a.id);
+			if (b) {
+				a.bridge = true;
+				if (b.name) a.name = b.name;
+				if (b.role) a.role = b.role;
+				if (b.glyph) a.glyph = b.glyph;
+				if (b.model) a.model = b.model;
+				const st = this.fleetBridges.get(a.id);
+				// a declared bridge is reachable; reflect live socket state once known
+				a.present = st ? st.status === "online" : true;
+			} else {
+				a.present = (() => { try { return fs.statSync(path.join(base, a.id)).isDirectory(); } catch { return false; } })();
+			}
 		}
 		return roster;
+	}
+
+	// Lazily open (and cache) the WebSocket to one agent's brain. Frames are
+	// forwarded to the Fleet webview so the chat renders live.
+	ensureFleetBridge(agentId) {
+		const id = String(agentId || "");
+		const existing = this.fleetBridges.get(id);
+		if (existing && existing.ws && existing.ws.connected) return existing.ws;
+		if (existing && existing.ws && !existing.ws.connected && existing.status === "connecting") return existing.ws;
+		const cfg = this.fleetBridgeConfigs().get(id);
+		if (!cfg) return null;
+		const token = cfg.token || this.fleetToken();
+		const ws = new FleetBridge(cfg.wsUrl, { token, log: (s) => this.output.append("[fleet:" + id + "] " + s) });
+		const rec = { ws, status: "connecting" };
+		this.fleetBridges.set(id, rec);
+		const post = (m) => { if (this.fleetPanel) this.fleetPanel.webview.postMessage(m); };
+		ws.on("open", () => { /* wait for hello before flipping online */ });
+		ws.on("frame", (f) => {
+			if (f.type === "hello") {
+				rec.status = "online";
+				post({ type: "roster", agents: this.fleetAgents() });
+			} else if (f.type === "push") {
+				post({ type: "reply", agent: id, text: String(f.text || ""), ts: Date.now(), kind: "progress" });
+			} else if (f.type === "reply") {
+				post({ type: "reply", agent: id, text: String(f.text || ""), ts: Date.now() });
+			} else if (f.type === "error") {
+				post({ type: "fleetError", agent: id, error: String(f.error || "agent error") });
+			}
+		});
+		ws.on("error", (e) => {
+			rec.status = "offline";
+			post({ type: "fleetError", agent: id, error: e.message });
+			post({ type: "roster", agents: this.fleetAgents() });
+		});
+		ws.on("close", () => {
+			rec.status = "offline";
+			this.fleetBridges.delete(id);
+			post({ type: "roster", agents: this.fleetAgents() });
+		});
+		ws.connect();
+		return ws;
+	}
+
+	closeFleetBridges() {
+		for (const rec of this.fleetBridges.values()) { try { rec.ws.close(); } catch { } }
+		this.fleetBridges.clear();
 	}
 
 	sendToFleet(agentId, text) {
 		const id = String(agentId || "").trim();
 		const body = String(text || "").trim();
 		if (!id || !body) return { ok: false, error: "empty" };
+
+		// Preferred path: live WebSocket to the agent's brain.
+		if (this.fleetBridgeConfigs().has(id)) {
+			const ws = this.ensureFleetBridge(id);
+			if (!ws) return { ok: false, error: "bridge not configured" };
+			const reqId = "s" + Date.now().toString(36);
+			const sendNow = () => ws.send({ type: "message", id: reqId, text: body });
+			try {
+				if (ws.connected) sendNow();
+				else ws.once("frame", (f) => { if (f.type === "hello") { try { sendNow(); } catch { } } });
+			} catch (e) { return { ok: false, error: e.message }; }
+			return { ok: true, ts: Date.now(), live: true };
+		}
+
+		// Fallback: legacy file-drop inbox (same-filesystem only).
 		const inbox = path.join(this.fleetDir(), id, "inbox");
 		try { fs.mkdirSync(inbox, { recursive: true }); } catch (e) { return { ok: false, error: e.message }; }
 		const now = new Date();
@@ -1087,7 +1193,7 @@ class AgentController {
 		return { ok: true, ts: now.getTime() };
 	}
 
-	// drain new reply files for an agent; each is {agent, text, ts}
+	// drain new reply files for an agent (file-drop fallback only); each is {agent, text, ts}
 	scanFleetReplies(agentId) {
 		const dir = path.join(this.fleetRepliesDir(), agentId);
 		const done = path.join(dir, "seen");
@@ -1116,6 +1222,7 @@ class AgentController {
 		if (this.grok) this.grok.interrupt();
 		if (this.claude) this.claude.interrupt();
 		if (this.client) this.client.stop();
+		this.closeFleetBridges();
 	}
 }
 
@@ -1345,7 +1452,9 @@ function openFleet(controller, extensionUri) {
 	fleetPanel.webview.html = mediaHtml(fleetPanel.webview, extensionUri, "fleet.js", "fleet.css");
 	let pollTimer = null;
 	const poll = () => {
+		// WS bridges push replies live; only file-drop agents need polling.
 		for (const a of controller.fleetAgents()) {
+			if (a.bridge) continue;
 			const replies = controller.scanFleetReplies(a.id);
 			for (const r of replies) fleetPanel.webview.postMessage({ type: "reply", agent: a.id, text: r.text, ts: r.ts });
 		}
@@ -1356,9 +1465,13 @@ function openFleet(controller, extensionUri) {
 				fleetPanel.webview.postMessage({ type: "roster", agents: controller.fleetAgents() });
 				if (!pollTimer) pollTimer = setInterval(poll, 2000);
 				break;
+			case "select":
+				// warm the socket as soon as the user opens an agent's thread
+				if (controller.fleetBridgeConfigs().has(msg.agent)) controller.ensureFleetBridge(msg.agent);
+				break;
 			case "send": {
 				const res = controller.sendToFleet(msg.agent, msg.text);
-				fleetPanel.webview.postMessage({ type: "sent", agent: msg.agent, ok: res.ok, ts: res.ts, error: res.error });
+				fleetPanel.webview.postMessage({ type: "sent", agent: msg.agent, ok: res.ok, ts: res.ts, error: res.error, live: res.live });
 				break;
 			}
 			case "openAgentPanel":

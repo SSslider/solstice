@@ -267,6 +267,38 @@
           "type": "string",
           "default": "",
           "description": "Root of the fleet agent workspaces, used by the in-IDE Fleet panel to talk to Orion/Jasper/Asher. Empty = auto-detect (~/Julius-cc-x/agents). Messages are dropped into each agent's inbox; the agent's reply channel is mirrored back into the panel."
+        },
+        "solstice.fleet.token": {
+          "type": "string",
+          "default": "",
+          "description": "Shared bearer token for the live WebSocket bridge to fleet agents. Empty = read from ~/.solstice/fleet-token. Required for any agent listed in solstice.fleet.bridges."
+        },
+        "solstice.fleet.bridges": {
+          "type": "array",
+          "default": [
+            {
+              "id": "orion",
+              "name": "Orion",
+              "role": "CTO · architecture & planning",
+              "glyph": "◆",
+              "model": "Opus",
+              "wsUrl": "ws://100.88.154.26:8782/solstice/ws"
+            }
+          ],
+          "description": "Fleet agents reachable over a live WebSocket straight to their brain (SolsticeBridgeChannel on the server, over Tailscale). Each entry: {id, name, role, glyph, model, wsUrl, token?}. Agents listed here use the live socket; others fall back to the file-drop inbox.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "role": { "type": "string" },
+              "glyph": { "type": "string" },
+              "model": { "type": "string" },
+              "wsUrl": { "type": "string", "description": "ws:// or wss:// URL of the agent's bridge" },
+              "token": { "type": "string", "description": "Per-agent token override; falls back to solstice.fleet.token" }
+            },
+            "required": ["id", "wsUrl"]
+          }
         }
       }
     }

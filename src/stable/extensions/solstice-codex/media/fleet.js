@@ -5,6 +5,7 @@
 	let agents = [];
 	let activeId = null;
 	const threads = new Map(); // agentId -> [{who:'me'|'them'|'sys', text, ts}]
+	const working = new Set(); // agentIds awaiting a live brain reply
 
 	function el(tag, cls, text) {
 		const e = document.createElement(tag);
@@ -48,8 +49,27 @@
 		meta.appendChild(el("div", "aRole", a.role));
 		meta.appendChild(el("div", "aModel", a.model));
 		row.appendChild(meta);
-		row.addEventListener("click", () => { activeId = a.id; shell(); });
+		row.addEventListener("click", () => { activeId = a.id; vscode.postMessage({ type: "select", agent: a.id }); shell(); });
 		return row;
+	}
+
+	function renderWorking() {
+		const msgs = document.getElementById("msgs");
+		if (!msgs) return;
+		let w = document.getElementById("working");
+		if (working.has(activeId)) {
+			if (!w) {
+				w = el("div", "row them");
+				w.id = "working";
+				const b = el("div", "bubble workingDots");
+				b.append(el("span", "dot"), el("span", "dot"), el("span", "dot"));
+				w.appendChild(b);
+				msgs.appendChild(w);
+			}
+			msgs.scrollTop = msgs.scrollHeight;
+		} else if (w) {
+			w.remove();
+		}
 	}
 
 	function chatPane() {
@@ -110,7 +130,7 @@
 		btn.addEventListener("click", doSend);
 		composer.append(ta, btn);
 		chat.appendChild(composer);
-		setTimeout(() => { msgs.scrollTop = msgs.scrollHeight; ta.focus(); }, 0);
+		setTimeout(() => { renderWorking(); msgs.scrollTop = msgs.scrollHeight; ta.focus(); }, 0);
 		return chat;
 	}
 
@@ -130,7 +150,10 @@
 		if (!msgs) return;
 		const empty = msgs.querySelector(".emptyChat");
 		if (empty) empty.remove();
+		const w = document.getElementById("working");
+		if (w) w.remove();              // keep the typing indicator below the newest bubble
 		msgs.appendChild(bubble(m));
+		renderWorking();
 		msgs.scrollTop = msgs.scrollHeight;
 	}
 
@@ -161,12 +184,25 @@
 				shell();
 				break;
 			case "sent":
-				appendMsg(msg.agent, msg.ok
-					? { who: "sys", text: "✓ Delivered to " + (agentById(msg.agent) || {}).name + "'s inbox", ts: msg.ts }
-					: { who: "sys", text: "⚠ Could not deliver: " + (msg.error || "unknown"), ts: Date.now() });
+				if (!msg.ok) {
+					working.delete(msg.agent);
+					appendMsg(msg.agent, { who: "sys", text: "⚠ Could not reach " + ((agentById(msg.agent) || {}).name || msg.agent) + ": " + (msg.error || "unknown"), ts: Date.now() });
+				} else if (msg.live) {
+					working.add(msg.agent);          // live brain is now thinking
+					if (msg.agent === activeId) renderWorking();
+				} else {
+					appendMsg(msg.agent, { who: "sys", text: "✓ Delivered to " + (agentById(msg.agent) || {}).name + "'s inbox", ts: msg.ts });
+				}
 				break;
 			case "reply":
-				appendMsg(msg.agent, { who: "them", text: msg.text, ts: msg.ts });
+				working.delete(msg.agent);
+				appendMsg(msg.agent, msg.kind === "progress"
+					? { who: "sys", text: msg.text, ts: msg.ts }
+					: { who: "them", text: msg.text, ts: msg.ts });
+				break;
+			case "fleetError":
+				working.delete(msg.agent);
+				appendMsg(msg.agent, { who: "sys", text: "⚠ " + (msg.error || "agent error"), ts: Date.now() });
 				break;
 			case "liveTask":
 				showLive(msg.from, msg.task);
