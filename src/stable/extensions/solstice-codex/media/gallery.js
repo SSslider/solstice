@@ -127,6 +127,18 @@
 		sel.addEventListener("click", stop);
 		sel.addEventListener("change", (e) => { stop(e); vscode.postMessage({ type: "assignAgent", dir: p.dir, agent: sel.value }); });
 		row.appendChild(sel);
+
+		const handoff = el("button", "ownerHandoff", "");
+		handoff.innerHTML = "↗ מסור ללקוח";
+		handoff.title = "מסור את הבילד לתיקיית לקוח ב-Atrium";
+		handoff.addEventListener("click", (e) => {
+			stop(e);
+			vscode.postMessage({
+				type: "handoffClient",
+				project: { name: p.name, dir: p.dir, remote: !!p.remote, openUrl: p.openUrl, tags: p.tags, agent: p.agent },
+			});
+		});
+		row.appendChild(handoff);
 		return row;
 	}
 

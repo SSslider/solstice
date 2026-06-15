@@ -321,6 +321,11 @@
             "required": ["id", "wsUrl"]
           }
         },
+        "solstice.atrium.clientsDir": {
+          "type": "string",
+          "default": "",
+          "description": "Root of the Atrium client folders that finished Solstice builds are handed off into (one subfolder per client, e.g. kobi/tali/moshiko). Empty = auto-detect ~/Julius-cc-x/agents/atrium/output. Handoff writes <clientsDir>/<client>/solstice/<project>/handoff.json plus a copy of the build when source and clients dir share a filesystem."
+        },
         "solstice.fleet.hidden": {
           "type": "array",
           "default": [],

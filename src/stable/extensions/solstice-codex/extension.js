@@ -1146,6 +1146,71 @@ class AgentController {
 			.then(undefined, () => { });
 	}
 
+	// ---- Solstice → Atrium client handoff ----------------------------------
+	// Hand a finished Solstice build to a client's Atrium folder, where the rest
+	// of that client's deliverables live. Writes a handoff.json manifest always
+	// (the durable record) and copies the build when the source is on the same
+	// filesystem as the clients dir (IDE + fleet share the disk).
+	atriumClientsDir() {
+		const cfg = (this.cfg().get("atrium.clientsDir") || "").trim();
+		if (cfg) return cfg;
+		const guess = path.join(os.homedir(), "Julius-cc-x", "agents", "atrium", "output");
+		try { if (fs.statSync(guess).isDirectory()) return guess; } catch { }
+		return guess;
+	}
+
+	// Existing client folders (skip sector templates `_x` and dotfiles).
+	listAtriumClients() {
+		const root = this.atriumClientsDir();
+		let names;
+		try { names = fs.readdirSync(root); } catch { return []; }
+		return names.filter((n) => {
+			if (n.startsWith(".") || n.startsWith("_")) return false;
+			try { return fs.statSync(path.join(root, n)).isDirectory(); } catch { return false; }
+		}).sort();
+	}
+
+	// Recursive copy that skips heavy / regenerable dirs.
+	copyTree(src, dst) {
+		const SKIP = new Set(["node_modules", ".next", ".git", "dist", ".turbo", ".cache"]);
+		fs.mkdirSync(dst, { recursive: true });
+		for (const name of fs.readdirSync(src)) {
+			if (SKIP.has(name)) continue;
+			const s = path.join(src, name), d = path.join(dst, name);
+			let st; try { st = fs.statSync(s); } catch { continue; }
+			if (st.isDirectory()) this.copyTree(s, d);
+			else { try { fs.copyFileSync(s, d); } catch { } }
+		}
+	}
+
+	// Returns { dest, copied } or throws.
+	handoffToClient(project, client) {
+		const name = String((project && (project.name)) || "site").replace(/[^\w.-]+/g, "-");
+		const cl = String(client || "").replace(/[^\w.-]+/g, "-");
+		if (!cl) throw new Error("no client");
+		const dest = path.join(this.atriumClientsDir(), cl, "solstice", name);
+		fs.mkdirSync(dest, { recursive: true });
+		let copied = false;
+		const srcDir = project && project.dir;
+		if (srcDir && !(project.remote)) {
+			try { if (fs.statSync(srcDir).isDirectory()) { this.copyTree(srcDir, path.join(dest, "build")); copied = true; } } catch { }
+		}
+		const manifest = {
+			project: name,
+			client: cl,
+			source: srcDir || null,
+			remote: !!(project && project.remote),
+			liveUrl: (project && (project.openUrl || project.liveUrl)) || null,
+			stack: (project && project.tags) || [],
+			agent: (project && project.agent && project.agent.id) || null,
+			provider: this.providerLabel ? this.providerLabel() : "Composer 2.5",
+			copiedBuild: copied,
+			handedOffAt: new Date().toISOString(),
+		};
+		try { fs.writeFileSync(path.join(dest, "handoff.json"), JSON.stringify(manifest, null, 2)); } catch { }
+		return { dest, copied };
+	}
+
 	// ---- Fleet (talk to Orion/Jasper/Asher from inside Solstice) ----
 	// Primary transport is a live WebSocket straight to the agent's brain
 	// (SolsticeBridgeChannel on the server, reached over Tailscale). Bridges are
@@ -1782,6 +1847,35 @@ async function fetchServerProjects(serverUrl) {
 	return out;
 }
 
+// Pick (or create) a client folder, then hand the project off into it.
+async function handoffProjectToClient(controller, project) {
+	if (!project) return;
+	const clients = controller.listAtriumClients();
+	const NEW = "➕ לקוח חדש…";
+	const items = [...clients.map((c) => ({ label: c })), { label: NEW }];
+	const pick = await vscode.window.showQuickPick(items, {
+		placeHolder: "מסור את \"" + (project.name || "הפרויקט") + "\" לתיקיית לקוח ב-Atrium",
+	});
+	if (!pick) return;
+	let client = pick.label;
+	if (client === NEW) {
+		client = (await vscode.window.showInputBox({ prompt: "שם הלקוח החדש (תיקייה ב-Atrium)", validateInput: (v) => v && v.trim() ? null : "נדרש שם" })) || "";
+		client = client.trim();
+		if (!client) return;
+	}
+	try {
+		const { dest, copied } = controller.handoffToClient(project, client);
+		const open = "פתח תיקייה";
+		const choice = await vscode.window.showInformationMessage(
+			"נמסר ל-" + client + (copied ? " (כולל קבצי הבילד)" : " (מניפסט בלבד — מקור מרוחק)") + "  ·  " + dest,
+			open
+		);
+		if (choice === open) vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(dest)).then(undefined, () => { });
+	} catch (e) {
+		vscode.window.showErrorMessage("מסירה נכשלה: " + String(e && e.message || e));
+	}
+}
+
 function openGallery(controller, extensionUri) {
 	if (galleryPanel) { galleryPanel.reveal(vscode.ViewColumn.One); return; }
 	const roots = controller.galleryRoots().map((d) => vscode.Uri.file(d));
@@ -1841,6 +1935,7 @@ function openGallery(controller, extensionUri) {
 				}
 				break;
 			}
+			case "handoffClient": handoffProjectToClient(controller, msg.project); break;
 		}
 	});
 	galleryPanel.onDidDispose(() => {
