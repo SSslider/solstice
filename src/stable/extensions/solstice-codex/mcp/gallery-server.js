@@ -14,6 +14,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const zlib = require("zlib");
 
 const HOME = process.env.HOME || "/tmp";
 // Scan every place agents actually build — not just solstice-deploys. Jasper &
@@ -132,6 +133,86 @@ function listProjects() {
 	return out;
 }
 
+// ---- zip download (pure core: zlib only, no deps) --------------------------
+// Walk a project dir (skipping heavy/regenerable dirs) and stream a real .zip
+// so the IDE on Thomas's PC can pull a server-built project down to disk. A
+// proper ZIP (deflate + central directory) opens natively in Windows Explorer.
+const _CRC = (() => {
+	const t = new Int32Array(256);
+	for (let n = 0; n < 256; n++) {
+		let c = n;
+		for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+		t[n] = c;
+	}
+	return t;
+})();
+function crc32(buf) {
+	let c = ~0;
+	for (let i = 0; i < buf.length; i++) c = (c >>> 8) ^ _CRC[(c ^ buf[i]) & 0xff];
+	return (~c) >>> 0;
+}
+function collectFiles(dir, base, out) {
+	let names;
+	try { names = fs.readdirSync(dir); } catch { return; }
+	for (const name of names) {
+		if (SKIP.has(name) || name === ".git") continue;
+		const abs = path.join(dir, name);
+		const rel = base ? base + "/" + name : name;
+		let st; try { st = fs.statSync(abs); } catch { continue; }
+		if (st.isDirectory()) collectFiles(abs, rel, out);
+		else if (st.isFile() && st.size <= 25 * 1024 * 1024) out.push({ abs, rel });
+	}
+}
+function buildZip(dir) {
+	const files = [];
+	collectFiles(dir, "", files);
+	const chunks = [];
+	const central = [];
+	let offset = 0;
+	for (const f of files) {
+		let data; try { data = fs.readFileSync(f.abs); } catch { continue; }
+		const nameBuf = Buffer.from(f.rel, "utf8");
+		const crc = crc32(data);
+		const comp = zlib.deflateRawSync(data);
+		const useStore = comp.length >= data.length;
+		const body = useStore ? data : comp;
+		const method = useStore ? 0 : 8;
+		const local = Buffer.alloc(30);
+		local.writeUInt32LE(0x04034b50, 0);
+		local.writeUInt16LE(20, 4);
+		local.writeUInt16LE(0x0800, 6); // UTF-8 filename flag
+		local.writeUInt16LE(method, 8);
+		local.writeUInt16LE(0, 10); local.writeUInt16LE(0, 12); // time/date
+		local.writeUInt32LE(crc, 14);
+		local.writeUInt32LE(body.length, 18);
+		local.writeUInt32LE(data.length, 22);
+		local.writeUInt16LE(nameBuf.length, 26);
+		local.writeUInt16LE(0, 28);
+		chunks.push(local, nameBuf, body);
+		const cd = Buffer.alloc(46);
+		cd.writeUInt32LE(0x02014b50, 0);
+		cd.writeUInt16LE(20, 4); cd.writeUInt16LE(20, 6);
+		cd.writeUInt16LE(0x0800, 8);
+		cd.writeUInt16LE(method, 10);
+		cd.writeUInt16LE(0, 12); cd.writeUInt16LE(0, 14);
+		cd.writeUInt32LE(crc, 16);
+		cd.writeUInt32LE(body.length, 20);
+		cd.writeUInt32LE(data.length, 24);
+		cd.writeUInt16LE(nameBuf.length, 28);
+		cd.writeUInt32LE(offset, 42);
+		central.push(Buffer.concat([cd, nameBuf]));
+		offset += local.length + nameBuf.length + body.length;
+	}
+	const cdBuf = Buffer.concat(central);
+	const end = Buffer.alloc(22);
+	end.writeUInt32LE(0x06054b50, 0);
+	end.writeUInt16LE(central.length, 8);
+	end.writeUInt16LE(central.length, 10);
+	end.writeUInt32LE(cdBuf.length, 12);
+	end.writeUInt32LE(offset, 16);
+	return Buffer.concat([...chunks, cdBuf, end]);
+}
+
 function sendFile(res, file) {
 	if (!fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404); res.end("not found"); return; }
 	res.writeHead(200, { "content-type": MIME[path.extname(file).toLowerCase()] || "application/octet-stream" });
@@ -146,6 +227,21 @@ const server = http.createServer((req, res) => {
 		if (urlPath === "/api/projects") {
 			res.writeHead(200, { "content-type": "application/json" });
 			res.end(JSON.stringify(listProjects()));
+			return;
+		}
+
+		if (urlPath.startsWith("/zip/")) {
+			const slug = urlPath.slice("/zip/".length).replace(/\/.*$/, "");
+			const dir = projectDir(slug);
+			if (!dir) { res.writeHead(404); res.end("unknown project"); return; }
+			let buf;
+			try { buf = buildZip(dir); } catch (e) { res.writeHead(500); res.end(String(e && e.message || e)); return; }
+			res.writeHead(200, {
+				"content-type": "application/zip",
+				"content-length": buf.length,
+				"content-disposition": `attachment; filename="${slug}.zip"`,
+			});
+			res.end(buf);
 			return;
 		}
 

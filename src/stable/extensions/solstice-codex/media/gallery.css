@@ -133,6 +133,10 @@ html, body {
   padding: 3px 10px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--amber) 34%, transparent);
   background: color-mix(in srgb, var(--amber) 14%, transparent); color: color-mix(in srgb, var(--amber) 92%, #fff); }
 .ownerHandoff:hover { background: color-mix(in srgb, var(--amber) 26%, transparent); }
+.ownerDownload { border-color: color-mix(in srgb, var(--accent, #34d399) 38%, transparent);
+  background: color-mix(in srgb, var(--accent, #34d399) 14%, transparent);
+  color: color-mix(in srgb, var(--accent, #34d399) 92%, #fff); }
+.ownerDownload:hover { background: color-mix(in srgb, var(--accent, #34d399) 26%, transparent); }
 
 /* ---------- empty ---------- */
 .empty { text-align: center; padding: 90px 24px; color: var(--vscode-descriptionForeground); }

@@ -2101,8 +2101,9 @@ async function fetchServerProjects(serverUrl) {
 		}
 		out.push({
 			name: p.name, description: p.description || "", tags: p.tags || [],
-			updatedAt: p.updatedAt, preview, remote: true,
+			updatedAt: p.updatedAt, preview, remote: true, slug: p.slug,
 			openUrl: `${base}/p/${encodeURIComponent(p.slug)}/`,
+			zipUrl: `${base}/zip/${encodeURIComponent(p.slug)}`,
 		});
 	}
 	return out;
@@ -2135,6 +2136,41 @@ async function handoffProjectToClient(controller, project) {
 	} catch (e) {
 		vscode.window.showErrorMessage("מסירה נכשלה: " + String(e && e.message || e));
 	}
+}
+
+// Pull a server-built (remote) project down to a folder on Thomas's PC as a
+// .zip. Local projects already live on disk, so for those we just reveal the
+// folder. Remote ones are fetched from the gallery server's /zip endpoint.
+async function downloadProjectToPC(controller, project) {
+	if (!project) return;
+	const name = String(project.name || project.slug || "project").replace(/[^\w.-]+/g, "-");
+	if (!project.remote) {
+		if (project.dir) vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(project.dir)).then(undefined, () => { });
+		else vscode.window.showWarningMessage("אין נתיב מקומי לפרויקט.");
+		return;
+	}
+	if (!project.zipUrl) { vscode.window.showErrorMessage("אין קישור הורדה לפרויקט המרוחק."); return; }
+	const target = await vscode.window.showSaveDialog({
+		defaultUri: vscode.Uri.file(path.join(os.homedir(), name + ".zip")),
+		filters: { "Zip archive": ["zip"] },
+		saveLabel: "הורד ל-PC",
+	});
+	if (!target) return;
+	await vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Notification, title: "מוריד את " + name + " ל-PC…" },
+		async () => {
+			try {
+				const { buf } = await httpGet(project.zipUrl, { binary: true, timeout: 60000 });
+				fs.writeFileSync(target.fsPath, buf);
+				const reveal = "פתח בתיקייה";
+				const choice = await vscode.window.showInformationMessage(
+					"הורד: " + target.fsPath + "  (" + Math.max(1, Math.round(buf.length / 1024)) + "KB)", reveal);
+				if (choice === reveal) vscode.commands.executeCommand("revealFileInOS", target).then(undefined, () => { });
+			} catch (e) {
+				vscode.window.showErrorMessage("הורדה נכשלה: " + String(e && e.message || e));
+			}
+		}
+	);
 }
 
 function openGallery(controller, extensionUri) {
@@ -2197,6 +2233,7 @@ function openGallery(controller, extensionUri) {
 				break;
 			}
 			case "handoffClient": handoffProjectToClient(controller, msg.project); break;
+			case "downloadProject": downloadProjectToPC(controller, msg.project); break;
 		}
 	});
 	galleryPanel.onDidDispose(() => {

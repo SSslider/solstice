@@ -139,6 +139,18 @@
 			});
 		});
 		row.appendChild(handoff);
+
+		const dl = el("button", "ownerHandoff ownerDownload", "");
+		dl.innerHTML = "⬇ הורד ל-PC";
+		dl.title = p.remote ? "הורד את הפרויקט מהשרת ל-PC כ-zip" : "פתח את תיקיית הפרויקט ב-PC";
+		dl.addEventListener("click", (e) => {
+			stop(e);
+			vscode.postMessage({
+				type: "downloadProject",
+				project: { name: p.name, slug: p.slug, dir: p.dir, remote: !!p.remote, zipUrl: p.zipUrl },
+			});
+		});
+		row.appendChild(dl);
 		return row;
 	}
 
