@@ -75,7 +75,7 @@
 			thumb.appendChild(el("div", "pInitial", (p.name || "?").trim().charAt(0).toUpperCase()));
 		}
 		const hint = el("div", "openHint");
-		hint.appendChild(el("span", "", "Open in Solstice"));
+		hint.appendChild(el("span", "", p.remote ? "Open live site" : "Open in Solstice"));
 		thumb.appendChild(hint);
 		c.appendChild(thumb);
 
@@ -89,7 +89,8 @@
 		c.appendChild(body);
 
 		c.addEventListener("click", (e) => {
-			vscode.postMessage({ type: "openProject", dir: p.dir, newWindow: e.metaKey || e.ctrlKey });
+			if (p.remote) vscode.postMessage({ type: "openRemote", url: p.openUrl });
+			else vscode.postMessage({ type: "openProject", dir: p.dir, newWindow: e.metaKey || e.ctrlKey });
 		});
 		return c;
 	}
@@ -97,6 +98,10 @@
 	window.addEventListener("message", (event) => {
 		const msg = event.data;
 		if (msg.type === "projects") { projects = Array.isArray(msg.projects) ? msg.projects : []; render(); }
+		else if (msg.type === "serverError") {
+			const note = el("div", "galErr", "Gallery server unreachable (" + (msg.message || "error") + ") — showing local projects.");
+			app.prepend(note);
+		}
 	});
 
 	render();

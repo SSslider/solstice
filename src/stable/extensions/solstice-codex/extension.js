@@ -1236,6 +1236,50 @@ function openManager(controller, extensionUri) {
 
 let galleryPanel = null;
 
+// Fetch a URL with the host's Node http(s) stack (webview CSP blocks remote
+// fetch/img, so listing + previews are pulled here and handed to the webview).
+function httpGet(url, { binary = false, timeout = 8000 } = {}) {
+	return new Promise((resolve, reject) => {
+		let mod;
+		try { mod = require(url.startsWith("https:") ? "https" : "http"); } catch (e) { reject(e); return; }
+		const req = mod.get(url, (res) => {
+			if (res.statusCode && res.statusCode >= 400) { res.resume(); reject(new Error("HTTP " + res.statusCode)); return; }
+			const chunks = [];
+			res.on("data", (c) => chunks.push(c));
+			res.on("end", () => {
+				const buf = Buffer.concat(chunks);
+				resolve(binary ? { buf, contentType: res.headers["content-type"] || "" } : buf.toString("utf8"));
+			});
+		});
+		req.on("error", reject);
+		req.setTimeout(timeout, () => req.destroy(new Error("timeout")));
+	});
+}
+
+// Pull the project list from the remote gallery server and inline each preview
+// as a data URI so the webview can render it under its strict CSP.
+async function fetchServerProjects(serverUrl) {
+	const base = serverUrl.replace(/\/+$/, "");
+	const list = JSON.parse(await httpGet(`${base}/api/projects`));
+	if (!Array.isArray(list)) return [];
+	const out = [];
+	for (const p of list) {
+		let preview = null;
+		if (p.hasPreview) {
+			try {
+				const { buf, contentType } = await httpGet(`${base}/preview/${encodeURIComponent(p.slug)}`, { binary: true });
+				if (buf.length <= 4 * 1024 * 1024) preview = `data:${contentType || "image/png"};base64,${buf.toString("base64")}`;
+			} catch { /* preview optional */ }
+		}
+		out.push({
+			name: p.name, description: p.description || "", tags: p.tags || [],
+			updatedAt: p.updatedAt, preview, remote: true,
+			openUrl: `${base}/p/${encodeURIComponent(p.slug)}/`,
+		});
+	}
+	return out;
+}
+
 function openGallery(controller, extensionUri) {
 	if (galleryPanel) { galleryPanel.reveal(vscode.ViewColumn.One); return; }
 	const roots = controller.galleryRoots().map((d) => vscode.Uri.file(d));
@@ -1250,15 +1294,30 @@ function openGallery(controller, extensionUri) {
 		}
 	);
 	controller.galleryPanel = galleryPanel;
-	const pushProjects = () => galleryPanel.webview.postMessage({
-		type: "projects", projects: controller.scanProjects(galleryPanel.webview),
-	});
+	const pushProjects = async () => {
+		const serverUrl = (controller.cfg().get("galleryServerUrl") || "").trim();
+		if (serverUrl) {
+			try {
+				const projects = await fetchServerProjects(serverUrl);
+				galleryPanel.webview.postMessage({ type: "projects", projects });
+				return;
+			} catch (e) {
+				// Server unreachable — fall back to local scan so the panel still works.
+				galleryPanel.webview.postMessage({ type: "serverError", message: String(e && e.message || e) });
+			}
+		}
+		galleryPanel.webview.postMessage({ type: "projects", projects: controller.scanProjects(galleryPanel.webview) });
+	};
 	galleryPanel.webview.html = mediaHtml(galleryPanel.webview, extensionUri, "gallery.js", "gallery.css");
 	galleryPanel.webview.onDidReceiveMessage((msg) => {
 		switch (msg.type) {
 			case "ready": pushProjects(); break;
 			case "refresh": pushProjects(); break;
 			case "openProject": controller.openProjectFolder(msg.dir, msg.newWindow); break;
+			case "openRemote":
+				if (msg.url) vscode.commands.executeCommand("simpleBrowser.api.open", vscode.Uri.parse(msg.url),
+					{ viewColumn: vscode.ViewColumn.Two }).then(undefined, () => vscode.commands.executeCommand("simpleBrowser.show", msg.url));
+				break;
 			case "newProject": vscode.commands.executeCommand("solstice.agentPanel.focus").then(undefined, () => { }); break;
 		}
 	});

@@ -1,0 +1,14 @@
+[Unit]
+Description=Solstice Gallery server (lists ~/solstice-deploys over Tailscale for the IDE)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /home/thomas/solstice/src/stable/extensions/solstice-codex/mcp/gallery-server.js
+Environment=SOLSTICE_GALLERY_HOST=100.88.154.26
+Environment=SOLSTICE_GALLERY_PORT=8931
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

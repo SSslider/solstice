@@ -258,6 +258,11 @@
           "default": "",
           "description": "Root directory the Projects Gallery scans for projects built on this server. Empty = auto-detect (~/solstice-deploys, then ~/Projects). Each immediate subfolder that looks like a project (package.json / index.html / .git / .solstice) becomes a gallery card."
         },
+        "solstice.codex.galleryServerUrl": {
+          "type": "string",
+          "default": "http://100.88.154.26:8931",
+          "description": "Base URL of the remote Solstice Gallery server (the build server's ~/solstice-deploys, exposed over Tailscale). When set, the Projects gallery lists the projects agents built on that server and opens each as a live site. Empty = local filesystem scan only."
+        },
         "solstice.codex.fleetDir": {
           "type": "string",
           "default": "",
