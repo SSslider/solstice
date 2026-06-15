@@ -284,7 +284,168 @@ class AgentController {
 			"- Installable PWA: include a web app manifest (name, icons, theme/background color, display: standalone) and a basic service worker so it can be added to the home screen.",
 			"- Prefer an SPA stack (Vite + React/Router) unless told otherwise; keep it runnable with `npm run dev`.",
 			"- Treat each screen as a deliverable: build the navigation skeleton first, then fill screens so the preview is always interactive.",
+			"- A runnable PWA app-shell scaffold (index.html + app.js hash-router + bottom tab bar + manifest + service worker) may already exist in the workspace (Solstice's 'Scaffold App Shell'). If so, BUILD ON IT — add screens/routes and flesh out the existing tabs rather than starting a single-page site from scratch.",
 		].join("\n");
+	}
+
+	// ---- PWA app-shell scaffold --------------------------------------------
+	// App mode's tangible distinctiveness: generate a REAL, runnable multi-screen
+	// PWA app shell (no build step — plain HTML/CSS/JS so it runs straight in the
+	// phone-frame preview) instead of a one-page marketing site. The build agent
+	// then fleshes out each screen. Files are written only if absent so we never
+	// clobber the user's work.
+	appShellFiles() {
+		const manifest = JSON.stringify({
+			name: "Solstice App", short_name: "App", start_url: "./index.html",
+			display: "standalone", background_color: "#0f0f12", theme_color: "#f59e0b",
+			icons: [{ src: "icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }],
+		}, null, 2);
+		const icon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#0f0f12"/><circle cx="256" cy="256" r="120" fill="none" stroke="#f59e0b" stroke-width="28"/><circle cx="256" cy="256" r="44" fill="#f59e0b"/></svg>\n`;
+		const indexHtml = `<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#f59e0b" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="icon.svg" />
+<link rel="stylesheet" href="app.css" />
+<title>Solstice App</title>
+</head>
+<body>
+  <div class="appbar"><button class="appbar-back" id="back" hidden>‹</button><h1 id="title">בית</h1></div>
+  <main id="screen" class="screen"></main>
+  <nav class="tabbar">
+    <a href="#/" class="tab" data-route="/"><span class="tab-ico">⌂</span><span>בית</span></a>
+    <a href="#/explore" class="tab" data-route="/explore"><span class="tab-ico">⌕</span><span>גלה</span></a>
+    <a href="#/profile" class="tab" data-route="/profile"><span class="tab-ico">◑</span><span>פרופיל</span></a>
+  </nav>
+  <script src="app.js"></script>
+</body>
+</html>
+`;
+		const appCss = `:root{ --bg:#0f0f12; --surface:#1a1a1f; --line:#2a2a31; --fg:#ececf0; --muted:#9a9aa4; --accent:#f59e0b; --accent2:#fb7a3c; }
+*{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html,body{ margin:0; height:100%; background:var(--bg); color:var(--fg); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; }
+body{ display:flex; flex-direction:column; min-height:100vh; }
+.appbar{ position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:8px; padding:max(12px,env(safe-area-inset-top)) 16px 12px; background:linear-gradient(180deg,rgba(245,158,11,.12),transparent), var(--bg); border-bottom:1px solid var(--line); }
+.appbar h1{ font-size:19px; font-weight:700; margin:0; letter-spacing:-.3px; }
+.appbar-back{ appearance:none; border:none; background:transparent; color:var(--accent); font-size:26px; line-height:1; padding:0 4px; cursor:pointer; }
+.screen{ flex:1; padding:18px 16px 96px; overflow-y:auto; animation:screen-in .28s cubic-bezier(.2,.7,.3,1); }
+@keyframes screen-in{ from{ opacity:0; transform:translateY(10px); } }
+.card{ background:var(--surface); border:1px solid var(--line); border-radius:16px; padding:16px; margin-bottom:14px; }
+.hero{ background:linear-gradient(150deg,var(--accent2),var(--accent)); color:#1a1206; border:none; }
+.hero h2{ margin:0 0 4px; font-size:22px; } .hero p{ margin:0; opacity:.85; font-size:13px; }
+.btn{ appearance:none; border:none; border-radius:12px; padding:13px 16px; font-size:15px; font-weight:600; width:100%; cursor:pointer; background:linear-gradient(150deg,var(--accent2),var(--accent)); color:#1a1206; }
+.btn.ghost{ background:var(--surface); color:var(--fg); border:1px solid var(--line); }
+.row{ display:flex; align-items:center; gap:12px; padding:13px 0; border-bottom:1px solid var(--line); }
+.row:last-child{ border-bottom:none; }
+.row .ico{ width:40px; height:40px; border-radius:11px; display:grid; place-items:center; background:rgba(245,158,11,.14); color:var(--accent); font-size:18px; flex:none; }
+.row .meta{ flex:1; min-width:0; } .row .meta b{ display:block; font-size:14px; } .row .meta small{ color:var(--muted); font-size:12px; }
+.muted{ color:var(--muted); font-size:13px; line-height:1.6; }
+.count{ font-size:44px; font-weight:800; letter-spacing:-1px; text-align:center; margin:8px 0; }
+.tabbar{ position:fixed; bottom:0; left:0; right:0; z-index:6; display:flex; background:rgba(20,20,24,.92); backdrop-filter:blur(12px); border-top:1px solid var(--line); padding-bottom:env(safe-area-inset-bottom); }
+.tab{ flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; padding:9px 0 11px; text-decoration:none; color:var(--muted); font-size:10.5px; font-weight:600; }
+.tab-ico{ font-size:20px; line-height:1; }
+.tab.active{ color:var(--accent); }
+`;
+		const appJs = `"use strict";
+// Tiny hash router + 3 screens. No build step, no deps — runs straight in the
+// Solstice phone-frame preview. The build agent fills these screens out.
+(function(){
+  const screenEl = document.getElementById("screen");
+  const titleEl = document.getElementById("title");
+  const backEl = document.getElementById("back");
+  const tabs = [...document.querySelectorAll(".tab")];
+  const store = { get k(){ return Number(localStorage.getItem("count")||0); }, set k(v){ localStorage.setItem("count", v); } };
+
+  const screens = {
+    "/": { title: "בית", render(){ return \`
+      <section class="card hero"><h2>ברוך הבא 👋</h2><p>שלד אפליקציה — ריבוי מסכים, ניווט תחתון, מותקנת.</p></section>
+      <section class="card"><div class="muted">מונה דמו ששומר ב-localStorage:</div><div class="count" id="cnt">\${store.k}</div>
+        <button class="btn" id="inc">הוסף +1</button></section>
+      <section class="card"><div class="row"><div class="ico">⚡</div><div class="meta"><b>מהיר</b><small>נטען מיידית, עובד אופליין</small></div></div>
+        <div class="row"><div class="ico">📲</div><div class="meta"><b>מותקנת</b><small>הוסף למסך הבית כאפליקציה</small></div></div></section>\`; },
+      after(){ const c=document.getElementById("cnt"); document.getElementById("inc").onclick=()=>{ store.k=store.k+1; c.textContent=store.k; }; } },
+    "/explore": { title: "גלה", render(){ return \`
+      <section class="card"><div class="row"><div class="ico">🎨</div><div class="meta"><b>עיצוב</b><small>ספריית רכיבים</small></div></div>
+        <div class="row"><div class="ico">🧭</div><div class="meta"><b>ניווט</b><small>מעבר חלק בין מסכים</small></div></div>
+        <div class="row"><div class="ico">💾</div><div class="meta"><b>נתונים</b><small>שמירה מקומית</small></div></div></section>
+      <section class="card"><div class="muted">זה מסך "גלה". כאן הסוכן יבנה את התוכן האמיתי של האפליקציה.</div></section>\`; } },
+    "/profile": { title: "פרופיל", render(){ return \`
+      <section class="card"><div class="row"><div class="ico">🙂</div><div class="meta"><b>המשתמש שלך</b><small>guest@solstice.app</small></div></div></section>
+      <section class="card"><button class="btn ghost" id="reset">אפס מונה</button></section>\`; },
+      after(){ document.getElementById("reset").onclick=()=>{ store.k=0; location.hash="#/"; }; } },
+  };
+
+  function route(){
+    const path = (location.hash.replace(/^#/, "") || "/");
+    const s = screens[path] || screens["/"];
+    titleEl.textContent = s.title;
+    screenEl.innerHTML = s.render();
+    if (s.after) s.after();
+    backEl.hidden = path === "/";
+    tabs.forEach(t => t.classList.toggle("active", t.dataset.route === path));
+    screenEl.scrollTop = 0;
+  }
+  backEl.onclick = () => history.length > 1 ? history.back() : (location.hash = "#/");
+  window.addEventListener("hashchange", route);
+  route();
+
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(()=>{});
+})();
+`;
+		const swJs = `// Minimal offline-first service worker for the app shell.
+const CACHE = "solstice-app-v1";
+const ASSETS = ["./", "index.html", "app.css", "app.js", "manifest.webmanifest", "icon.svg"];
+self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
+self.addEventListener("activate", (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())); });
+self.addEventListener("fetch", (e) => {
+  if (e.request.method !== "GET") return;
+  e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => {
+    const copy = res.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); return res;
+  }).catch(() => caches.match("index.html"))));
+});
+`;
+		return {
+			"index.html": indexHtml,
+			"app.css": appCss,
+			"app.js": appJs,
+			"sw.js": swJs,
+			"manifest.webmanifest": manifest,
+			"icon.svg": icon,
+		};
+	}
+
+	// Write the app-shell scaffold into `root`, never clobbering existing files.
+	// Returns { written:[...], skipped:[...] }.
+	scaffoldAppShell(root) {
+		const files = this.appShellFiles();
+		const written = [], skipped = [];
+		for (const [rel, content] of Object.entries(files)) {
+			const abs = path.join(root, rel);
+			if (fs.existsSync(abs)) { skipped.push(rel); continue; }
+			try { fs.mkdirSync(path.dirname(abs), { recursive: true }); fs.writeFileSync(abs, content, "utf8"); written.push(rel); }
+			catch { skipped.push(rel); }
+		}
+		return { written, skipped };
+	}
+
+	// Generate the app shell into the open workspace, switch to App mode, and open
+	// the phone-frame preview so the user immediately sees a runnable app.
+	async scaffoldAppIntoWorkspace() {
+		const root = workspaceCwd();
+		if (!root) { vscode.window.showWarningMessage("פתח תיקייה כדי ליצור שלד אפליקציה."); return; }
+		const { written, skipped } = this.scaffoldAppShell(root);
+		this.setBuildMode("app");
+		if (written.length) {
+			this.post({ type: "systemNote", text: "📱 נוצר שלד אפליקציה (PWA): " + written.join(", ") + (skipped.length ? " · דילגתי על קיימים: " + skipped.join(", ") : "") });
+			vscode.window.showInformationMessage("שלד אפליקציה נוצר — " + written.length + " קבצים. פותח תצוגה…");
+			setTimeout(() => this.openPreview("").catch(() => { }), 400);
+		} else {
+			vscode.window.showInformationMessage("כל קבצי שלד האפליקציה כבר קיימים — לא נכתב כלום.");
+		}
+		return { written, skipped };
 	}
 
 	async openPreview(explicitUrl) {
@@ -2084,6 +2245,7 @@ class AgentViewProvider {
 					case "openImage": this.controller.openImage(msg.path); break;
 					case "transcribe": await this.controller.transcribeVoice(msg.audio, msg.mime); break;
 						case "buildMode": this.controller.setBuildMode(msg.mode); break;
+						case "scaffoldApp": await this.controller.scaffoldAppIntoWorkspace(); break;
 				}
 			} catch (e) {
 				this.controller.post({ type: "fatal", message: String(e && e.message || e) });
@@ -2495,6 +2657,7 @@ function activate(context) {
 		vscode.commands.registerCommand("solstice.agent.signOut", () => controller.signOut()),
 		vscode.commands.registerCommand("solstice.agent.openManager", () => openManager(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.openPreview", (url) => controller.openPreview(typeof url === "string" ? url : "")),
+		vscode.commands.registerCommand("solstice.agent.scaffoldApp", () => controller.scaffoldAppIntoWorkspace()),
 		vscode.commands.registerCommand("solstice.agent.selectModel", () => controller.selectModel()),
 		vscode.commands.registerCommand("solstice.agent.selectAutonomy", () => controller.selectAutonomy()),
 		vscode.commands.registerCommand("solstice.agent.toggleDesignElevation", () => controller.toggleDesignElevation()),

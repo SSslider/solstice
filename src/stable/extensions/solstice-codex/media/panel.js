@@ -30,6 +30,7 @@
 					<button id="modeSite" class="modeOpt active" data-mode="site">🌐 אתר</button>
 					<button id="modeApp" class="modeOpt" data-mode="app">📱 אפליקציה</button>
 				</div>
+				<button id="scaffoldBtn" class="pickBtn hidden" title="צור שלד אפליקציה PWA — ריבוי מסכים, ניווט תחתון, מותקנת">✦ שלד אפליקציה</button>
 				<span id="tokChip" class="tokChip hidden" title=""></span>
 				<button id="autonomyBtn" class="pickBtn" title="Set agent autonomy">🛡 <span id="autonomy">Supervised</span> <span class="caret">▾</span></button>
 				<span id="hint">Enter to send</span>
@@ -67,10 +68,12 @@
 	let buildMode = "site";
 	const modeSiteEl = document.getElementById("modeSite");
 	const modeAppEl = document.getElementById("modeApp");
+	const scaffoldBtn = document.getElementById("scaffoldBtn");
 	function setBuildMode(mode, notify) {
 		buildMode = mode === "app" ? "app" : "site";
 		modeSiteEl.classList.toggle("active", buildMode === "site");
 		modeAppEl.classList.toggle("active", buildMode === "app");
+		if (scaffoldBtn) scaffoldBtn.classList.toggle("hidden", buildMode !== "app");
 		inputEl.placeholder = buildMode === "app"
 			? "תאר אפליקציה לבנות (מובייל-first, מסכים, ניווט)…"
 			: "Describe a task for the agent…";
@@ -78,6 +81,7 @@
 	}
 	modeSiteEl.addEventListener("click", () => setBuildMode("site", true));
 	modeAppEl.addEventListener("click", () => setBuildMode("app", true));
+	if (scaffoldBtn) scaffoldBtn.addEventListener("click", () => vscode.postMessage({ type: "scaffoldApp" }));
 
 	function fmtTok(n) {
 		n = Number(n || 0);
@@ -990,6 +994,9 @@
 			case "injectPrompt":
 				inputEl.value = msg.text;
 				send();
+				break;
+			case "systemNote":
+				sysLine(String(msg.text || ""), msg.level || "info");
 				break;
 			case "elementSelected":
 				showPick(msg.pick);

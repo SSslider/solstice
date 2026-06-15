@@ -71,6 +71,12 @@
         "icon": "$(globe)"
       },
       {
+        "command": "solstice.agent.scaffoldApp",
+        "title": "Scaffold App Shell (PWA)",
+        "category": "Solstice",
+        "icon": "$(device-mobile)"
+      },
+      {
         "command": "solstice.agent.selectModel",
         "title": "Select Agent Model",
         "category": "Solstice",
