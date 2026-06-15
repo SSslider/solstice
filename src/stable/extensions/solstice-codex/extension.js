@@ -834,8 +834,10 @@ class AgentController {
 		});
 		try {
 			this.client.start();
+			let clientVersion = "0.0.0";
+			try { clientVersion = (this.context.extension && this.context.extension.packageJSON && this.context.extension.packageJSON.version) || clientVersion; } catch { }
 			await this.client.request("initialize", {
-				clientInfo: { name: "solstice", title: "Solstice", version: "0.3.0" },
+				clientInfo: { name: "solstice", title: "Solstice", version: clientVersion },
 				capabilities: null,
 			});
 			this.client.notify("initialized", {});
@@ -1446,8 +1448,14 @@ class AgentController {
 	// from `solstice.fleet.token` or ~/.solstice/fleet-token. Agents with no
 	// bridge fall back to the legacy file-drop inbox (only works when the IDE and
 	// the fleet share a filesystem).
-	// Human-readable Solstice version for the status bar / Fleet badge.
+	// Human-readable Solstice version for the status bar / Fleet badge. Prefer the
+	// running product version (baked at build time from release_version) so the
+	// badge tracks the IDE release; fall back to this extension's own version.
 	versionLabel() {
+		try {
+			const pj = JSON.parse(fs.readFileSync(path.join(vscode.env.appRoot, "product.json"), "utf8"));
+			if (pj && pj.version) return "v" + pj.version;
+		} catch { }
 		let ext = "";
 		try { ext = (this.context.extension && this.context.extension.packageJSON && this.context.extension.packageJSON.version) || ""; } catch { }
 		return ext ? ("v" + ext) : "";
@@ -1631,6 +1639,8 @@ class AgentController {
 		if (this.fleetPanel) {
 			this.fleetPanel.webview.postMessage({ type: "tokens", inT: this.tokenTotal.in, outT: this.tokenTotal.out, exact: !!params.exact, model: modelLabel });
 		}
+		// also surface in the chat panel, right next to the model picker
+		this.post({ type: "tokens", inT: this.tokenTotal.in, outT: this.tokenTotal.out, exact: !!params.exact, model: modelLabel });
 	}
 
 	// ---- desktop notifications ---------------------------------------------

@@ -2,7 +2,7 @@
   "name": "solstice-codex",
   "displayName": "Solstice Agent",
   "description": "Built-in AI agent panel powered by Codex (ChatGPT subscription).",
-  "version": "0.3.0",
+  "version": "0.7.1",
   "publisher": "solstice",
   "license": "MIT",
   "engines": {

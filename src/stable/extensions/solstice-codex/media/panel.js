@@ -26,6 +26,7 @@
 			<textarea id="input" rows="3" placeholder="Describe a task for the agent…"></textarea>
 			<div id="composerBar">
 				<button id="modelBtn" class="pickBtn" title="Select agent model">⌬ <span id="model">—</span> <span class="caret">▾</span></button>
+				<span id="tokChip" class="tokChip hidden" title=""></span>
 				<button id="autonomyBtn" class="pickBtn" title="Set agent autonomy">🛡 <span id="autonomy">Supervised</span> <span class="caret">▾</span></button>
 				<span id="hint">Enter to send</span>
 				<button id="stopBtn" class="btn danger hidden">Stop</button>
@@ -54,8 +55,25 @@
 	const autonomyEl = document.getElementById("autonomy");
 	const autonomyBtn = document.getElementById("autonomyBtn");
 	const quotaEl = document.getElementById("quota");
+	const tokChipEl = document.getElementById("tokChip");
 	const overlayEl = document.getElementById("loginOverlay");
 	const loginNoteEl = document.getElementById("loginNote");
+
+	function fmtTok(n) {
+		n = Number(n || 0);
+		if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
+		if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "k";
+		return String(n);
+	}
+	function renderTokens(m) {
+		const inT = Number(m.inT || 0), outT = Number(m.outT || 0), total = inT + outT;
+		if (!total) { tokChipEl.classList.add("hidden"); return; }
+		const approx = m.exact ? "" : "≈";
+		tokChipEl.textContent = "◆ " + approx + fmtTok(total) + " tok";
+		tokChipEl.title = (m.model || model || "Agent") + " · session " + approx + fmtTok(total) +
+			" tokens (in " + fmtTok(inT) + " / out " + fmtTok(outT) + ")";
+		tokChipEl.classList.remove("hidden");
+	}
 
 	// ---------- visual selection (click-to-edit from the preview) ----------
 	let pendingPick = null;
@@ -924,6 +942,9 @@
 			case "transcribeError":
 				resetMic();
 				sysLine("Transcription failed — " + (msg.message || "unknown error"), "error");
+				break;
+			case "tokens":
+				renderTokens(msg);
 				break;
 		}
 	});

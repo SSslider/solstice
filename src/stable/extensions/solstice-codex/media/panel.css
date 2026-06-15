@@ -243,6 +243,14 @@ details.reasoning.done summary { opacity: 0.5; }
 .pickBtn.open { border-color: var(--sol-accent); background: rgba(245,158,11,0.14); box-shadow: 0 0 0 3px rgba(245,158,11,0.10); }
 .pickBtn .caret { opacity: 0.55; font-size: 9px; }
 #autonomyBtn.trusted { border-color: var(--sol-accent); background: rgba(245,158,11,0.16); color: var(--sol-accent); }
+.tokChip {
+	display: inline-flex; align-items: center;
+	border: 1px solid var(--sol-line); border-radius: 999px;
+	background: var(--sol-surface-2); color: var(--vscode-descriptionForeground);
+	padding: 3px 9px; font-size: 10.5px; font-variant-numeric: tabular-nums;
+	font-family: var(--vscode-editor-font-family, ui-monospace, monospace); white-space: nowrap;
+}
+.tokChip.hidden { display: none; }
 
 /* inline model picker menu — opens UPWARD from the composer (Antigravity-style) */
 .pickMenu {
