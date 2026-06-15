@@ -1031,8 +1031,16 @@ class AgentController {
 
 	// sidebar send: lazily creates the sidebar thread
 	async send(text) {
-		if (this.providerKey() === "claude") return this.sendClaude(text);
-		if (this.providerKey() !== "gpt-5.5") return this.sendGrok(text);
+		const provider = this.providerKey();
+		// A spawned-CLI turn (grok/claude) is already running: never let send()
+		// reject ("a turn is already running") and silently drop the prompt —
+		// route it to the steer queue so it drains into the next turn.
+		if (provider !== "gpt-5.5") {
+			const prov = provider === "claude" ? this.claude : this.grok;
+			if (prov && prov.busy) return this.steer(this.threadId, text);
+		}
+		if (provider === "claude") return this.sendClaude(text);
+		if (provider !== "gpt-5.5") return this.sendGrok(text);
 		if (!this.threadId) {
 			const { id, model } = await this.startThread();
 			this.threadId = id;

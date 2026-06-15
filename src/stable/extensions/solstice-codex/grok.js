@@ -299,7 +299,25 @@ class GrokProvider {
 			const child = spawn(this.bin, args, { cwd: this.cwd, env });
 			this.child = child;
 			let buf = "";
+			// Progress-aware stall watchdog: a healthy turn streams reasoning /
+			// message / tool deltas continuously. If the CLI goes fully silent for
+			// STALL_MS it is hung (not "thinking") — end the turn so queued steers
+			// drain. Session state survives: the next turn resumes it with `-c`.
+			// (Never a blind wall-clock restart — any stdout resets the clock.)
+			const STALL_MS = 180000;
+			let lastActivity = Date.now();
+			let stalled = false;
+			const bumpActivity = () => { lastActivity = Date.now(); };
+			const stallTimer = setInterval(() => {
+				if (!this.child) return;
+				if (!stalled && Date.now() - lastActivity > STALL_MS) {
+					stalled = true;
+					this.notify("turn/stalled", { threadId: tid, turn: { id: turnId }, idleMs: Date.now() - lastActivity });
+					try { this.child.kill("SIGTERM"); } catch { }
+				}
+			}, 15000);
 			child.stdout.on("data", (d) => {
+				bumpActivity();
 				buf += d.toString();
 				let i;
 				while ((i = buf.indexOf("\n")) !== -1) {
@@ -312,6 +330,7 @@ class GrokProvider {
 			child.stderr.on("data", (d) => this.log(d.toString()));
 			child.on("error", (e) => {
 				this.child = null;
+				clearInterval(stallTimer);
 				tailer.stop();
 				this.notify("error", {
 					threadId: tid,
@@ -323,10 +342,13 @@ class GrokProvider {
 			child.on("close", (code) => {
 				if (!this.child) return; // already resolved via "error"
 				this.child = null;
+				clearInterval(stallTimer);
 				tailer.stop();
 				closeReasoning();
 				closeMessage();
-				if (code !== 0 && code !== null) {
+				if (stalled) {
+					this.notify("error", { threadId: tid, error: { message: `grok turn stalled (no output for ${Math.round(STALL_MS / 1000)}s) and was ended — your next message resumes the session.` } });
+				} else if (code !== 0 && code !== null) {
 					this.notify("error", { threadId: tid, error: { message: `grok exited with code ${code} — check the Solstice Agent output log.` } });
 				}
 				if (turnOut >= 0) this.tokens.out += turnOut; // estimate path (real usage already applied)
