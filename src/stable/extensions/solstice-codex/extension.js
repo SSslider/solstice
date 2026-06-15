@@ -71,6 +71,9 @@ class AgentController {
 		this.terminal = null;          // integrated terminal spawned from the panel
 		this.preview = null;
 		this.previewUrl = "";
+		this.previewPanel = null;      // device-frame live preview webview (center column)
+		this.previewKind = "site";     // "site" | "app" — drives default device frame
+		this.previewBuildTimer = null;
 		this.grok = null;
 		this.claude = null;
 		this.grokWatcher = null;
@@ -229,6 +232,25 @@ class AgentController {
 			.catch((e) => this.output.append(`\n[resume drain] ${e && e.message || e}\n`));
 	}
 
+	// Detect whether the workspace is an app (device-frame defaults to phone) or
+	// a marketing site (defaults to full screen). Looks for app stacks.
+	detectPreviewKind() {
+		const root = workspaceCwd();
+		if (!root) return "site";
+		try {
+			const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+			const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+			if (deps.expo || deps["react-native"]) return "app";
+			// PWA / app-shell signals
+			if (deps.next && (fs.existsSync(path.join(root, "public", "manifest.json")) ||
+				fs.existsSync(path.join(root, "public", "manifest.webmanifest")) ||
+				fs.existsSync(path.join(root, "app", "manifest.ts")))) return "app";
+		} catch { }
+		return "site";
+	}
+
+	defaultDevice() { return this.previewKind === "app" ? "iphone" : "desktop"; }
+
 	async openPreview(explicitUrl) {
 		let url = explicitUrl || "";
 		if (!url) {
@@ -246,18 +268,52 @@ class AgentController {
 			url = `http://127.0.0.1:${port}/${rel}`;
 		}
 		this.previewUrl = url;
-		await vscode.commands.executeCommand(
-			"simpleBrowser.api.open", vscode.Uri.parse(url),
-			{ viewColumn: vscode.ViewColumn.Two, preserveFocus: true }
-		).then(undefined, () => vscode.commands.executeCommand("simpleBrowser.show", url));
+		this.previewKind = this.detectPreviewKind();
+		this.openPreviewPanel(url, this.defaultDevice());
+	}
+
+	// Create/reveal the device-frame preview webview in the center column and
+	// point it at the live URL.
+	openPreviewPanel(url, device) {
+		if (!this.previewPanel) {
+			this.previewPanel = vscode.window.createWebviewPanel(
+				"solstice.preview",
+				"🔎 Live Preview",
+				{ viewColumn: vscode.ViewColumn.Two, preserveFocus: true },
+				{
+					enableScripts: true,
+					retainContextWhenHidden: true,
+					localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media")],
+				}
+			);
+			this.previewPanel.webview.html = previewHtml(this.previewPanel.webview, this.context.extensionUri);
+			this.previewReady = false;
+			this.previewPanel.webview.onDidReceiveMessage((m) => {
+				if (m.type === "ready") {
+					this.previewReady = true;
+					if (this.previewUrl) this.postPreview({ type: "load", url: this.previewUrl, device: this.defaultDevice() });
+				} else if (m.type === "device") {
+					this.previewKind = (m.device === "desktop") ? "site" : "app";
+				} else if (m.type === "openExternal" && m.url) {
+					vscode.env.openExternal(vscode.Uri.parse(m.url)).then(undefined, () => { });
+				}
+			});
+			this.previewPanel.onDidDispose(() => { this.previewPanel = null; this.previewReady = false; });
+		} else {
+			this.previewPanel.reveal(vscode.ViewColumn.Two, true);
+		}
+		if (this.previewReady) this.postPreview({ type: "load", url, device });
+	}
+
+	postPreview(msg) {
+		if (this.previewPanel) this.previewPanel.webview.postMessage(msg);
 	}
 
 	refreshPreview() {
-		if (!this.previewUrl) return;
-		vscode.commands.executeCommand(
-			"simpleBrowser.api.open", vscode.Uri.parse(this.previewUrl),
-			{ viewColumn: vscode.ViewColumn.Two, preserveFocus: true }
-		).then(undefined, () => { });
+		if (!this.previewUrl || !this.previewPanel) return;
+		// pulse the "building" shimmer + reload the iframe so the agent's edits
+		// stream into the frame like an image rendering in.
+		this.postPreview({ type: "reload", holdMs: 900 });
 	}
 
 	writePlanFile(th) {
@@ -776,13 +832,13 @@ class AgentController {
 			th.status = "active";
 			th.updatedAt = Date.now() / 1000;
 			this.planFileOpened = false;
-			if (tid === this.threadId) { this.markBusy("_builder", true); this.notePulse("_builder", "state"); }
+			if (tid === this.threadId) { this.markBusy("_builder", true); this.notePulse("_builder", "state"); this.postPreview({ type: "building", on: true }); }
 			this.pushThreads();
 		} else if (method === "turn/completed" && tid) {
 			const th = this.upsertThread({ id: tid });
 			th.activeTurnId = null;
 			th.status = "idle";
-			if (tid === this.threadId) this.markBusy("_builder", false);
+			if (tid === this.threadId) { this.markBusy("_builder", false); this.postPreview({ type: "building", on: false }); }
 			this.pushThreads();
 			if (tid === this.threadId) this.drainSteerQueue();
 		} else if (method === "turn/diff/updated" && tid) {
@@ -1795,6 +1851,27 @@ class AgentController {
 		if (this.client) this.client.stop();
 		this.closeFleetBridges();
 	}
+}
+
+// Preview panel HTML. Unlike mediaHtml, its CSP must allow an <iframe> to load
+// the local preview server / dev server (http://127.0.0.1:*), so the agent's
+// site/app renders live inside the device frame.
+function previewHtml(webview, extensionUri) {
+	const media = (f) => webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", f));
+	const nonce = crypto.randomUUID().replace(/-/g, "");
+	const frameSrc = "http://127.0.0.1:* http://localhost:* https:";
+	return `<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${webview.cspSource}; img-src ${webview.cspSource} https: data:; frame-src ${frameSrc};">
+<link rel="stylesheet" href="${media("preview.css")}">
+</head>
+<body>
+<div id="app"></div>
+<script nonce="${nonce}" src="${media("preview.js")}"></script>
+</body>
+</html>`;
 }
 
 function mediaHtml(webview, extensionUri, scriptFile, styleFile) {

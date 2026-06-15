@@ -1,0 +1,96 @@
+:root{
+  --pv-bg:#0d0d13;
+  --pv-bar:#15151d;
+  --pv-line:#24242e;
+  --pv-fg:#e6e6e6;
+  --pv-mut:#9aa0a6;
+  --pv-accent:#f59e0b;
+  --pv-ok:#34d399;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{
+  background:var(--pv-bg);
+  color:var(--pv-fg);
+  font-family:var(--vscode-font-family,'Segoe UI',system-ui,sans-serif);
+  font-size:12px;
+  overflow:hidden;
+}
+#app{display:flex;flex-direction:column;height:100vh}
+
+/* toolbar */
+.pvbar{
+  display:flex;align-items:center;gap:8px;
+  padding:7px 10px;background:var(--pv-bar);
+  border-bottom:1px solid var(--pv-line);flex:0 0 auto;
+}
+.pvdevs{display:flex;gap:4px}
+.pvdev{
+  display:flex;align-items:center;gap:5px;
+  background:transparent;border:1px solid transparent;color:var(--pv-mut);
+  font:inherit;padding:5px 9px;border-radius:7px;cursor:pointer;white-space:nowrap;
+}
+.pvdev:hover{background:#1f1f2a;color:var(--pv-fg)}
+.pvdev.on{background:#1f1f2a;border-color:var(--pv-accent);color:var(--pv-fg)}
+.pvg{font-size:13px;line-height:1}
+.pvspacer{flex:1}
+.pvurl{color:var(--pv-mut);font-size:11px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:ltr}
+.pvbtn{
+  background:#1f1f2a;border:1px solid var(--pv-line);color:var(--pv-fg);
+  width:28px;height:26px;border-radius:7px;cursor:pointer;font-size:14px;line-height:1;
+}
+.pvbtn:hover{border-color:var(--pv-accent)}
+
+/* live pill */
+.pvlive{display:flex;align-items:center;gap:6px;color:var(--pv-mut);font-size:11px;padding:3px 8px;border-radius:20px;background:#13131a}
+.pvdot{width:8px;height:8px;border-radius:50%;background:#555;display:inline-block}
+.pvlive.ok .pvdot{background:var(--pv-ok);box-shadow:0 0 0 0 rgba(52,211,153,.6);animation:pvping 2.2s infinite}
+.pvlive.ok{color:var(--pv-ok)}
+.pvlive.build .pvdot{background:var(--pv-accent);animation:pvping 1s infinite}
+.pvlive.build{color:var(--pv-accent)}
+@keyframes pvping{0%{box-shadow:0 0 0 0 rgba(245,158,11,.55)}70%{box-shadow:0 0 0 7px rgba(245,158,11,0)}100%{box-shadow:0 0 0 0 rgba(245,158,11,0)}}
+
+/* top progress bar while building */
+.pvprog{height:2px;background:transparent;flex:0 0 auto;overflow:hidden}
+.pvprog.run{background:linear-gradient(90deg,transparent,var(--pv-accent),transparent);background-size:40% 100%;background-repeat:no-repeat;animation:pvslide 1.1s linear infinite}
+@keyframes pvslide{0%{background-position:-40% 0}100%{background-position:140% 0}}
+
+/* stage */
+.pvstage{
+  flex:1;display:flex;align-items:center;justify-content:center;
+  overflow:hidden;
+  background:
+    radial-gradient(circle at 50% 40%,#15151f 0,var(--pv-bg) 70%);
+}
+
+/* frame + bezels */
+.pvframe{position:relative;transform-origin:center center;background:#000}
+.pvframe iframe{display:block;border:0;background:#fff}
+.pv-none{box-shadow:none;border-radius:0}
+.pv-none iframe{border-radius:0}
+
+.pv-pad{border-radius:34px;padding:26px;background:#1c1c22;box-shadow:0 24px 70px rgba(0,0,0,.55),inset 0 0 0 2px #2c2c34}
+.pv-pad iframe{border-radius:6px}
+
+.pv-ios{border-radius:46px;padding:14px;background:#0b0b0e;box-shadow:0 24px 70px rgba(0,0,0,.6),inset 0 0 0 2px #303039}
+.pv-ios iframe{border-radius:34px}
+
+.pv-droid{border-radius:30px;padding:16px;background:#0b0b0e;box-shadow:0 24px 70px rgba(0,0,0,.6),inset 0 0 0 2px #2a2a32}
+.pv-droid iframe{border-radius:18px}
+
+/* notch (iphone) / camera dot (android) */
+.pvnotch{display:none;position:absolute;z-index:3;left:50%;transform:translateX(-50%)}
+.pv-ios .pvnotch{display:block;top:14px;width:120px;height:26px;background:#0b0b0e;border-radius:0 0 16px 16px}
+.pv-droid .pvnotch{display:block;top:24px;width:9px;height:9px;background:#0b0b0e;border-radius:50%;border:1px solid #333}
+
+/* home indicator (ios) */
+.pvhome{display:none}
+.pv-ios .pvhome{display:block;position:absolute;bottom:20px;left:50%;transform:translateX(-50%);width:120px;height:4px;border-radius:3px;background:rgba(255,255,255,.5)}
+
+/* building shimmer overlay */
+.pvshim{position:absolute;inset:0;z-index:2;display:none;align-items:flex-start;justify-content:center;pointer-events:none}
+.pvshim.show{display:flex}
+.pvshimbar{position:absolute;inset:0;background:linear-gradient(110deg,transparent 30%,rgba(245,158,11,.10) 50%,transparent 70%);background-size:220% 100%;animation:pvsheen 1.2s linear infinite}
+@keyframes pvsheen{0%{background-position:120% 0}100%{background-position:-120% 0}}
+.pvshimtxt{margin-top:14px;background:rgba(245,158,11,.92);color:#231400;font-weight:600;font-size:11px;padding:4px 11px;border-radius:20px;align-self:flex-start;position:relative;top:10px}
+.pv-none .pvshimtxt{top:14px}
