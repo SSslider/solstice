@@ -1053,5 +1053,53 @@
 		}
 	}
 
+	// ---------- welcome / quick-start ----------
+	// First-run hero in the empty chat: brand + tappable starters that pre-fill the
+	// composer (and set build mode) so a new user has an obvious next step. Cleared
+	// automatically the moment any real message/card lands in the thread.
+	const QUICK_STARTS = [
+		{ glyph: "🌐", mode: "site", title: "אתר נחיתה", sub: "דף שיווקי מודרני", prompt: "בנה דף נחיתה פרימיום ומודרני עבור __ (תאר את העסק). היררכיה ברורה, hero מרשים, קריאה לפעולה, ורספונסיבי." },
+		{ glyph: "📱", mode: "app", title: "אפליקציה", sub: "מובייל-first, ריבוי מסכים", prompt: "בנה אפליקציה מובייל-first עם ריבוי מסכים וניווט תחתון עבור __ (תאר את הרעיון). התחל משלד האפליקציה." },
+		{ glyph: "🎨", mode: "site", title: "שכפול עיצוב", sub: "מאתר ייחוס", prompt: "שכפל את העיצוב והחוויה של האתר __ (הדבק קישור) ברמת פיקסל — פריסה, טיפוגרפיה, צבעים, אנימציות." },
+		{ glyph: "🛠", mode: "site", title: "תקן / שפר", sub: "על הפרויקט הפתוח", prompt: "עבור על הפרויקט הפתוח, אתר באגים ובעיות UX, ותקן אותם תוך הסבר קצר על כל תיקון." },
+	];
+	function renderWelcome() {
+		if (messagesEl.querySelector(".welcome") || messagesEl.children.length) return;
+		const w = el("div", "welcome");
+		const hero = el("div", "wHero");
+		hero.appendChild(el("span", "wMark", "☀"));
+		const ht = el("div", "wHeroText");
+		ht.appendChild(el("div", "wTitle", "ברוך הבא ל-Solstice"));
+		ht.appendChild(el("div", "wSub", "תאר מה לבנות — האתר או האפליקציה ייבנו מולך בזמן אמת."));
+		hero.appendChild(ht);
+		w.appendChild(hero);
+		const grid = el("div", "wGrid");
+		for (const q of QUICK_STARTS) {
+			const c = el("button", "wCard");
+			c.appendChild(el("span", "wCardGlyph", q.glyph));
+			const tx = el("div", "wCardText");
+			tx.appendChild(el("div", "wCardTitle", q.title));
+			tx.appendChild(el("div", "wCardSub", q.sub));
+			c.appendChild(tx);
+			c.addEventListener("click", () => {
+				try { setBuildMode(q.mode, true); } catch (e) {}
+				inputEl.value = q.prompt;
+				try { inputEl.dispatchEvent(new Event("input")); } catch (e) {}
+				inputEl.focus();
+				const pos = q.prompt.indexOf("__");
+				if (pos >= 0) { try { inputEl.setSelectionRange(pos, pos + 2); } catch (e) {} }
+			});
+			grid.appendChild(c);
+		}
+		w.appendChild(grid);
+		messagesEl.appendChild(w);
+	}
+	// drop the welcome as soon as a real bubble/card joins the thread
+	new MutationObserver(() => {
+		const w = messagesEl.querySelector(".welcome");
+		if (w && messagesEl.children.length > 1) w.remove();
+	}).observe(messagesEl, { childList: true });
+	renderWelcome();
+
 	vscode.postMessage({ type: "ready" });
 })();

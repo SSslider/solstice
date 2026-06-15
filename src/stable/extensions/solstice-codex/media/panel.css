@@ -485,3 +485,26 @@ details.diffFile[open] > .diffSum::before { content: "▾"; }
 .diffBody .ld { background: rgba(248,81,73,0.12); color: #ffa198; }
 .diffBody .lh { color: #58a6ff; opacity: 0.85; padding-top: 3px; }
 .diffBody .lc { opacity: 0.75; }
+
+/* ---------- welcome / quick-start (empty chat first run) ---------- */
+.welcome { padding: 26px 18px 8px; animation: screen-in .3s cubic-bezier(.2,.7,.3,1); }
+@keyframes screen-in { from { opacity: 0; transform: translateY(10px); } }
+.wHero { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
+.wMark { width: 46px; height: 46px; border-radius: 13px; flex: none; display: grid; place-items: center;
+	font-size: 24px; color: #1a1206; background: var(--sol-grad);
+	box-shadow: 0 6px 22px -6px color-mix(in srgb, var(--sol-accent) 65%, transparent); }
+.wTitle { font-size: 18px; font-weight: 740; letter-spacing: -0.3px; }
+.wSub { font-size: 12.5px; color: var(--vscode-descriptionForeground); margin-top: 3px; line-height: 1.45; }
+.wGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+.wCard { display: flex; align-items: center; gap: 11px; text-align: start; cursor: pointer; font-family: inherit;
+	padding: 13px 13px; border-radius: 13px; border: 1px solid var(--sol-line);
+	background: linear-gradient(180deg, var(--sol-surface-2), var(--sol-surface)); color: var(--vscode-foreground);
+	transition: transform .14s cubic-bezier(.2,.7,.3,1), border-color .14s, box-shadow .14s; }
+.wCard:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--sol-accent) 45%, var(--sol-line));
+	box-shadow: 0 14px 30px -20px color-mix(in srgb, var(--sol-accent) 70%, #000); }
+.wCard:active { transform: translateY(0); }
+.wCardGlyph { width: 36px; height: 36px; border-radius: 10px; flex: none; display: grid; place-items: center;
+	font-size: 18px; background: color-mix(in srgb, var(--sol-accent) 14%, transparent);
+	border: 1px solid color-mix(in srgb, var(--sol-accent) 26%, transparent); }
+.wCardTitle { font-size: 13.5px; font-weight: 640; letter-spacing: -0.2px; }
+.wCardSub { font-size: 11px; color: var(--vscode-descriptionForeground); margin-top: 2px; }
