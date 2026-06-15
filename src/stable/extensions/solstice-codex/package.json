@@ -299,6 +299,12 @@
             },
             "required": ["id", "wsUrl"]
           }
+        },
+        "solstice.fleet.hidden": {
+          "type": "array",
+          "default": [],
+          "description": "Agent ids hidden from the Fleet roster. Built-in agents (orion/jasper/asher) removed via the Fleet panel's × button are recorded here; add an id back to the roster by removing it from this list.",
+          "items": { "type": "string" }
         }
       }
     }

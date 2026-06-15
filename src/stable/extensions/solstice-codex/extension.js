@@ -1079,6 +1079,11 @@ class AgentController {
 		return path.join(os.homedir(), ".solstice", "fleet-replies");
 	}
 
+	fleetHidden() {
+		const raw = this.fleetCfg().get("hidden");
+		return new Set(Array.isArray(raw) ? raw.map(String) : []);
+	}
+
 	fleetAgents() {
 		const roster = [
 			{ id: "orion", name: "Orion", role: "CTO · architecture & planning", glyph: "◆", model: "Opus" },
@@ -1087,13 +1092,18 @@ class AgentController {
 		];
 		const bridges = this.fleetBridgeConfigs();
 		const base = this.fleetDir();
-		// surface any bridge-only agents not already in the static roster
-		for (const [id, b] of bridges) {
-			if (!roster.some((a) => a.id === id)) {
-				roster.push({ id, name: b.name || id, role: b.role || "Fleet agent", glyph: b.glyph || "◆", model: b.model || "" });
+		// surface every configured agent not already in the static roster — both live
+		// bridge agents (with wsUrl) and plain manually-added ones (without).
+		const rawList = Array.isArray(this.fleetCfg().get("bridges")) ? this.fleetCfg().get("bridges") : [];
+		for (const b of rawList) {
+			if (b && b.id && !roster.some((a) => a.id === String(b.id))) {
+				roster.push({ id: String(b.id), name: b.name || b.id, role: b.role || "Fleet agent", glyph: b.glyph || "◆", model: b.model || "" });
 			}
 		}
-		for (const a of roster) {
+		const hidden = this.fleetHidden();
+		const visible = roster.filter((a) => !hidden.has(a.id));
+		for (const a of visible) {
+			a.removable = true;
 			const b = bridges.get(a.id);
 			if (b) {
 				a.bridge = true;
@@ -1108,7 +1118,7 @@ class AgentController {
 				a.present = (() => { try { return fs.statSync(path.join(base, a.id)).isDirectory(); } catch { return false; } })();
 			}
 		}
-		return roster;
+		return visible;
 	}
 
 	// Lazily open (and cache) the WebSocket to one agent's brain. Frames are
@@ -1155,6 +1165,48 @@ class AgentController {
 	closeFleetBridges() {
 		for (const rec of this.fleetBridges.values()) { try { rec.ws.close(); } catch { } }
 		this.fleetBridges.clear();
+	}
+
+	// Manually add an agent to the Fleet roster. A wsUrl makes it a live bridge
+	// agent; without one it is a plain (file-drop) roster entry.
+	async addFleetAgent(agent) {
+		const id = String((agent && agent.id) || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
+		if (!id) return { ok: false, error: "missing id" };
+		const entry = {
+			id,
+			name: String(agent.name || id).trim(),
+			role: String(agent.role || "Fleet agent").trim(),
+			glyph: String(agent.glyph || "◆").trim().slice(0, 2) || "◆",
+			model: String(agent.model || "").trim(),
+		};
+		const wsUrl = String(agent.wsUrl || "").trim();
+		if (wsUrl) entry.wsUrl = wsUrl;
+		if (agent.token) entry.token = String(agent.token).trim();
+		const cfg = this.fleetCfg();
+		const list = Array.isArray(cfg.get("bridges")) ? cfg.get("bridges").slice() : [];
+		const i = list.findIndex((b) => b && String(b.id) === id);
+		// bridges config only stores live-socket agents; file-drop agents need a wsUrl-less marker too
+		if (i >= 0) list[i] = entry; else list.push(entry);
+		await cfg.update("bridges", list, vscode.ConfigurationTarget.Global);
+		// un-hide if it was previously removed
+		const hidden = (Array.isArray(cfg.get("hidden")) ? cfg.get("hidden") : []).filter((h) => String(h) !== id);
+		await cfg.update("hidden", hidden, vscode.ConfigurationTarget.Global);
+		return { ok: true, id };
+	}
+
+	async removeFleetAgent(agentId) {
+		const id = String(agentId || "").trim();
+		if (!id) return { ok: false, error: "missing id" };
+		const cfg = this.fleetCfg();
+		const list = (Array.isArray(cfg.get("bridges")) ? cfg.get("bridges") : []).filter((b) => b && String(b.id) !== id);
+		await cfg.update("bridges", list, vscode.ConfigurationTarget.Global);
+		// built-in agents have no bridge entry; record them as hidden so they drop off the roster
+		const hidden = new Set((Array.isArray(cfg.get("hidden")) ? cfg.get("hidden") : []).map(String));
+		hidden.add(id);
+		await cfg.update("hidden", Array.from(hidden), vscode.ConfigurationTarget.Global);
+		const rec = this.fleetBridges.get(id);
+		if (rec) { try { rec.ws.close(); } catch { } this.fleetBridges.delete(id); }
+		return { ok: true, id };
 	}
 
 	sendToFleet(agentId, text) {
@@ -1474,6 +1526,16 @@ function openFleet(controller, extensionUri) {
 				fleetPanel.webview.postMessage({ type: "sent", agent: msg.agent, ok: res.ok, ts: res.ts, error: res.error, live: res.live });
 				break;
 			}
+			case "addAgent":
+				controller.addFleetAgent(msg.agent || {}).then((res) => {
+					fleetPanel.webview.postMessage({ type: "rosterUpdate", agents: controller.fleetAgents(), select: res.ok ? res.id : null, error: res.error });
+				});
+				break;
+			case "removeAgent":
+				controller.removeFleetAgent(msg.id).then(() => {
+					fleetPanel.webview.postMessage({ type: "rosterUpdate", agents: controller.fleetAgents() });
+				});
+				break;
 			case "openAgentPanel":
 				vscode.commands.executeCommand("solstice.agentPanel.focus").then(undefined, () => { });
 				break;

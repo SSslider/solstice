@@ -20,6 +20,8 @@
 	function agentById(id) { return agents.find((a) => a.id === id); }
 	function thread(id) { if (!threads.has(id)) threads.set(id, []); return threads.get(id); }
 
+	let addingAgent = false;
+
 	function shell() {
 		app.innerHTML = "";
 		const wrap = el("div", "fleet");
@@ -28,10 +30,13 @@
 		const rh = el("div", "rosterHead");
 		rh.appendChild(el("span", "rMark", "☀"));
 		const rt = el("div", "rTitle", "Fleet");
-		rt.appendChild(el("small", "", "Your agents, inside Solstice"));
+		rt.appendChild(el("small", "", agents.length + " agents · inside Solstice"));
 		rh.appendChild(rt);
 		roster.appendChild(rh);
-		for (const a of agents) roster.appendChild(agentRow(a));
+		const list = el("div", "rosterList");
+		for (const a of agents) list.appendChild(agentRow(a));
+		roster.appendChild(list);
+		roster.appendChild(addAgentBlock());
 		wrap.appendChild(roster);
 
 		wrap.appendChild(chatPane());
@@ -49,8 +54,63 @@
 		meta.appendChild(el("div", "aRole", a.role));
 		meta.appendChild(el("div", "aModel", a.model));
 		row.appendChild(meta);
+		if (a.removable !== false) {
+			const x = el("button", "aRemove", "×");
+			x.title = "Remove " + a.name;
+			x.addEventListener("click", (e) => {
+				e.stopPropagation();
+				if (activeId === a.id) activeId = null;
+				vscode.postMessage({ type: "removeAgent", id: a.id });
+			});
+			row.appendChild(x);
+		}
 		row.addEventListener("click", () => { activeId = a.id; vscode.postMessage({ type: "select", agent: a.id }); shell(); });
 		return row;
+	}
+
+	function addAgentBlock() {
+		const box = el("div", "addBox");
+		if (!addingAgent) {
+			const btn = el("button", "addBtn");
+			btn.append(el("span", "addPlus", "+"), document.createTextNode("Add agent"));
+			btn.addEventListener("click", () => { addingAgent = true; shell(); });
+			box.appendChild(btn);
+			return box;
+		}
+		const form = el("div", "addForm");
+		const fields = [
+			["id", "id (e.g. niko)", ""],
+			["name", "Display name", ""],
+			["role", "Role", ""],
+			["glyph", "Glyph", "◆"],
+			["model", "Model", ""],
+			["wsUrl", "Live bridge ws:// URL (optional)", ""],
+		];
+		const inputs = {};
+		for (const [key, ph, def] of fields) {
+			const inp = document.createElement("input");
+			inp.className = "addInput";
+			inp.placeholder = ph;
+			if (def) inp.value = def;
+			inputs[key] = inp;
+			form.appendChild(inp);
+		}
+		const actions = el("div", "addActions");
+		const save = el("button", "addSave", "Add");
+		save.addEventListener("click", () => {
+			const agent = {};
+			for (const k of Object.keys(inputs)) agent[k] = inputs[k].value.trim();
+			if (!agent.id) { inputs.id.focus(); return; }
+			vscode.postMessage({ type: "addAgent", agent });
+			addingAgent = false;
+		});
+		const cancel = el("button", "addCancel", "Cancel");
+		cancel.addEventListener("click", () => { addingAgent = false; shell(); });
+		actions.append(save, cancel);
+		form.appendChild(actions);
+		box.appendChild(form);
+		setTimeout(() => inputs.id.focus(), 0);
+		return box;
 	}
 
 	function renderWorking() {
@@ -181,6 +241,13 @@
 			case "roster":
 				agents = Array.isArray(msg.agents) ? msg.agents : [];
 				if (!activeId && agents.length) activeId = (agents.find((a) => a.id === "jasper") || agents[0]).id;
+				shell();
+				break;
+			case "rosterUpdate":
+				agents = Array.isArray(msg.agents) ? msg.agents : [];
+				if (msg.select) activeId = msg.select;
+				if (!agents.some((a) => a.id === activeId)) activeId = agents.length ? agents[0].id : null;
+				addingAgent = false;
 				shell();
 				break;
 			case "sent":
