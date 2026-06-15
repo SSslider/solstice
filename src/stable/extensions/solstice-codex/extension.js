@@ -5,7 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { CodexClient, resolveCodexBinary } = require("./codexClient");
-const { PreviewServer } = require("./preview");
+const { PreviewServer, detectDevServerUrl, hasFramework } = require("./preview");
 const { GrokProvider, GROK_MODELS } = require("./grok");
 const { ClaudeProvider, CLAUDE_LABEL } = require("./claude");
 const { FleetBridge } = require("./fleetBridge");
@@ -262,20 +262,56 @@ class AgentController {
 		if (!url) {
 			const root = workspaceCwd();
 			if (!root) { vscode.window.showWarningMessage("Open a folder to preview."); return; }
-			if (!this.preview) this.preview = new PreviewServer(root, {
-				onSelect: (pick) => this.post({ type: "elementSelected", pick }),
-			});
-			const port = await this.preview.ensure();
-			let rel = "index.html";
-			if (!fs.existsSync(path.join(root, rel))) {
-				const found = await vscode.workspace.findFiles("**/*.html", "**/node_modules/**", 1);
-				if (found.length) rel = vscode.workspace.asRelativePath(found[0]);
+			// Prefer a live dev server (Vite/Next/CRA the agent started) — a bundled
+			// app can't run as flat files. Fall back to the static server only for
+			// plain-HTML projects.
+			url = await detectDevServerUrl(root).catch(() => null);
+			if (!url) {
+				if (!this.preview) this.preview = new PreviewServer(root, {
+					onSelect: (pick) => this.post({ type: "elementSelected", pick }),
+				});
+				const port = await this.preview.ensure();
+				let rel = "index.html";
+				if (!fs.existsSync(path.join(root, rel))) {
+					const found = await vscode.workspace.findFiles("**/*.html", "**/node_modules/**", 1);
+					if (found.length) rel = vscode.workspace.asRelativePath(found[0]);
+				}
+				url = `http://127.0.0.1:${port}/${rel}`;
 			}
-			url = `http://127.0.0.1:${port}/${rel}`;
 		}
 		this.previewUrl = url;
 		this.previewKind = this.detectPreviewKind();
 		this.openPreviewPanel(url, this.defaultDevice());
+	}
+
+	// First previewable file → auto-open the center preview (regression fix: this
+	// used to fire only on plain .html). For framework projects we poll briefly
+	// for the agent's dev server and open the moment it's reachable; for plain
+	// HTML we open the static server right away.
+	ensurePreviewSoon() {
+		if (this.previewUrl || this._previewWatch) return;
+		const root = workspaceCwd();
+		if (!root) return;
+		const framework = hasFramework(root);
+		let elapsed = 0;
+		const STEP = 2500, MAX = 60000;
+		const tick = async () => {
+			if (this.previewUrl) { this.stopPreviewWatch(); return; }
+			const dev = await detectDevServerUrl(root).catch(() => null);
+			if (dev) { this.stopPreviewWatch(); await this.openPreview(dev).catch(() => { }); return; }
+			// no dev server yet: plain-HTML projects can open the static server
+			// immediately; framework projects wait (a static serve would render a
+			// broken, un-bundled page).
+			if (!framework) { this.stopPreviewWatch(); await this.openPreview("").catch(() => { }); return; }
+			elapsed += STEP;
+			if (elapsed >= MAX) this.stopPreviewWatch();
+		};
+		this._previewWatch = setInterval(tick, STEP);
+		tick();
+	}
+
+	stopPreviewWatch() {
+		if (this._previewWatch) { clearInterval(this._previewWatch); this._previewWatch = null; }
 	}
 
 	// Create/reveal the device-frame preview webview in the center column and
@@ -358,9 +394,10 @@ class AgentController {
 				viewColumn: vscode.ViewColumn.One, preview: true, preserveFocus: true,
 			}).then(undefined, () => { });
 		}
-		// first .html the agent writes → open the live preview automatically
-		if (!this.previewUrl && paths.some((p) => p.endsWith(".html"))) {
-			this.openPreview("").then(undefined, () => { });
+		// first previewable file the agent writes → auto-open the live preview
+		// (html for static sites; jsx/tsx/vue/svelte/astro for bundled apps)
+		if (!this.previewUrl && paths.some((p) => /\.(html?|jsx?|tsx?|vue|svelte|astro)$/i.test(p))) {
+			this.ensurePreviewSoon();
 			return;
 		}
 		this.refreshPreview();

@@ -148,6 +148,60 @@ function injectSelect(html) {
 	return html.slice(0, idx) + SELECT_SCRIPT + html.slice(idx);
 }
 
+// ---- dev-server detection ---------------------------------------------------
+// A bundled app (Vite/Next/CRA/Astro/SvelteKit) cannot be served as flat files —
+// it needs its dev server. During a build the agent runs `npm run dev`, so a dev
+// server is usually already listening. We detect it and point the preview there;
+// only plain-HTML projects fall back to the static PreviewServer.
+
+const COMMON_DEV_PORTS = [5173, 3000, 4173, 5174, 8080, 4321, 3001, 8000, 5500];
+
+// Does this project need a dev server (vs. plain static HTML)?
+function hasFramework(root) {
+	try {
+		const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+		const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+		if (deps.next || deps.vite || deps["react-scripts"] || deps.astro ||
+			deps["@sveltejs/kit"] || deps.nuxt || deps["@vitejs/plugin-react"]) return true;
+		const dev = (pkg.scripts && (pkg.scripts.dev || pkg.scripts.start)) || "";
+		return /\b(vite|next|astro|nuxt|react-scripts|webpack|parcel)\b/.test(dev);
+	} catch { return false; }
+}
+
+// Probe order biased toward the project's framework default port.
+function portOrder(root) {
+	const first = [];
+	try {
+		const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+		const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+		if (deps.next || deps.nuxt) first.push(3000);
+		if (deps.vite || deps["@vitejs/plugin-react"]) first.push(5173, 4173);
+		if (deps["react-scripts"]) first.push(3000);
+		if (deps.astro) first.push(4321);
+	} catch { }
+	return [...new Set([...first, ...COMMON_DEV_PORTS])];
+}
+
+function httpProbe(port, timeout = 700) {
+	return new Promise((resolve) => {
+		const req = http.request({ host: "127.0.0.1", port, path: "/", method: "GET", timeout }, (res) => {
+			res.resume();           // any HTTP response means something is serving
+			resolve(true);
+		});
+		req.on("error", () => resolve(false));
+		req.on("timeout", () => { req.destroy(); resolve(false); });
+		req.end();
+	});
+}
+
+// Returns http://127.0.0.1:<port>/ of a live dev server for this project, or null.
+async function detectDevServerUrl(root) {
+	const order = portOrder(root);
+	const hits = await Promise.all(order.map((p) => httpProbe(p).then((ok) => (ok ? p : null))));
+	const live = order.find((_p, i) => hits[i]);
+	return live ? `http://127.0.0.1:${live}/` : null;
+}
+
 // Static file server over the workspace so Simple Browser can render the
 // site the agent is building (iframe can't load file:// URLs).
 class PreviewServer {
@@ -225,4 +279,4 @@ class PreviewServer {
 	}
 }
 
-module.exports = { PreviewServer };
+module.exports = { PreviewServer, detectDevServerUrl, hasFramework };
