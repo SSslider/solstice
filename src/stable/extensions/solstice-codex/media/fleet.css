@@ -26,6 +26,9 @@ html, body { margin: 0; height: 100%; background: var(--vscode-editor-background
   box-shadow: 0 5px 16px -6px color-mix(in srgb, var(--amber) 65%, transparent); }
 .rTitle { font-size: 15px; font-weight: 660; letter-spacing: -0.2px; }
 .rTitle small { display: block; font-weight: 500; font-size: 11px; color: var(--vscode-descriptionForeground); }
+.rVer { margin-left: auto; align-self: flex-start; font-size: 10.5px; font-weight: 600; letter-spacing: .2px;
+  padding: 2px 8px; border-radius: 999px; background: var(--surface); color: var(--vscode-descriptionForeground);
+  border: 1px solid var(--line); white-space: nowrap; cursor: help; }
 .agent {
   position: relative;
   display: flex; gap: 11px; align-items: center; padding: 11px 11px; border-radius: 11px;

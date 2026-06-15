@@ -1066,6 +1066,19 @@ class AgentController {
 	// from `solstice.fleet.token` or ~/.solstice/fleet-token. Agents with no
 	// bridge fall back to the legacy file-drop inbox (only works when the IDE and
 	// the fleet share a filesystem).
+	// Human-readable Solstice version for the status bar / Fleet badge.
+	versionLabel() {
+		let ext = "";
+		try { ext = (this.context.extension && this.context.extension.packageJSON && this.context.extension.packageJSON.version) || ""; } catch { }
+		return ext ? ("v" + ext) : "";
+	}
+	versionTooltip() {
+		const ext = this.versionLabel() || "?";
+		let base = "";
+		try { base = vscode.version || ""; } catch { }
+		return "Solstice " + ext + (base ? ("  ·  base " + base) : "");
+	}
+
 	fleetCfg() {
 		return vscode.workspace.getConfiguration("solstice.fleet");
 	}
@@ -1793,6 +1806,7 @@ function openFleet(controller, extensionUri) {
 	fleetPanel.webview.onDidReceiveMessage((msg) => {
 		switch (msg.type) {
 			case "ready":
+				fleetPanel.webview.postMessage({ type: "version", text: controller.versionLabel(), tip: controller.versionTooltip() });
 				fleetPanel.webview.postMessage({ type: "roster", agents: controller.fleetAgents() });
 				fleetPanel.webview.postMessage({ type: "history", threads: controller.loadFleetThreads() });
 				// warm every live bridge so the roster reflects real online state, not a guess
@@ -1866,6 +1880,15 @@ function activate(context) {
 		vscode.commands.registerCommand("solstice.agent.openConnectors", () => openConnectors(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.openFleet", () => openFleet(controller, context.extensionUri))
 	);
+	// Always-visible Solstice version badge (bottom status bar) → opens Fleet on click.
+	try {
+		const verItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1000);
+		verItem.text = "$(sparkle) Solstice " + (controller.versionLabel() || "");
+		verItem.tooltip = controller.versionTooltip();
+		verItem.command = "solstice.agent.openFleet";
+		verItem.show();
+		context.subscriptions.push(verItem);
+	} catch { }
 	// live research dashboard: render DECONSTRUCT.md / RESEARCH.md as the agent writes it
 	// (no brace glob — filter by basename; grok writes from outside the editor)
 	const researchWatcher = vscode.workspace.createFileSystemWatcher("**/*.md");

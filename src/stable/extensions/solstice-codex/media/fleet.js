@@ -9,6 +9,7 @@
 	const activity = [];       // [{agent, state, text, ts}] newest last, capped
 	const liveState = new Map(); // agentId -> {state, text, ts} latest per agent
 	let pendingApprovals = []; // [{key, agent, name, kind, detail, label, ts}] inline gates
+	let buildVersion = { text: "", tip: "" }; // Solstice version badge
 
 	function el(tag, cls, text) {
 		const e = document.createElement(tag);
@@ -53,6 +54,11 @@
 		const online = agents.filter((a) => statusClass(a) === "online").length;
 		rt.appendChild(el("small", "", agents.length + " agents · " + online + " online"));
 		rh.appendChild(rt);
+		if (buildVersion.text) {
+			const ver = el("span", "rVer", buildVersion.text);
+			ver.title = buildVersion.tip || ("Solstice " + buildVersion.text);
+			rh.appendChild(ver);
+		}
 		roster.appendChild(rh);
 		const list = el("div", "rosterList");
 		for (const a of agents) list.appendChild(agentRow(a));
@@ -395,6 +401,10 @@
 				break;
 			case "activity":
 				pushActivity({ agent: msg.agent, state: msg.state, text: msg.text, ts: msg.ts || Date.now() });
+				break;
+			case "version":
+				buildVersion = { text: String(msg.text || ""), tip: String(msg.tip || "") };
+				if (agents.length) shell();
 				break;
 			case "focusAgent":
 				if (msg.agent) { activeId = msg.agent; shell(); }
