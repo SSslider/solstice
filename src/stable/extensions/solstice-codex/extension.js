@@ -79,6 +79,7 @@ class AgentController {
 		this.previewUrl = "";
 		this.previewPanel = null;      // device-frame live preview webview (center column)
 		this.previewKind = "site";     // "site" | "app" — drives default device frame
+		this.buildMode = "site";       // "site" | "app" — user-selected build intent (composer toggle)
 		this.previewBuildTimer = null;
 		this.grok = null;
 		this.claude = null;
@@ -255,7 +256,36 @@ class AgentController {
 		return "site";
 	}
 
-	defaultDevice() { return this.previewKind === "app" ? "iphone" : "desktop"; }
+	defaultDevice() { return (this.buildMode === "app" || this.previewKind === "app") ? "iphone" : "desktop"; }
+
+	// User-selected build intent from the composer toggle. App mode also primes the
+	// preview to open in a phone frame and injects app-specific build guidance.
+	setBuildMode(mode) {
+		this.buildMode = mode === "app" ? "app" : "site";
+		this.previewKind = this.buildMode;
+		if (this.previewPanel && this.previewReady && this.previewUrl) {
+			this.postPreview({ type: "load", url: this.previewUrl, device: this.defaultDevice() });
+		}
+	}
+
+	// Extra guidance appended to the build preamble when the user is in App mode,
+	// so a "build an app" request yields a real mobile-first installable app
+	// (screens + navigation + manifest) rather than a marketing website.
+	appModeGuidance() {
+		if (this.buildMode !== "app") return "";
+		return [
+			"",
+			"## BUILD MODE: APP (not a marketing website)",
+			"The user is building an APPLICATION, not a landing/marketing site. Design accordingly:",
+			"- Mobile-first: target a phone viewport (~390px) first; the live preview opens in a phone frame.",
+			"- App shell: persistent navigation (top app bar and/or bottom tab bar), multiple SCREENS/routes, not one long scroll page.",
+			"- Real interaction & state: working navigation between screens, lists/detail views, forms, and local state (use localStorage or a store).",
+			"- Touch ergonomics: ≥44px tap targets, thumb-reachable primary actions, no hover-only affordances.",
+			"- Installable PWA: include a web app manifest (name, icons, theme/background color, display: standalone) and a basic service worker so it can be added to the home screen.",
+			"- Prefer an SPA stack (Vite + React/Router) unless told otherwise; keep it runnable with `npm run dev`.",
+			"- Treat each screen as a deliverable: build the navigation skeleton first, then fill screens so the preview is always interactive.",
+		].join("\n");
+	}
 
 	async openPreview(explicitUrl) {
 		let url = explicitUrl || "";
@@ -717,6 +747,7 @@ class AgentController {
 			"- For multi-step builds, first write a short numbered plan to .solstice/PLAN.md and keep step markers updated as you work ([x] done, [~] current, [ ] pending). The IDE renders it as a live checklist.",
 			"- When deconstructing / analyzing / researching a design, website, or app: maintain DECONSTRUCT.md (or RESEARCH.md) in the workspace root and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end. The IDE renders this file live to the user as a research dashboard. Include as you go: what you examined so far, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, techniques you detected (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed the frames/screenshots you examine as images with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
+			this.appModeGuidance(),
 			playbook ? "\n" + playbook : "",
 		].join("\n");
 	}
@@ -744,6 +775,7 @@ class AgentController {
 			"- For multi-step builds, use your todo/plan tool and keep step statuses updated as you work — the IDE renders it as a live checklist.",
 			"- When deconstructing / analyzing / researching a design, website, or app: maintain DECONSTRUCT.md (or RESEARCH.md) in the workspace root and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end. The IDE renders this file live to the user as a research dashboard. Include as you go: what you examined so far, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, techniques you detected (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed the frames/screenshots you examine as images with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
+			this.appModeGuidance(),
 			playbook ? "\n" + playbook : "",
 		].join("\n");
 	}
@@ -1026,6 +1058,7 @@ class AgentController {
 			"- For any multi-step build task, first create a plan with your plan tool and keep step statuses updated as you work.",
 			"- When deconstructing / analyzing / researching a design, website, or app: maintain DECONSTRUCT.md (or RESEARCH.md) in the workspace root and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end. The IDE renders this file live to the user as a research dashboard. Include as you go: what you examined so far, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, techniques you detected (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed the frames/screenshots you examine as images with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
+			this.appModeGuidance(),
 			playbook ? "\n" + playbook : "",
 		].join("\n");
 	}
@@ -1997,6 +2030,7 @@ class AgentViewProvider {
 					case "selectAutonomy": await this.controller.selectAutonomy(); break;
 					case "openImage": this.controller.openImage(msg.path); break;
 					case "transcribe": await this.controller.transcribeVoice(msg.audio, msg.mime); break;
+						case "buildMode": this.controller.setBuildMode(msg.mode); break;
 				}
 			} catch (e) {
 				this.controller.post({ type: "fatal", message: String(e && e.message || e) });

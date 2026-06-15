@@ -26,6 +26,10 @@
 			<textarea id="input" rows="3" placeholder="Describe a task for the agent…"></textarea>
 			<div id="composerBar">
 				<button id="modelBtn" class="pickBtn" title="Select agent model">⌬ <span id="model">—</span> <span class="caret">▾</span></button>
+				<div id="buildMode" class="buildMode" title="מה בונים? אתר אינטרנט או אפליקציה">
+					<button id="modeSite" class="modeOpt active" data-mode="site">🌐 אתר</button>
+					<button id="modeApp" class="modeOpt" data-mode="app">📱 אפליקציה</button>
+				</div>
 				<span id="tokChip" class="tokChip hidden" title=""></span>
 				<button id="autonomyBtn" class="pickBtn" title="Set agent autonomy">🛡 <span id="autonomy">Supervised</span> <span class="caret">▾</span></button>
 				<span id="hint">Enter to send</span>
@@ -58,6 +62,22 @@
 	const tokChipEl = document.getElementById("tokChip");
 	const overlayEl = document.getElementById("loginOverlay");
 	const loginNoteEl = document.getElementById("loginNote");
+
+	// ---- build mode toggle (Website ⟷ App) ----
+	let buildMode = "site";
+	const modeSiteEl = document.getElementById("modeSite");
+	const modeAppEl = document.getElementById("modeApp");
+	function setBuildMode(mode, notify) {
+		buildMode = mode === "app" ? "app" : "site";
+		modeSiteEl.classList.toggle("active", buildMode === "site");
+		modeAppEl.classList.toggle("active", buildMode === "app");
+		inputEl.placeholder = buildMode === "app"
+			? "תאר אפליקציה לבנות (מובייל-first, מסכים, ניווט)…"
+			: "Describe a task for the agent…";
+		if (notify) vscode.postMessage({ type: "buildMode", mode: buildMode });
+	}
+	modeSiteEl.addEventListener("click", () => setBuildMode("site", true));
+	modeAppEl.addEventListener("click", () => setBuildMode("app", true));
 
 	function fmtTok(n) {
 		n = Number(n || 0);

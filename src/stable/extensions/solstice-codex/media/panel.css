@@ -252,6 +252,24 @@ details.reasoning.done summary { opacity: 0.5; }
 }
 .tokChip.hidden { display: none; }
 
+/* build mode toggle — Website ⟷ App segmented control */
+.buildMode {
+	display: inline-flex; align-items: center; gap: 0;
+	border: 1px solid var(--sol-line); border-radius: 999px;
+	background: var(--sol-surface-2); overflow: hidden;
+}
+.modeOpt {
+	border: none; background: transparent; cursor: pointer;
+	color: var(--vscode-descriptionForeground);
+	font-family: inherit; font-size: 10.5px; font-weight: 600;
+	padding: 3px 10px; white-space: nowrap; line-height: 1.4;
+}
+.modeOpt:hover { color: var(--vscode-foreground); }
+.modeOpt.active {
+	background: var(--sol-accent, #f59e0b);
+	color: #1a1205;
+}
+
 /* inline model picker menu — opens UPWARD from the composer (Antigravity-style) */
 .pickMenu {
 	position: absolute; left: 11px; bottom: 50px; z-index: 20;
