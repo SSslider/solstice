@@ -1895,6 +1895,25 @@ function openConnectors(controller, extensionUri) {
 	connectorsPanel.onDidDispose(() => { connectorsPanel = null; });
 }
 
+let workflowPanel = null;
+
+function openWorkflow(controller, extensionUri) {
+	if (workflowPanel) { workflowPanel.reveal(vscode.ViewColumn.One); return; }
+	workflowPanel = vscode.window.createWebviewPanel(
+		"solstice.workflow",
+		"How Solstice works",
+		vscode.ViewColumn.One,
+		{ enableScripts: true, retainContextWhenHidden: true, localResourceRoots: webviewResourceRoots(extensionUri) }
+	);
+	workflowPanel.webview.html = mediaHtml(workflowPanel.webview, extensionUri, "workflow.js", "workflow.css");
+	const push = () => {
+		const agents = controller.fleetAgents().map((a) => ({ id: a.id, name: a.name, glyph: a.glyph, model: a.model || "" }));
+		workflowPanel.webview.postMessage({ type: "model", provider: controller.providerLabel(), version: controller.versionLabel(), agents });
+	};
+	workflowPanel.webview.onDidReceiveMessage((msg) => { if (msg.type === "ready") push(); });
+	workflowPanel.onDidDispose(() => { workflowPanel = null; });
+}
+
 let fleetPanel = null;
 
 function openFleet(controller, extensionUri) {
@@ -1998,6 +2017,7 @@ function activate(context) {
 		vscode.commands.registerCommand("solstice.agent.openTerminal", () => controller.openTerminal()),
 		vscode.commands.registerCommand("solstice.agent.openGallery", () => openGallery(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.openConnectors", () => openConnectors(controller, context.extensionUri)),
+		vscode.commands.registerCommand("solstice.agent.openWorkflow", () => openWorkflow(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.openFleet", () => openFleet(controller, context.extensionUri))
 	);
 	// Always-visible Solstice version badge (bottom status bar) → opens Fleet on click.

@@ -105,6 +105,12 @@
         "title": "Open Fleet",
         "category": "Solstice",
         "icon": "$(organization)"
+      },
+      {
+        "command": "solstice.agent.openWorkflow",
+        "title": "How Solstice Works",
+        "category": "Solstice",
+        "icon": "$(circuit-board)"
       }
     ],
     "menus": {
@@ -128,6 +134,11 @@
           "command": "solstice.agent.openFleet",
           "when": "view == solstice.agentPanel",
           "group": "navigation@1"
+        },
+        {
+          "command": "solstice.agent.openWorkflow",
+          "when": "view == solstice.agentPanel",
+          "group": "navigation@4"
         },
         {
           "command": "solstice.agent.openManager",
@@ -180,6 +191,16 @@
           "type": "boolean",
           "default": false,
           "description": "Explicit opt-in gate for the Claude provider. OFF by default so Claude never runs unattended. When false, selecting 'claude' falls back to gpt-5.5 and the Claude option is hidden from the model picker. Set to true only when you deliberately want Claude to drive the agent."
+        },
+        "solstice.codex.groqApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Groq API key for voice dictation (Whisper transcription) in the agent composer. Empty = falls back to the GROQ_API_KEY environment variable."
+        },
+        "solstice.codex.dictationLanguage": {
+          "type": "string",
+          "default": "he",
+          "description": "Language hint for voice dictation transcription (ISO-639-1, e.g. 'he', 'en'). Use 'auto' to let Whisper detect the language."
         },
         "solstice.codex.path": {
           "type": "string",

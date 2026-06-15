@@ -1,0 +1,80 @@
+:root {
+  --amber: var(--vscode-button-background, #f59e0b);
+  --amber-soft: color-mix(in srgb, var(--amber) 18%, transparent);
+  --blue: #60a5fa;
+  --surface: color-mix(in srgb, var(--vscode-foreground, #ccc) 4%, transparent);
+  --surface-2: color-mix(in srgb, var(--vscode-foreground, #ccc) 7%, transparent);
+  --line: color-mix(in srgb, var(--vscode-foreground, #ccc) 12%, transparent);
+  --line-soft: color-mix(in srgb, var(--vscode-foreground, #ccc) 7%, transparent);
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font-family: var(--vscode-font-family);
+  color: var(--vscode-foreground);
+  background:
+    radial-gradient(900px 420px at 80% -10%, color-mix(in srgb, var(--amber) 10%, transparent), transparent),
+    radial-gradient(700px 380px at 0% 110%, color-mix(in srgb, var(--blue) 9%, transparent), transparent);
+  direction: rtl;
+}
+.wf { max-width: 1180px; margin: 0 auto; padding: 30px 30px 40px; }
+
+.wfHead { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 34px; }
+.wfTitle { font-size: 26px; font-weight: 750; letter-spacing: -0.4px; }
+.wfSub { font-size: 13.5px; color: var(--vscode-descriptionForeground); margin-top: 4px; }
+.wfBadge { display: flex; align-items: center; gap: 9px; font-size: 12.5px; font-weight: 640;
+  padding: 8px 15px; border-radius: 999px; background: var(--amber-soft);
+  border: 1px solid color-mix(in srgb, var(--amber) 34%, transparent); white-space: nowrap; }
+.wfBadgeDot { width: 9px; height: 9px; border-radius: 50%; background: var(--amber);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--amber) 60%, transparent); animation: ping 1.8s ease-out infinite; }
+@keyframes ping { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--amber) 55%, transparent); }
+  100% { box-shadow: 0 0 0 11px transparent; } }
+
+/* ---- pipeline ---- */
+.flow { display: flex; align-items: flex-start; justify-content: center; gap: 0; flex-wrap: nowrap; }
+.node { width: 162px; flex: none; text-align: center; padding: 4px; opacity: 0;
+  animation: rise .5s ease both; animation-delay: calc(var(--i) * 0.12s); }
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+.orb { width: 64px; height: 64px; margin: 0 auto 12px; border-radius: 19px; display: grid; place-items: center;
+  font-size: 28px; background: linear-gradient(150deg, var(--surface-2), var(--surface));
+  border: 1px solid var(--line); position: relative;
+  box-shadow: 0 10px 30px -16px color-mix(in srgb, var(--amber) 70%, transparent); }
+.orb::after { content: ""; position: absolute; inset: -1px; border-radius: 19px; padding: 1px;
+  background: linear-gradient(150deg, color-mix(in srgb, var(--amber) 55%, transparent), transparent 60%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none; }
+.node--solstice .orb { background: linear-gradient(150deg, #fbbf24, #f59e0b 60%, #ea7c0b); color: #1a1206;
+  box-shadow: 0 12px 34px -14px color-mix(in srgb, var(--amber) 85%, transparent); }
+.node--out .orb { background: linear-gradient(150deg, color-mix(in srgb, var(--blue) 30%, var(--surface-2)), var(--surface)); }
+.orbGlyph { line-height: 1; }
+.nTitle { font-size: 14.5px; font-weight: 700; }
+.nSub { font-size: 10.5px; font-weight: 600; color: color-mix(in srgb, var(--amber) 88%, #fff); margin-top: 3px; }
+.nDesc { font-size: 11px; color: var(--vscode-descriptionForeground); margin-top: 7px; line-height: 1.45; }
+
+.conn { flex: 1 1 0; min-width: 40px; height: 64px; display: flex; align-items: center; }
+.connLine { position: relative; width: 100%; height: 2px; border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--line) 12%, var(--line) 88%, transparent); overflow: visible; }
+.packet { position: absolute; top: 50%; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--amber); box-shadow: 0 0 10px 1px color-mix(in srgb, var(--amber) 80%, transparent);
+  transform: translateY(-50%); animation: flowR 2.7s linear infinite; }
+/* RTL: visual flow moves right→left (from "you" on the right) */
+@keyframes flowR { from { right: -4px; opacity: 0; } 8% { opacity: 1; } 92% { opacity: 1; } to { right: 100%; opacity: 0; } }
+
+/* ---- return path ---- */
+.retPath { margin: 30px auto 0; max-width: 980px; text-align: center; }
+.retLine { position: relative; height: 2px; border-radius: 2px; margin: 0 10px 12px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--blue) 55%, transparent) 12%, color-mix(in srgb, var(--blue) 55%, transparent) 88%, transparent); }
+.packet--back { background: var(--blue); box-shadow: 0 0 10px 1px color-mix(in srgb, var(--blue) 80%, transparent);
+  animation: flowL 3.1s linear infinite; }
+@keyframes flowL { from { left: -4px; opacity: 0; } 8% { opacity: 1; } 92% { opacity: 1; } to { left: 100%; opacity: 0; } }
+.retLabel { font-size: 12px; color: var(--vscode-descriptionForeground); font-weight: 560; }
+
+/* ---- legend ---- */
+.legend { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 40px; }
+.legCard { display: flex; gap: 11px; padding: 15px; border-radius: 14px; background: var(--surface);
+  border: 1px solid var(--line-soft); }
+.legGlyph { font-size: 18px; flex: none; width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
+  background: var(--amber-soft); color: color-mix(in srgb, var(--amber) 92%, #fff); }
+.legTitle { font-size: 13px; font-weight: 680; }
+.legDesc { font-size: 11px; color: var(--vscode-descriptionForeground); margin-top: 5px; line-height: 1.5; }
+@media (max-width: 880px) { .legend { grid-template-columns: repeat(2, 1fr); } .flow { flex-wrap: wrap; } }
