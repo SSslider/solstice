@@ -15,10 +15,25 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 
-const ROOT = process.env.SOLSTICE_DEPLOY_ROOT || path.join(process.env.HOME || "/tmp", "solstice-deploys");
+const HOME = process.env.HOME || "/tmp";
+// Scan every place agents actually build — not just solstice-deploys. Jasper &
+// the fleet bridge build into solstice-bridge-work, so in-progress agent builds
+// (e.g. the reform clone) must surface here too. First root that owns a slug wins.
+const ROOTS = (process.env.SOLSTICE_DEPLOY_ROOTS
+	? process.env.SOLSTICE_DEPLOY_ROOTS.split(":")
+	: [
+		process.env.SOLSTICE_DEPLOY_ROOT || path.join(HOME, "solstice-deploys"),
+		path.join(HOME, "solstice-bridge-work"),
+		path.join(HOME, "solstice-bridge-keep"),
+		path.join(HOME, "Projects"),
+	]
+).filter((d) => { try { return fs.statSync(d).isDirectory(); } catch { return false; } });
 const PORT = Number(process.env.SOLSTICE_GALLERY_PORT || 8931);
 const HOST = process.env.SOLSTICE_GALLERY_HOST || "100.88.154.26"; // tailscale IP of srv1404664
-const SKIP = new Set(["node_modules", ".git", ".next", "dist"]);
+const SKIP = new Set([
+	"node_modules", ".git", ".next", "dist", "out",
+	"userdata", "exthost-logs", "VSCode-linux-x64", "VSCode-darwin-arm64", "VSCode-win32-x64",
+]);
 
 const MIME = {
 	".html": "text/html; charset=utf-8", ".css": "text/css", ".js": "text/javascript",
@@ -37,11 +52,37 @@ function safeName(name) {
 	return /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name) && !name.includes("..");
 }
 
+// Build a slug -> { dir, st } index across all roots, cached briefly so the
+// /preview and /p live-serving paths resolve to the right root cheaply.
+let _idx = { at: 0, map: new Map() };
+function indexMap() {
+	const now = Date.now();
+	if (now - _idx.at < 3000 && _idx.map.size) return _idx.map;
+	const map = new Map();
+	for (const root of ROOTS) {
+		let names;
+		try { names = fs.readdirSync(root); } catch { continue; }
+		for (const name of names) {
+			if (name.startsWith(".") || SKIP.has(name) || !safeName(name)) continue;
+			if (map.has(name)) continue; // first root wins
+			const dir = path.join(root, name);
+			let st;
+			try { st = fs.statSync(dir); } catch { continue; }
+			if (!st.isDirectory()) continue;
+			const isProject = ["package.json", "index.html", ".git", ".solstice"]
+				.some((m) => { try { return fs.existsSync(path.join(dir, m)); } catch { return false; } });
+			if (!isProject) continue;
+			map.set(name, { dir, st });
+		}
+	}
+	_idx = { at: now, map };
+	return map;
+}
+
 function projectDir(name) {
 	if (!safeName(name)) return null;
-	const dir = path.join(ROOT, name);
-	try { if (fs.statSync(dir).isDirectory()) return dir; } catch { }
-	return null;
+	const e = indexMap().get(name);
+	return e ? e.dir : null;
 }
 
 function previewPath(dir) {
@@ -76,18 +117,7 @@ function detectTags(dir) {
 
 function listProjects() {
 	const out = [];
-	let names;
-	try { names = fs.readdirSync(ROOT); } catch { return out; }
-	for (const name of names) {
-		if (name.startsWith(".")) continue;
-		if (!safeName(name)) continue;
-		const dir = path.join(ROOT, name);
-		let st;
-		try { st = fs.statSync(dir); } catch { continue; }
-		if (!st.isDirectory()) continue;
-		const isProject = ["package.json", "index.html", ".git", ".solstice"]
-			.some((m) => { try { return fs.existsSync(path.join(dir, m)); } catch { return false; } });
-		if (!isProject) continue;
+	for (const [name, { dir, st }] of indexMap()) {
 		const { pkg, tags } = detectTags(dir);
 		out.push({
 			name: (pkg && pkg.name) || name,
@@ -147,4 +177,4 @@ const server = http.createServer((req, res) => {
 });
 
 server.on("error", (e) => { console.error("gallery-server error:", e.message); process.exit(1); });
-server.listen(PORT, HOST, () => console.log(`solstice gallery server on http://${HOST}:${PORT} (root=${ROOT})`));
+server.listen(PORT, HOST, () => console.log(`solstice gallery server on http://${HOST}:${PORT} (roots=${ROOTS.join(", ")})`));

@@ -10,6 +10,12 @@ const { GrokProvider, GROK_MODELS } = require("./grok");
 const { ClaudeProvider, CLAUDE_LABEL } = require("./claude");
 const { FleetBridge } = require("./fleetBridge");
 
+// Subdirs that live alongside agent build workspaces but are not projects.
+const GALLERY_SKIP_DIRS = new Set([
+	"node_modules", "userdata", "exthost-logs",
+	"VSCode-linux-x64", "VSCode-darwin-arm64", "VSCode-win32-x64",
+]);
+
 const SIDEBAR_FORWARDED = new Set([
 	"thread/started",
 	"turn/started",
@@ -1216,10 +1222,21 @@ class AgentController {
 	// ---- projects gallery (home view inside Solstice) ----
 	// Roots the gallery scans for projects agents built on this server.
 	galleryRoots() {
-		const cfg = (this.cfg().get("projectsDir") || "").trim();
-		if (cfg) return [cfg];
 		const home = os.homedir();
-		return [path.join(home, "solstice-deploys"), path.join(home, "Projects")]
+		const roots = [];
+		const cfg = (this.cfg().get("projectsDir") || "").trim();
+		if (cfg) roots.push(cfg);
+		// Defaults: deploy targets + the live workspaces agents build into
+		// (Jasper/fleet bridge → solstice-bridge-work), so in-progress agent
+		// builds show up too — same roots the server gallery scans.
+		roots.push(
+			path.join(home, "solstice-deploys"),
+			path.join(home, "solstice-bridge-work"),
+			path.join(home, "solstice-bridge-keep"),
+			path.join(home, "Projects"),
+		);
+		return roots
+			.filter((d, i) => roots.indexOf(d) === i)
 			.filter((d) => { try { return fs.statSync(d).isDirectory(); } catch { return false; } });
 	}
 
@@ -1267,7 +1284,7 @@ class AgentController {
 			let names;
 			try { names = fs.readdirSync(root); } catch { continue; }
 			for (const name of names) {
-				if (name.startsWith(".")) continue;
+				if (name.startsWith(".") || GALLERY_SKIP_DIRS.has(name)) continue;
 				const dir = path.join(root, name);
 				if (seen.has(dir)) continue;
 				let st;
