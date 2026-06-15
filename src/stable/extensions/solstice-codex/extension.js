@@ -1726,8 +1726,8 @@ let connectorsPanel = null;
 // just records "requested" until a token lands.
 const CONNECTOR_CATALOG = [
 	{ id: "vercel", name: "Vercel", glyph: "▲", blurb: "פריסת אתרים ואפליקציות בלחיצה", tokenKey: "VERCEL_TOKEN" },
+	{ id: "github", name: "GitHub", glyph: "❮❯", blurb: "דחיפת קוד הפרויקט לריפו", tokenKey: "GITHUB_TOKEN" },
 	{ id: "email", name: "Email (SMTP/Resend)", glyph: "✉", blurb: "שליחת מיילים מפרויקטים", tokenKey: "EMAIL_API_KEY" },
-	{ id: "stripe", name: "Stripe", glyph: "❡", blurb: "תשלומים וצ'קאאוט", tokenKey: "STRIPE_SECRET_KEY" },
 ];
 
 function connectorState(controller) {
