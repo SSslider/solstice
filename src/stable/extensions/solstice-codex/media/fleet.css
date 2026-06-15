@@ -119,6 +119,23 @@ html, body { margin: 0; height: 100%; background: var(--vscode-editor-background
 .aStuckBtn:hover { background: color-mix(in srgb, #f87171 16%, transparent); }
 .actItem--stuck .actGlyph { color: #f87171; }
 
+/* liveness strip (progress-aware) */
+.live { margin-top: 4px; display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 600; white-space: nowrap; }
+.liveDot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.liveTxt { overflow: hidden; text-overflow: ellipsis; }
+.live--alive { color: #4ade80; }
+.live--alive .liveDot { background: #4ade80; box-shadow: 0 0 0 0 color-mix(in srgb, #4ade80 60%, transparent); animation: livePing 1.6s ease-out infinite; }
+.live--quiet { color: color-mix(in srgb, var(--amber) 92%, #fff); }
+.live--quiet .liveDot { background: var(--amber); }
+.live--stalled { color: #fca5a5; }
+.live--stalled .liveDot { background: #f87171; animation: stuckPulse 1.1s ease-in-out infinite; }
+@keyframes livePing { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, #4ade80 55%, transparent); } 100% { box-shadow: 0 0 0 6px transparent; } }
+.liveQueued { margin-inline-start: 2px; font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 999px;
+  color: #fcd34d; background: color-mix(in srgb, var(--amber) 16%, transparent); border: 1px solid color-mix(in srgb, var(--amber) 38%, transparent); }
+.liveResume { margin-inline-start: auto; font-size: 9.5px; font-weight: 700; padding: 1px 9px; border-radius: 999px;
+  cursor: pointer; color: #1a1206; background: var(--amber); border: 1px solid var(--amber); }
+.liveResume:hover { filter: brightness(1.08); }
+
 /* ---------- chat ---------- */
 .chat { display: flex; flex-direction: column; min-width: 0; }
 .chatHead { padding: 16px 22px; border-bottom: 1px solid var(--line-soft); display: flex; align-items: center; gap: 12px; }

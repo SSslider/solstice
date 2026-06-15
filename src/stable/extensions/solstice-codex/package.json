@@ -321,6 +321,21 @@
             "required": ["id", "wsUrl"]
           }
         },
+        "solstice.liveness.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Progress-aware liveness model for the Solstice builder. Unlike the wall-clock watchdog, it only counts REAL output (token deltas, streaming text, file/tool events) as 'alive'. A busy animation with no strong signal degrades alive→quiet→stalled, so a hung turn can't masquerade as working for hours."
+        },
+        "solstice.liveness.freshSeconds": {
+          "type": "number",
+          "default": 90,
+          "description": "Seconds since the last strong output signal under which the build is shown as 'alive' (green). Above this it goes 'quiet' (amber)."
+        },
+        "solstice.liveness.stallSeconds": {
+          "type": "number",
+          "default": 300,
+          "description": "Seconds with no strong output signal after which the build is flagged 'stalled' (red) and recovery-by-resume is offered — drains any queued steering messages and nudges the agent instead of a blind restart."
+        },
         "solstice.atrium.clientsDir": {
           "type": "string",
           "default": "",

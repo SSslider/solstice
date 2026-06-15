@@ -80,6 +80,8 @@ class AgentController {
 		this.fleetBridges = new Map(); // agentId -> { ws:FleetBridge, status:"connecting"|"online"|"offline" }
 		this.watch = new Map();        // agentId -> { state, text, ts, alerted } — stuck-loop watchdog
 		this.watchTimer = null;
+		this.live = new Map();         // key -> liveness rec (progress-aware). "_builder" = local Solstice build
+		this.activeFleetAgent = null;  // fleet agent the live build is attributed to
 		this.output = vscode.window.createOutputChannel("Solstice Agent");
 	}
 
@@ -104,6 +106,7 @@ class AgentController {
 	startWatchdog() {
 		if (this.watchTimer) return;
 		this.watchTimer = setInterval(() => {
+			try { this.tickLiveness(); } catch { }
 			const cfg = this.watchdogConfig();
 			if (!cfg.enabled) return;
 			const now = Date.now();
@@ -114,7 +117,7 @@ class AgentController {
 				const mins = Math.round((now - w.ts) / 60000);
 				this.emitStuck(agentId, w.state, mins);
 			}
-		}, 30000);
+		}, 15000);
 		this.watchTimer.unref && this.watchTimer.unref();
 	}
 	emitStuck(agentId, state, mins) {
@@ -129,6 +132,101 @@ class AgentController {
 			if (pick === "פתח Fleet" && this.fleetPanel) { this.fleetPanel.reveal(vscode.ViewColumn.One); this.fleetPanel.webview.postMessage({ type: "focusAgent", agent: agentId }); }
 			else if (pick === "נקה תקיעה") { this.watch.delete(agentId); if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "stuckCleared", agent: agentId }); }
 		}, () => { });
+	}
+
+	// ---- liveness (layered, progress-aware) --------------------------------
+	// The watchdog above resets on ANY busy event, so a self-refreshing
+	// "working…" animation can mask a hung turn for hours. Liveness instead
+	// tracks DISTINCT progress signals — only real output (tokens / stream
+	// deltas / file & tool events) counts as alive. A busy state with no strong
+	// signal degrades: alive → quiet → stalled. On stall we recover by RESUME
+	// (drain queued steers / nudge), never a blind wall-clock restart.
+	livenessConfig() {
+		const c = vscode.workspace.getConfiguration("solstice.liveness");
+		return {
+			enabled: c.get("enabled", true),
+			freshMs: Math.max(10000, (c.get("freshSeconds", 90) || 90) * 1000),
+			stallMs: Math.max(60000, (c.get("stallSeconds", 300) || 300) * 1000),
+		};
+	}
+	liveRec(key) {
+		let r = this.live.get(key);
+		if (!r) { r = { sig: { state: 0, stream: 0, tool: 0, token: 0 }, busySince: 0, layer: "idle", alerted: false, lastTokenTotal: 0, queued: 0 }; this.live.set(key, r); }
+		return r;
+	}
+	// kind: "state" (weak) | "stream" | "tool" | "token" (strong = real output)
+	notePulse(key, kind, meta) {
+		const r = this.liveRec(key);
+		r.sig[kind] = Date.now();
+		if (kind === "token" && meta && meta.total != null) r.lastTokenTotal = meta.total;
+		if (kind !== "state") r.alerted = false; // real progress clears the stall latch
+	}
+	markBusy(key, busy) {
+		const r = this.liveRec(key);
+		if (busy) { if (!r.busySince) r.busySince = Date.now(); }
+		else { r.busySince = 0; r.layer = "idle"; r.alerted = false; }
+	}
+	lastStrong(r) { return Math.max(r.sig.token, r.sig.tool, r.sig.stream); }
+	livenessInfo(key) {
+		const r = this.live.get(key);
+		if (!r || !r.busySince) return { layer: "idle", sinceMs: 0, kind: null, queued: r ? r.queued : 0 };
+		const cfg = this.livenessConfig();
+		const now = Date.now();
+		const strong = this.lastStrong(r);
+		const since = now - (strong || r.busySince);
+		let layer = since < cfg.freshMs ? "alive" : since < cfg.stallMs ? "quiet" : "stalled";
+		const kind = strong === r.sig.token ? "token" : strong === r.sig.tool ? "tool" : strong === r.sig.stream ? "stream" : null;
+		return { layer, sinceMs: since, kind, queued: r.queued, tokens: r.lastTokenTotal };
+	}
+	// The fleet agent the live build is attributed to in the Fleet panel.
+	builderAgent() { return this.activeFleetAgent || "jasper"; }
+	tickLiveness() {
+		const cfg = this.livenessConfig();
+		if (!cfg.enabled) return;
+		for (const [key] of this.live) {
+			const info = this.livenessInfo(key);
+			const agent = key === "_builder" ? this.builderAgent() : key;
+			if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "liveness", agent, ...info, ts: Date.now() });
+			const r = this.live.get(key);
+			if (info.layer === "stalled" && r && !r.alerted) {
+				r.alerted = true;
+				this.emitStall(agent, info);
+			}
+		}
+	}
+	emitStall(agent, info) {
+		const mins = Math.round(info.sinceMs / 60000);
+		const q = info.queued || 0;
+		const name = (this.fleetAgents().find((a) => a.id === agent) || {}).name || agent;
+		const label = `אין פלט אמיתי ${mins} דק׳` + (q ? ` · ${q} הודעות ממתינות` : "");
+		try { this.output.appendLine(`[liveness] ${agent}: stalled — ${label}`); } catch { }
+		if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "activity", agent, state: "stuck", text: "🔴 " + label, ts: Date.now() });
+		const actions = q ? ["המשך (resume)", "פתח Fleet"] : ["פתח Fleet"];
+		vscode.window.showWarningMessage(`🔴 ${name}: ${label}`, ...actions).then((pick) => {
+			if (pick === "המשך (resume)") this.resumeBuilder();
+			else if (pick === "פתח Fleet" && this.fleetPanel) { this.fleetPanel.reveal(vscode.ViewColumn.One); this.fleetPanel.webview.postMessage({ type: "focusAgent", agent }); }
+		}, () => { });
+	}
+	// Recovery-by-resume: a stalled turn never emits turn/completed, so its
+	// queued steers would sit forever (the reported bug). Force-drain them and
+	// nudge the agent instead of killing the process.
+	resumeBuilder() {
+		const r = this.live.get("_builder");
+		if (r) { r.alerted = false; r.sig.state = Date.now(); }
+		if (this.steerQueue.length) { this.forceDrainSteer(); return; }
+		// nothing queued — interrupt the hung turn so the CLI frees up
+		this.interrupt(this.threadId).catch(() => { });
+	}
+	forceDrainSteer() {
+		if (!this.steerQueue.length) return;
+		const text = this.steerQueue.join("\n\n");
+		this.steerQueue = [];
+		const r = this.live.get("_builder"); if (r) r.queued = 0;
+		this.post({ type: "steerQueued", count: 0 });
+		this.interrupt(this.threadId)
+			.catch(() => { })
+			.then(() => this.send(text))
+			.catch((e) => this.output.append(`\n[resume drain] ${e && e.message || e}\n`));
 	}
 
 	async openPreview(explicitUrl) {
@@ -651,6 +749,14 @@ class AgentController {
 
 	onNotification(method, params) {
 		const tid = params && params.threadId;
+		// ---- liveness pulses: classify every notification as a progress signal.
+		// Streaming deltas + tool/file events = real output (strong); plain state
+		// changes = weak. Lets livenessInfo() tell "really working" from "fake busy".
+		if (typeof method === "string") {
+			if (/delta|textDelta|outputDelta/i.test(method)) this.notePulse("_builder", "stream");
+			else if (method === "item/completed" && params && params.item &&
+				(params.item.type === "fileChange" || params.item.type === "commandExecution" || params.item.type === "mcpToolCall")) this.notePulse("_builder", "tool");
+		}
 		// keep the thread registry live
 		if (method === "thread/started" && params.thread) {
 			this.upsertThread(params.thread);
@@ -670,11 +776,13 @@ class AgentController {
 			th.status = "active";
 			th.updatedAt = Date.now() / 1000;
 			this.planFileOpened = false;
+			if (tid === this.threadId) { this.markBusy("_builder", true); this.notePulse("_builder", "state"); }
 			this.pushThreads();
 		} else if (method === "turn/completed" && tid) {
 			const th = this.upsertThread({ id: tid });
 			th.activeTurnId = null;
 			th.status = "idle";
+			if (tid === this.threadId) this.markBusy("_builder", false);
 			this.pushThreads();
 			if (tid === this.threadId) this.drainSteerQueue();
 		} else if (method === "turn/diff/updated" && tid) {
@@ -887,6 +995,7 @@ class AgentController {
 			const prov = provider === "claude" ? this.claude : this.grok;
 			if (prov && prov.busy) {
 				this.steerQueue.push(text);
+				const r = this.liveRec("_builder"); r.queued = this.steerQueue.length;
 				this.post({ type: "steerQueued", count: this.steerQueue.length });
 				return;
 			}
@@ -915,6 +1024,7 @@ class AgentController {
 		if (!this.steerQueue.length) return;
 		const text = this.steerQueue.join("\n\n");
 		this.steerQueue = [];
+		const r = this.live.get("_builder"); if (r) r.queued = 0;
 		this.post({ type: "steerQueued", count: 0 });
 		this.send(text).catch((e) => this.output.append(`\n[steer drain] ${e && e.message || e}\n`));
 	}
@@ -1389,6 +1499,8 @@ class AgentController {
 		const t = params.total || {};
 		this.tokenTotal = { in: Number(t.in || 0), out: Number(t.out || 0), exact: !!params.exact };
 		const total = this.tokenTotal.in + this.tokenTotal.out;
+		// real model output = a strong liveness signal
+		this.notePulse("_builder", "token", { total });
 		const modelLabel = (params.model && params.model.label) || this.providerLabel();
 		if (!this.tokenStatus) {
 			try { this.tokenStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 999); this.tokenStatus.command = "solstice.agent.openFleet"; } catch { }
@@ -2048,7 +2160,11 @@ function openFleet(controller, extensionUri) {
 				break;
 			case "select":
 				// warm the socket as soon as the user opens an agent's thread
+				controller.activeFleetAgent = msg.agent;
 				if (controller.fleetBridgeConfigs().has(msg.agent)) controller.ensureFleetBridge(msg.agent);
+				break;
+			case "resumeAgent":
+				controller.resumeBuilder();
 				break;
 			case "send": {
 				controller.appendFleetThread(msg.agent, { who: "me", text: msg.text, ts: Date.now() });

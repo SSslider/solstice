@@ -33,6 +33,35 @@
 		exploring: "חוקר…", thinking: "חושב…", planning: "מתכנן…", stuck: "תקוע",
 	};
 	const stuckAgents = new Map(); // agentId -> {state, mins}
+	const liveness = new Map(); // agentId -> {layer, sinceMs, kind, queued, tokens}
+	const LIVE_LABEL = { alive: "חי — פלט זורם", quiet: "שקט — אין פלט", stalled: "תקוע — אין פלט אמיתי", idle: "" };
+	const LIVE_KIND = { token: "טוקנים", tool: "קבצים/כלים", stream: "טקסט" };
+	function agoLabel(ms) {
+		const s = Math.round((ms || 0) / 1000);
+		if (s < 60) return s + "ש׳";
+		const m = Math.round(s / 60); return m + " דק׳";
+	}
+	function livenessStrip(a) {
+		const lv = liveness.get(a.id);
+		if (!lv || lv.layer === "idle") return null;
+		const strip = el("div", "live live--" + lv.layer);
+		strip.appendChild(el("span", "liveDot"));
+		const txt = lv.layer === "alive" && lv.kind
+			? LIVE_LABEL.alive + " · " + (LIVE_KIND[lv.kind] || "") + " לפני " + agoLabel(lv.sinceMs)
+			: (LIVE_LABEL[lv.layer] || lv.layer) + " " + agoLabel(lv.sinceMs);
+		strip.appendChild(el("span", "liveTxt", txt));
+		if (lv.queued > 0) {
+			const q = el("span", "liveQueued", "↪ " + lv.queued + " ממתינות");
+			strip.appendChild(q);
+		}
+		if (lv.layer === "stalled") {
+			const r = el("button", "liveResume", "המשך");
+			r.title = "שחרר את התור התקוע והמשך";
+			r.addEventListener("click", (e) => { e.stopPropagation(); vscode.postMessage({ type: "resumeAgent", agent: a.id }); });
+			strip.appendChild(r);
+		}
+		return strip;
+	}
 	let tokenMeter = { in: 0, out: 0, total: 0, exact: false, model: "" };
 	function fmtTok(n) {
 		n = Number(n || 0);
@@ -126,6 +155,8 @@
 			const sline = el("div", "aStatus aStatus--" + statusClass(a), statusText(a));
 			meta.appendChild(sline);
 		}
+		const strip = livenessStrip(a);
+		if (strip) meta.appendChild(strip);
 		row.appendChild(meta);
 		if (a.removable !== false) {
 			const x = el("button", "aRemove", "×");
@@ -445,6 +476,10 @@
 			case "activity":
 				pushActivity({ agent: msg.agent, state: msg.state, text: msg.text, ts: msg.ts || Date.now() });
 				if (msg.state && msg.state !== "stuck") { stuckAgents.delete(msg.agent); }
+				break;
+			case "liveness":
+				liveness.set(msg.agent, { layer: String(msg.layer || "idle"), sinceMs: Number(msg.sinceMs || 0), kind: msg.kind || null, queued: Number(msg.queued || 0), tokens: Number(msg.tokens || 0) });
+				shell();
 				break;
 			case "stuck":
 				stuckAgents.set(msg.agent, { state: String(msg.state || "busy"), mins: Number(msg.mins || 0) });
