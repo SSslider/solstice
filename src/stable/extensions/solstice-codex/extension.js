@@ -698,16 +698,50 @@ class AgentController {
 		try { text = fs.readFileSync(file, "utf8"); } catch { return; }
 		if (text === this.lastPlanFileText) return;
 		this.lastPlanFileText = text;
-		const plan = [];
-		for (const m of text.matchAll(/^\s*(?:\d+\.|[-*])\s*\[( |x|X|~)\]\s*(.+)$/gm)) {
-			plan.push({
-				status: /x/i.test(m[1]) ? "completed" : m[1] === "~" ? "inProgress" : "pending",
-				step: m[2].replace(/\s*←\s*current\s*$/, "").trim(),
-			});
-		}
+		const plan = this.parseRichPlan(text);
 		if (plan.length) {
 			this.onNotification("turn/plan/updated", { threadId: this.grok ? this.grok.threadId : undefined, plan });
 		}
+	}
+
+	// Parse .solstice/PLAN.md into a rich, hierarchical plan model the panel can
+	// render as a visual timeline. Supports:
+	//   ## Group heading            -> groups steps into phases
+	//   1. [~] Step  ← current      -> top-level step (numbered or bulleted)
+	//       - [ ] sub-step          -> nested checklist under the previous step
+	//       _italic detail line_    -> short description attached to a step
+	// Falls back gracefully to a flat list when none of that structure exists.
+	parseRichPlan(text) {
+		const STEP_RE = /^(\s*)(?:\d+\.|[-*])\s*\[( |x|X|~)\]\s*(.+)$/;
+		const HEAD_RE = /^\s*#{1,4}\s+(.+?)\s*#*$/;
+		const status = (c) => (/x/i.test(c) ? "completed" : c === "~" ? "inProgress" : "pending");
+		const clean = (s) => s.replace(/\s*←\s*current\s*$/i, "").replace(/`/g, "").trim();
+		const plan = [];
+		let group = "";
+		let last = null;        // last top-level step (to attach sub-steps/detail)
+		let baseIndent = null;  // indent width of top-level steps
+		for (const raw of String(text || "").split("\n")) {
+			const h = raw.match(HEAD_RE);
+			if (h && !STEP_RE.test(raw)) { group = clean(h[1]); continue; }
+			const m = raw.match(STEP_RE);
+			if (m) {
+				const indent = m[1].replace(/\t/g, "    ").length;
+				if (baseIndent === null) baseIndent = indent;
+				const item = { status: status(m[2]), step: clean(m[3]) };
+				if (indent > baseIndent && last) {
+					(last.substeps || (last.substeps = [])).push(item);
+				} else {
+					if (group) item.group = group;
+					plan.push(item);
+					last = item;
+				}
+				continue;
+			}
+			// italic/quote line right after a step becomes its detail
+			const d = raw.match(/^\s*[_>]\s*(.+?)_?\s*$/);
+			if (d && last && !last.detail) last.detail = clean(d[1]);
+		}
+		return plan;
 	}
 
 	flushGrokChanges() {
@@ -744,7 +778,7 @@ class AgentController {
 			"- Generate images by subcontracting to codex (it has an image generation tool):",
 			'  codex exec --skip-git-repo-check --full-auto "Use your image generation tool to create: <detailed description>. Then copy the EXACT file you just generated (by its precise filename from ~/.codex/generated_images/ — never the most recent file, other jobs may write there concurrently) into <workspace>/public/images/<descriptive-name>.png"',
 			"  Verify the file exists in the workspace afterwards, and view it with codex vision to confirm it shows the right subject before using it.",
-			"- For multi-step builds, first write a short numbered plan to .solstice/PLAN.md and keep step markers updated as you work ([x] done, [~] current, [ ] pending). The IDE renders it as a live checklist.",
+			"- For multi-step builds, write a structured plan to .solstice/PLAN.md and keep it updated live — the IDE renders it as a visual timeline. Use this shape: group steps under `## Phase name` headings; each step is `1. [ ] Step title`; add an optional one-line `_short detail_` under a step; nest concrete sub-tasks as indented `   - [ ] sub-task`. Mark progress as you go: `[x]` done, `[~]` current, `[ ]` pending. Keep titles short and outcome-oriented.",
 			"- When deconstructing / analyzing / researching a design, website, or app: maintain DECONSTRUCT.md (or RESEARCH.md) in the workspace root and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end. The IDE renders this file live to the user as a research dashboard. Include as you go: what you examined so far, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, techniques you detected (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed the frames/screenshots you examine as images with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
 			this.appModeGuidance(),

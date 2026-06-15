@@ -644,8 +644,21 @@
 		scroll();
 	}
 
-	// ---------- live plan checklist ----------
+	// ---------- live plan timeline ----------
 	let planCard = null;
+	// icon per inferred step category so the timeline reads at a glance
+	function planGlyph(s) {
+		const t = (s.group || "") + " " + (s.step || "");
+		if (/research|analy|deconstruct|explore|inspect|study|חקר|ניתוח/i.test(t)) return "🔎";
+		if (/design|layout|style|theme|visual|ui|עיצוב/i.test(t)) return "🎨";
+		if (/build|implement|code|develop|create|write|בנייה|בניית/i.test(t)) return "🛠";
+		if (/test|verify|qa|check|review|אימות|בדיקה/i.test(t)) return "🧪";
+		if (/deploy|ship|publish|release|פריסה/i.test(t)) return "🚀";
+		return "◆";
+	}
+	function planMark(status) {
+		return status === "completed" ? "✓" : status === "inProgress" ? "" : "";
+	}
 	function renderPlan(plan) {
 		if (!Array.isArray(plan) || !plan.length) return;
 		if (!planCard || !planCard.parentNode) {
@@ -653,24 +666,61 @@
 			messagesEl.appendChild(planCard);
 		}
 		planCard.innerHTML = "";
+
+		const total = plan.length;
 		const done = plan.filter((s) => s.status === "completed").length;
-		const title = el("div", "cardTitle planTitle");
-		title.appendChild(el("span", "", "◆ Plan"));
-		title.appendChild(el("span", "planProg", done + " / " + plan.length));
-		planCard.appendChild(title);
-		const bar = el("div", "pbar");
-		const fill = el("div", "pfill");
-		fill.style.width = Math.round((done / plan.length) * 100) + "%";
-		bar.appendChild(fill);
-		planCard.appendChild(bar);
-		const list = el("div", "planList");
+		const current = plan.find((s) => s.status === "inProgress");
+		const pct = Math.round((done / total) * 100);
+
+		// header: title + animated progress ring + count
+		const head = el("div", "planHead");
+		const ring = el("div", "planRing");
+		ring.style.background = "conic-gradient(var(--sol-accent,#f59e0b) " + pct + "%, var(--sol-line,#3a3a3a) 0)";
+		ring.appendChild(el("span", "planRingTxt", pct + "%"));
+		head.appendChild(ring);
+		const ht = el("div", "planHeadText");
+		ht.appendChild(el("div", "planTitleMain", "Plan"));
+		ht.appendChild(el("div", "planSub", current ? current.step : (done === total ? "All steps complete" : "")));
+		head.appendChild(ht);
+		head.appendChild(el("span", "planCount", done + "/" + total));
+		planCard.appendChild(head);
+
+		// vertical timeline
+		const tl = el("div", "planTL");
+		let curGroup = null;
 		for (const s of plan) {
-			const row = el("div", "planStep " + (s.status || "pending"));
-			row.appendChild(el("span", "pIcon", s.status === "completed" ? "✓" : s.status === "inProgress" ? "●" : "○"));
-			row.appendChild(el("span", "pTxt", s.step || ""));
-			list.appendChild(row);
+			if (s.group && s.group !== curGroup) {
+				curGroup = s.group;
+				tl.appendChild(el("div", "planGroup", curGroup));
+			}
+			const st = s.status || "pending";
+			const node = el("div", "tlStep tl--" + st);
+			const rail = el("div", "tlRail");
+			const dot = el("div", "tlDot");
+			dot.textContent = st === "completed" ? "✓" : planGlyph(s);
+			if (st === "inProgress") dot.classList.add("tlDot--pulse");
+			rail.appendChild(dot);
+			node.appendChild(rail);
+			const body = el("div", "tlBody");
+			body.appendChild(el("div", "tlTitle", s.step || ""));
+			if (s.detail) body.appendChild(el("div", "tlDetail", s.detail));
+			if (Array.isArray(s.substeps) && s.substeps.length) {
+				const subDone = s.substeps.filter((x) => x.status === "completed").length;
+				const subs = el("div", "tlSubs");
+				for (const sub of s.substeps) {
+					const sr = el("div", "tlSub tl--" + (sub.status || "pending"));
+					sr.appendChild(el("span", "tlSubMark", sub.status === "completed" ? "✓" : sub.status === "inProgress" ? "▸" : "·"));
+					sr.appendChild(el("span", "tlSubTxt", sub.step || ""));
+					subs.appendChild(sr);
+				}
+				const cap = el("div", "tlSubCap", subDone + "/" + s.substeps.length);
+				body.appendChild(cap);
+				body.appendChild(subs);
+			}
+			node.appendChild(body);
+			tl.appendChild(node);
 		}
-		planCard.appendChild(list);
+		planCard.appendChild(tl);
 		scroll();
 	}
 
