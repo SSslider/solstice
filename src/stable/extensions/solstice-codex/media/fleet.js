@@ -30,7 +30,9 @@
 	const STATE_LABEL = {
 		online: "מחובר", connecting: "מתחבר…", working: "עובד…",
 		replied: "ענה", offline: "מנותק", error: "שגיאה", idle: "ממתין", local: "מקומי",
+		exploring: "חוקר…", thinking: "חושב…", planning: "מתכנן…", stuck: "תקוע",
 	};
+	const stuckAgents = new Map(); // agentId -> {state, mins}
 	function statusClass(a) {
 		const ls = liveState.get(a.id);
 		if (ls && ls.state) return ls.state;
@@ -72,7 +74,8 @@
 	}
 
 	function agentRow(a) {
-		const row = el("div", "agent" + (a.id === activeId ? " active" : ""));
+		const stk = stuckAgents.get(a.id);
+		const row = el("div", "agent" + (a.id === activeId ? " active" : "") + (stk ? " agent--stuck" : ""));
 		row.appendChild(el("span", "aGlyph", a.glyph));
 		const meta = el("div", "aMeta");
 		const name = el("div", "aName");
@@ -82,8 +85,18 @@
 		name.appendChild(dot);
 		meta.appendChild(name);
 		meta.appendChild(el("div", "aRole", a.role));
-		const sline = el("div", "aStatus aStatus--" + statusClass(a), statusText(a));
-		meta.appendChild(sline);
+		if (stk) {
+			const warn = el("div", "aStuck");
+			warn.appendChild(el("span", "aStuckIcon", "⚠"));
+			warn.appendChild(el("span", "", "תקוע ב-\"" + stk.state + "\" · " + stk.mins + " דק׳"));
+			const nudge = el("button", "aStuckBtn", "נקה");
+			nudge.addEventListener("click", (e) => { e.stopPropagation(); stuckAgents.delete(a.id); vscode.postMessage({ type: "clearStuck", agent: a.id }); shell(); });
+			warn.appendChild(nudge);
+			meta.appendChild(warn);
+		} else {
+			const sline = el("div", "aStatus aStatus--" + statusClass(a), statusText(a));
+			meta.appendChild(sline);
+		}
 		row.appendChild(meta);
 		if (a.removable !== false) {
 			const x = el("button", "aRemove", "×");
@@ -148,6 +161,7 @@
 	const ACT_GLYPH = {
 		online: "●", connecting: "◐", working: "◆", replied: "✓",
 		offline: "○", error: "⚠", idle: "·", local: "◇", dispatch: "➦",
+		exploring: "◈", thinking: "✲", planning: "❑", stuck: "⚠",
 	};
 	function activityPane() {
 		const pane = el("div", "activity");
@@ -401,6 +415,15 @@
 				break;
 			case "activity":
 				pushActivity({ agent: msg.agent, state: msg.state, text: msg.text, ts: msg.ts || Date.now() });
+				if (msg.state && msg.state !== "stuck") { stuckAgents.delete(msg.agent); }
+				break;
+			case "stuck":
+				stuckAgents.set(msg.agent, { state: String(msg.state || "busy"), mins: Number(msg.mins || 0) });
+				shell();
+				break;
+			case "stuckCleared":
+				stuckAgents.delete(msg.agent);
+				shell();
 				break;
 			case "version":
 				buildVersion = { text: String(msg.text || ""), tip: String(msg.tip || "") };

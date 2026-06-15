@@ -78,7 +78,57 @@ class AgentController {
 		this.fallbackPrompted = false;
 		this.steerQueue = [];          // grok/claude: mid-turn messages queued as next-priority follow-up
 		this.fleetBridges = new Map(); // agentId -> { ws:FleetBridge, status:"connecting"|"online"|"offline" }
+		this.watch = new Map();        // agentId -> { state, text, ts, alerted } — stuck-loop watchdog
+		this.watchTimer = null;
 		this.output = vscode.window.createOutputChannel("Solstice Agent");
+	}
+
+	// ---- stuck-agent watchdog ----------------------------------------------
+	// Busy states that can hang (e.g. "Exploring…" looping for hours with no
+	// file write). Terminal/idle states clear the watch entry.
+	watchdogConfig() {
+		const c = vscode.workspace.getConfiguration("solstice.watchdog");
+		return {
+			enabled: c.get("enabled", true),
+			stuckMs: Math.max(60000, (c.get("stuckMinutes", 6) || 6) * 60000),
+		};
+	}
+	noteWatch(agentId, state) {
+		const busy = state === "working" || state === "exploring" || state === "thinking"
+			|| state === "connecting" || state === "dispatch" || state === "planning";
+		if (!busy) { this.watch.delete(agentId); return; }
+		const prev = this.watch.get(agentId);
+		// fresh busy event = real progress: reset the clock and the alert latch
+		this.watch.set(agentId, { state, ts: Date.now(), alerted: false, prevState: prev ? prev.state : null });
+	}
+	startWatchdog() {
+		if (this.watchTimer) return;
+		this.watchTimer = setInterval(() => {
+			const cfg = this.watchdogConfig();
+			if (!cfg.enabled) return;
+			const now = Date.now();
+			for (const [agentId, w] of this.watch) {
+				if (w.alerted) continue;
+				if (now - w.ts < cfg.stuckMs) continue;
+				w.alerted = true;
+				const mins = Math.round((now - w.ts) / 60000);
+				this.emitStuck(agentId, w.state, mins);
+			}
+		}, 30000);
+		this.watchTimer.unref && this.watchTimer.unref();
+	}
+	emitStuck(agentId, state, mins) {
+		const label = `נתקע ב-"${state}" כבר ${mins} דק׳ ללא התקדמות`;
+		try { this.output.appendLine(`[watchdog] ${agentId}: ${label}`); } catch { }
+		if (this.fleetPanel) {
+			this.fleetPanel.webview.postMessage({ type: "stuck", agent: agentId, state, mins, ts: Date.now() });
+			this.fleetPanel.webview.postMessage({ type: "activity", agent: agentId, state: "stuck", text: label, ts: Date.now() });
+		}
+		const name = (this.fleetAgents().find((a) => a.id === agentId) || {}).name || agentId;
+		vscode.window.showWarningMessage(`⚠️ ${name} ${label}`, "פתח Fleet", "נקה תקיעה").then((pick) => {
+			if (pick === "פתח Fleet" && this.fleetPanel) { this.fleetPanel.reveal(vscode.ViewColumn.One); this.fleetPanel.webview.postMessage({ type: "focusAgent", agent: agentId }); }
+			else if (pick === "נקה תקיעה") { this.watch.delete(agentId); if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "stuckCleared", agent: agentId }); }
+		}, () => { });
 	}
 
 	async openPreview(explicitUrl) {
@@ -185,6 +235,40 @@ class AgentController {
 		vscode.commands.executeCommand("vscode.open", vscode.Uri.file(abs), {
 			viewColumn: vscode.ViewColumn.One, preview: true, preserveFocus: true,
 		}).then(undefined, () => { });
+	}
+
+	// Voice dictation: webview records mic audio → Groq Whisper → text back into the composer.
+	// Same engine as the fleet's Telegram dictation (whisper-large-v3, Hebrew-first).
+	async transcribeVoice(b64, mime) {
+		try {
+			const key = String(this.cfg().get("groqApiKey") || process.env.GROQ_API_KEY || "").trim();
+			if (!key) {
+				this.post({ type: "transcribeError", message: "Voice needs a Groq key — set solstice.codex.groqApiKey (or GROQ_API_KEY)." });
+				return;
+			}
+			const bytes = Buffer.from(String(b64 || ""), "base64");
+			if (!bytes.length) { this.post({ type: "transcribeError", message: "empty recording" }); return; }
+			const ext = mime && mime.includes("ogg") ? "ogg" : "webm";
+			const lang = String(this.cfg().get("dictationLanguage") || "he").trim() || "he";
+			const form = new FormData();
+			form.append("file", new Blob([bytes], { type: mime || "audio/webm" }), "voice." + ext);
+			form.append("model", "whisper-large-v3");
+			if (lang && lang !== "auto") form.append("language", lang);
+			const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+				method: "POST",
+				headers: { Authorization: "Bearer " + key },
+				body: form,
+			});
+			if (!res.ok) {
+				const t = await res.text().catch(() => "");
+				this.post({ type: "transcribeError", message: "Groq " + res.status + " " + t.slice(0, 200) });
+				return;
+			}
+			const data = await res.json();
+			this.post({ type: "transcribed", text: String((data && data.text) || "").trim() });
+		} catch (e) {
+			this.post({ type: "transcribeError", message: String((e && e.message) || e) });
+		}
 	}
 
 	// spawn (or reveal) an integrated terminal in the workspace root — opens in the
@@ -1218,6 +1302,7 @@ class AgentController {
 	// ---- live activity feed -------------------------------------------------
 	// Broadcast a single activity event to the Fleet webview's activity rail.
 	postFleetActivity(agentId, state, text) {
+		this.noteWatch(agentId, state);
 		if (!this.fleetPanel) return;
 		this.fleetPanel.webview.postMessage({ type: "activity", agent: agentId, state, text: String(text || ""), ts: Date.now() });
 	}
@@ -1554,6 +1639,7 @@ class AgentViewProvider {
 					case "setModel": await this.controller.setModel(msg.key); break;
 					case "selectAutonomy": await this.controller.selectAutonomy(); break;
 					case "openImage": this.controller.openImage(msg.path); break;
+					case "transcribe": await this.controller.transcribeVoice(msg.audio, msg.mime); break;
 				}
 			} catch (e) {
 				this.controller.post({ type: "fatal", message: String(e && e.message || e) });
@@ -1850,6 +1936,9 @@ function openFleet(controller, extensionUri) {
 			case "openAgentPanel":
 				vscode.commands.executeCommand("solstice.agentPanel.focus").then(undefined, () => { });
 				break;
+			case "clearStuck":
+				controller.watch.delete(msg.agent);
+				break;
 		}
 	});
 	fleetPanel.onDidDispose(() => {
@@ -1889,6 +1978,10 @@ function activate(context) {
 		verItem.show();
 		context.subscriptions.push(verItem);
 	} catch { }
+	// stuck-agent watchdog: warn when an agent loops in a busy state (e.g.
+	// "Exploring…") past the threshold with no fresh progress event.
+	controller.startWatchdog();
+	context.subscriptions.push({ dispose: () => { if (controller.watchTimer) { clearInterval(controller.watchTimer); controller.watchTimer = null; } } });
 	// live research dashboard: render DECONSTRUCT.md / RESEARCH.md as the agent writes it
 	// (no brace glob — filter by basename; grok writes from outside the editor)
 	const researchWatcher = vscode.workspace.createFileSystemWatcher("**/*.md");

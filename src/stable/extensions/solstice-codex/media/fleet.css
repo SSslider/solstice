@@ -93,6 +93,18 @@ html, body { margin: 0; height: 100%; background: var(--vscode-editor-background
 .aStatus--working, .aStatus--connecting { color: color-mix(in srgb, var(--amber) 92%, #fff); }
 .aStatus--local { color: #60a5fa; }
 .aStatus--error { color: #f87171; }
+/* stuck-agent watchdog */
+.agent--stuck { border-color: color-mix(in srgb, #f87171 50%, var(--line));
+  box-shadow: inset 3px 0 0 -1px #f87171, 0 6px 18px -12px color-mix(in srgb, #f87171 55%, transparent);
+  background: color-mix(in srgb, #f87171 8%, transparent); }
+.aStuck { margin-top: 4px; display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 600;
+  color: #fca5a5; white-space: nowrap; }
+.aStuckIcon { animation: stuckPulse 1.4s ease-in-out infinite; }
+@keyframes stuckPulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+.aStuckBtn { margin-inline-start: auto; font-size: 9.5px; font-weight: 600; padding: 1px 7px; border-radius: 999px;
+  cursor: pointer; color: #fca5a5; background: transparent; border: 1px solid color-mix(in srgb, #f87171 45%, transparent); }
+.aStuckBtn:hover { background: color-mix(in srgb, #f87171 16%, transparent); }
+.actItem--stuck .actGlyph { color: #f87171; }
 
 /* ---------- chat ---------- */
 .chat { display: flex; flex-direction: column; min-width: 0; }
