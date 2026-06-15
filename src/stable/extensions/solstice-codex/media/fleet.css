@@ -170,19 +170,66 @@ html, body { margin: 0; height: 100%; background: var(--vscode-editor-background
 .apprNo { background: transparent; border-color: var(--line); color: var(--vscode-descriptionForeground); }
 .apprNo:hover { background: var(--surface); color: var(--vscode-foreground); }
 
-.liveBanner {
-  display: none; align-items: center; gap: 10px; margin: 14px 22px 0; padding: 11px 15px; border-radius: 11px;
-  background: linear-gradient(120deg, color-mix(in srgb, var(--amber) 16%, transparent), color-mix(in srgb, var(--amber) 6%, transparent));
-  border: 1px solid color-mix(in srgb, var(--amber) 36%, transparent); font-size: 12.5px;
-}
-.liveBanner.show { display: flex; animation: pop .25s ease; }
 @keyframes pop { from { transform: translateY(-6px); opacity: 0; } }
-.livePulse { width: 9px; height: 9px; border-radius: 50%; background: var(--amber); flex: none;
-  animation: pulse 1.1s ease-in-out infinite; }
 @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--amber) 55%, transparent); }
   50% { box-shadow: 0 0 0 7px transparent; } }
-.liveBanner b { color: color-mix(in srgb, var(--amber) 95%, #fff); }
-.liveOpen { margin-left: auto; cursor: pointer; text-decoration: underline; color: var(--vscode-textLink-foreground, #fb923c); }
+
+/* ---------- fleet → Solstice handoff pipeline ---------- */
+.flowWrap { display: none; margin: 14px 22px 0; padding: 13px 15px 14px; border-radius: 14px;
+  background: linear-gradient(140deg, color-mix(in srgb, var(--amber) 11%, transparent), color-mix(in srgb, var(--amber) 3%, transparent) 60%), var(--surface);
+  border: 1px solid color-mix(in srgb, var(--amber) 30%, transparent); }
+.flowWrap.show { display: block; animation: pop .28s ease; }
+.flowHead { display: flex; align-items: center; gap: 9px; font-size: 12px; margin-bottom: 13px; }
+.flowHeadTxt { color: var(--vscode-foreground); }
+.flowHeadTxt b { color: color-mix(in srgb, var(--amber) 95%, #fff); font-weight: 700; }
+.flowPulse { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); flex: none;
+  animation: pulse 1.1s ease-in-out infinite; }
+.flowOpen { margin-left: auto; cursor: pointer; font-family: inherit; font-size: 11px; font-weight: 600;
+  padding: 4px 11px; border-radius: 8px; color: #1a1206;
+  background: linear-gradient(150deg, #fbbf24, #f59e0b 60%, #ea7c0b); border: none; }
+.flowOpen:hover { filter: brightness(1.06); }
+
+.flowRail { display: flex; align-items: flex-start; }
+.flowNode { display: flex; flex-direction: column; align-items: center; text-align: center;
+  flex: 0 0 auto; width: 74px; gap: 5px; }
+.flowDisc { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 18px; line-height: 1; border: 1.5px solid var(--line); background: var(--surface-2);
+  color: var(--vscode-descriptionForeground); transition: all .35s cubic-bezier(.2,.7,.3,1); }
+.flowName { font-size: 11px; font-weight: 600; color: var(--vscode-foreground);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 74px; }
+.flowNote { font-size: 9.5px; line-height: 1.35; color: var(--vscode-descriptionForeground);
+  min-height: 1.35em; max-width: 74px; }
+
+.flowNode--wait .flowDisc { opacity: .7; }
+.flowNode--wait .flowName { opacity: .6; }
+.flowNode--done .flowDisc { background: #2ea043; border-color: #2ea043; color: #fff; }
+.flowNode--live .flowDisc { border-color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 20%, var(--surface-2));
+  color: color-mix(in srgb, var(--amber) 95%, #fff); transform: scale(1.06); }
+.flowNode--live .flowName { color: color-mix(in srgb, var(--amber) 92%, #fff); }
+.flowNode--live .flowNote { color: color-mix(in srgb, var(--amber) 80%, #fff); }
+.flowDisc--pulse { animation: flowpulse 1.5s ease-in-out infinite; }
+@keyframes flowpulse {
+  0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--amber) 55%, transparent); }
+  60%     { box-shadow: 0 0 0 8px transparent; }
+}
+
+/* connector between nodes; sits at disc center height */
+.flowConn { flex: 1 1 auto; height: 2px; margin: 19px -6px 0; border-radius: 2px;
+  background: var(--line); position: relative; overflow: hidden; min-width: 14px; }
+.flowConn--done { background: #2ea043; }
+.flowConn--live { background: color-mix(in srgb, var(--amber) 30%, var(--line)); }
+.flowConnFill { position: absolute; inset: 0; display: none; border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--amber), transparent);
+  background-size: 200% 100%; }
+.flowConn--live .flowConnFill { display: block; animation: flowdash 1.1s linear infinite; }
+@keyframes flowdash { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+.flowTask { display: flex; gap: 7px; margin-top: 12px; padding-top: 11px;
+  border-top: 1px solid color-mix(in srgb, var(--amber) 16%, transparent);
+  font-size: 11px; line-height: 1.5; color: var(--vscode-descriptionForeground); }
+.flowTaskQ { color: var(--amber); font-size: 15px; line-height: 1; flex: none; }
+.flowTaskTxt { flex: 1 1 auto; min-width: 0; }
 
 .msgs { flex: 1; overflow-y: auto; padding: 20px 22px; display: flex; flex-direction: column; gap: 12px; }
 .row { display: flex; }

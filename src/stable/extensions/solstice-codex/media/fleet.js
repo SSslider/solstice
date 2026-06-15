@@ -10,6 +10,9 @@
 	const liveState = new Map(); // agentId -> {state, text, ts} latest per agent
 	let pendingApprovals = []; // [{key, agent, name, kind, detail, label, ts}] inline gates
 	let buildVersion = { text: "", tip: "" }; // Solstice version badge
+	// fleet → Solstice handoff pipeline: real-event-driven workflow visual
+	let flow = null; // {from, task, stage:'dispatch'|'building'|'preview'|'done', sub, url, ts}
+	const FLOW_RANK = { dispatch: 1, building: 2, preview: 3, done: 4 };
 
 	function el(tag, cls, text) {
 		const e = document.createElement(tag);
@@ -366,16 +369,10 @@
 		for (const ap of pendingApprovals) if (ap.agent === a.id) appr.appendChild(approvalCard(ap));
 		chat.appendChild(appr);
 
-		const banner = el("div", "liveBanner");
-		banner.id = "liveBanner";
-		banner.appendChild(el("span", "livePulse"));
-		const bt = el("span", "");
-		bt.id = "liveBannerText";
-		banner.appendChild(bt);
-		const open = el("span", "liveOpen", "Watch live →");
-		open.addEventListener("click", () => vscode.postMessage({ type: "openAgentPanel" }));
-		banner.appendChild(open);
-		chat.appendChild(banner);
+		const flowWrap = el("div", "flowWrap");
+		flowWrap.id = "flowWrap";
+		chat.appendChild(flowWrap);
+		renderFlow();
 
 		const msgs = el("div", "msgs");
 		msgs.id = "msgs";
@@ -442,12 +439,104 @@
 		vscode.postMessage({ type: "send", agent: activeId, text });
 	}
 
-	function showLive(from, task) {
-		const banner = document.getElementById("liveBanner");
-		const txt = document.getElementById("liveBannerText");
-		if (!banner || !txt) return;
-		txt.innerHTML = "<b>" + (from || "Fleet") + "</b> dispatched a build — running live in Solstice now";
-		banner.classList.add("show");
+	// ---- fleet → Solstice handoff pipeline ---------------------------------
+	const FLOW_STAGE_LABEL = {
+		dispatch: "שיגר משימה לסולסטיס",
+		building: "סולסטיס בונה את הפרויקט…",
+		preview: "התצוגה החיה נפתחה",
+		done: "הבנייה הושלמה",
+	};
+	function setFlowStage(stage, extra) {
+		if (!flow || (extra && extra.from && extra.from !== flow.from && stage === "dispatch")) {
+			flow = { from: (extra && extra.from) || "fleet", task: "", stage: "dispatch", sub: "", url: "", ts: Date.now() };
+		}
+		// never move backwards (a late liveness ping shouldn't undo 'preview')
+		if (FLOW_RANK[stage] >= FLOW_RANK[flow.stage] || stage === "dispatch") flow.stage = stage;
+		if (extra) {
+			if (extra.from) flow.from = extra.from;
+			if (extra.task) flow.task = extra.task;
+			if (extra.url) flow.url = extra.url;
+			if (extra.sub !== undefined) flow.sub = extra.sub;
+		}
+		flow.ts = Date.now();
+		renderFlow();
+	}
+	function showLive(from, task) { setFlowStage("dispatch", { from, task }); }
+
+	// The four pipeline nodes. `min` = the flow stage at which the node turns
+	// active; once the flow advances past it the node reads as completed.
+	function flowNodes() {
+		const a = agentById(flow.from) || { name: flow.from, glyph: "◆" };
+		return [
+			{ key: "you", glyph: "👤", name: "אתה", min: 0, note: "הבקשה" },
+			{ key: "agent", glyph: a.glyph || "◆", name: a.name, min: 1, note: "מתאם ומשגר" },
+			{ key: "solstice", glyph: "☀", name: "Solstice", min: 2, note: "סוכן הבנייה" },
+			{ key: "preview", glyph: "🔎", name: "תצוגה חיה", min: 3, note: "האתר נבנה" },
+		];
+	}
+	function renderFlow() {
+		const wrap = document.getElementById("flowWrap");
+		if (!wrap) return;
+		wrap.innerHTML = "";
+		if (!flow || (activeId && flow.from !== activeId)) { wrap.classList.remove("show"); return; }
+		wrap.classList.add("show");
+		const rank = FLOW_RANK[flow.stage] || 1;
+
+		const head = el("div", "flowHead");
+		head.appendChild(el("span", "flowPulse"));
+		const ht = el("span", "flowHeadTxt");
+		ht.innerHTML = "<b>" + (agentById(flow.from) || { name: flow.from }).name + "</b> · " + (FLOW_STAGE_LABEL[flow.stage] || "");
+		head.appendChild(ht);
+		const open = el("button", "flowOpen", flow.stage === "preview" || flow.stage === "done" ? "פתח תצוגה ↗" : "צפה בעבודה ↗");
+		open.addEventListener("click", () => vscode.postMessage({ type: "openAgentPanel" }));
+		head.appendChild(open);
+		wrap.appendChild(head);
+
+		const rail = el("div", "flowRail");
+		const nodes = flowNodes();
+		nodes.forEach((n, i) => {
+			if (i > 0) {
+				const conn = el("div", "flowConn");
+				// connector lights/flows while the flow is crossing it
+				if (rank > n.min) conn.classList.add("flowConn--done");
+				else if (rank === n.min && flow.stage !== "done") conn.classList.add("flowConn--live");
+				conn.appendChild(el("span", "flowConnFill"));
+				rail.appendChild(conn);
+			}
+			const state = rank > n.min ? "done" : rank === n.min ? "live" : "wait";
+			const node = el("div", "flowNode flowNode--" + state);
+			const disc = el("div", "flowDisc");
+			disc.textContent = state === "done" && n.key !== "preview" ? "✓" : n.glyph;
+			if (state === "live") disc.classList.add("flowDisc--pulse");
+			node.appendChild(disc);
+			node.appendChild(el("div", "flowName", n.name));
+			// live sub-status on the active node (e.g. "כותב קבצים…" from liveness)
+			const subTxt = state === "live"
+				? (n.key === "solstice" && flow.sub ? flow.sub : (n.key === "preview" ? "טוען…" : n.note))
+				: n.note;
+			node.appendChild(el("div", "flowNote", subTxt));
+			rail.appendChild(node);
+		});
+		wrap.appendChild(rail);
+
+		if (flow.task) {
+			const task = el("div", "flowTask");
+			task.appendChild(el("span", "flowTaskQ", "❝"));
+			task.appendChild(el("span", "flowTaskTxt", flow.task.length > 140 ? flow.task.slice(0, 140) + "…" : flow.task));
+			wrap.appendChild(task);
+		}
+	}
+	// map the builder liveness layer/kind into a short Hebrew sub-status
+	function flowSubFromLiveness(lv) {
+		if (!lv) return "";
+		if (lv.layer === "alive") {
+			if (lv.kind === "tool") return "כותב קבצים…";
+			if (lv.kind === "token" || lv.kind === "stream") return "מזרים קוד…";
+			return "עובד…";
+		}
+		if (lv.layer === "quiet") return "חושב…";
+		if (lv.layer === "stalled") return "ממתין…";
+		return "";
 	}
 
 	window.addEventListener("message", (event) => {
@@ -479,7 +568,15 @@
 				break;
 			case "liveness":
 				liveness.set(msg.agent, { layer: String(msg.layer || "idle"), sinceMs: Number(msg.sinceMs || 0), kind: msg.kind || null, queued: Number(msg.queued || 0), tokens: Number(msg.tokens || 0) });
+				// feed the builder's live status into the handoff pipeline without a full re-render
+				if (flow && flow.from === msg.agent && (flow.stage === "building" || flow.stage === "preview")) {
+					flow.sub = flowSubFromLiveness(liveness.get(msg.agent));
+					renderFlow();
+				}
 				shell();
+				break;
+			case "flowStage":
+				setFlowStage(msg.stage, { from: msg.from, task: msg.task, url: msg.url });
 				break;
 			case "stuck":
 				stuckAgents.set(msg.agent, { state: String(msg.state || "busy"), mins: Number(msg.mins || 0) });

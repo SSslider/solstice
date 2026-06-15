@@ -312,6 +312,7 @@ class AgentController {
 		this.previewUrl = url;
 		this.previewKind = this.detectPreviewKind();
 		this.openPreviewPanel(url, this.defaultDevice());
+		this.fleetFlow("preview", { url });
 	}
 
 	// First previewable file → auto-open the center preview (regression fix: this
@@ -943,13 +944,13 @@ class AgentController {
 			th.status = "active";
 			th.updatedAt = Date.now() / 1000;
 			this.planFileOpened = false;
-			if (tid === this.threadId) { this.markBusy("_builder", true); this.notePulse("_builder", "state"); this.postPreview({ type: "building", on: true }); }
+			if (tid === this.threadId) { this.markBusy("_builder", true); this.notePulse("_builder", "state"); this.postPreview({ type: "building", on: true }); this.fleetFlow("building"); }
 			this.pushThreads();
 		} else if (method === "turn/completed" && tid) {
 			const th = this.upsertThread({ id: tid });
 			th.activeTurnId = null;
 			th.status = "idle";
-			if (tid === this.threadId) { this.markBusy("_builder", false); this.postPreview({ type: "building", on: false }); }
+			if (tid === this.threadId) { this.markBusy("_builder", false); this.postPreview({ type: "building", on: false }); this.fleetFlow("done"); }
 			this.pushThreads();
 			if (tid === this.threadId) this.drainSteerQueue();
 		} else if (method === "turn/diff/updated" && tid) {
@@ -1676,6 +1677,24 @@ class AgentController {
 		this.noteWatch(agentId, state);
 		if (!this.fleetPanel) return;
 		this.fleetPanel.webview.postMessage({ type: "activity", agent: agentId, state, text: String(text || ""), ts: Date.now() });
+	}
+
+	// ---- fleet → Solstice handoff pipeline ---------------------------------
+	// Drive the visual workflow (You → Agent → Solstice → Preview) in the Fleet
+	// webview from REAL lifecycle signals, never timers. Stages:
+	//   dispatch  — a fleet agent dropped a build task into the Solstice inbox
+	//   building  — the Solstice builder started a turn
+	//   preview   — the live preview opened in the center column
+	//   done      — the builder turn completed
+	// We only emit building/preview/done while a dispatch flow is active, so a
+	// plain in-panel turn (no fleet handoff) doesn't fake a pipeline.
+	fleetFlow(stage, extra) {
+		if (stage === "dispatch") this._flowActive = true;
+		else if (!this._flowActive) return;
+		if (!this.fleetPanel) return;
+		const from = (extra && extra.from) || this.builderAgent();
+		this.fleetPanel.webview.postMessage({ type: "flowStage", stage, from, ts: Date.now(), ...(extra || {}) });
+		if (stage === "done") this._flowActive = false;
 	}
 
 	// ---- xAI/Grok token meter ----------------------------------------------
@@ -2527,7 +2546,9 @@ function activate(context) {
 		await vscode.commands.executeCommand("solstice.agentPanel.focus").then(undefined, () => { });
 		const text = `\u{1f4e5} \u05de\u05e9\u05d9\u05de\u05d4 \u05de-${from} (\u05e6\u05d9 \u05d4\u05e1\u05d5\u05db\u05e0\u05d9\u05dd):\n\n${task}`;
 		// light up the Fleet panel: a fleet agent just dispatched a build to Solstice
+		controller.activeFleetAgent = from;
 		if (controller.fleetPanel) controller.fleetPanel.webview.postMessage({ type: "liveTask", from, task });
+		controller.fleetFlow("dispatch", { from, task });
 		setTimeout(() => controller.post({ type: "injectPrompt", text }), 1200);
 	};
 	const scanInbox = async () => {
