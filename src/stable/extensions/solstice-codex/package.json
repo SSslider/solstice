@@ -304,6 +304,22 @@
               "glyph": "◆",
               "model": "Opus",
               "wsUrl": "ws://100.88.154.26:8782/solstice/ws"
+            },
+            {
+              "id": "jasper",
+              "name": "Jasper",
+              "role": "Web production · sites & landing pages",
+              "glyph": "❖",
+              "model": "GPT-5.5",
+              "wsUrl": "ws://100.88.154.26:8783/solstice/ws"
+            },
+            {
+              "id": "asher",
+              "name": "Asher",
+              "role": "Systems · CRMs, software, bigger builds",
+              "glyph": "▲",
+              "model": "Composer 2.5",
+              "wsUrl": "ws://100.88.154.26:8784/solstice/ws"
             }
           ],
           "description": "Fleet agents reachable over a live WebSocket straight to their brain (SolsticeBridgeChannel on the server, over Tailscale). Each entry: {id, name, role, glyph, model, wsUrl, token?}. Agents listed here use the live socket; others fall back to the file-drop inbox.",
