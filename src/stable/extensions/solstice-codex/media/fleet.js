@@ -6,6 +6,8 @@
 	let activeId = null;
 	const threads = new Map(); // agentId -> [{who:'me'|'them'|'sys', text, ts}]
 	const working = new Set(); // agentIds awaiting a live brain reply
+	const activity = [];       // [{agent, state, text, ts}] newest last, capped
+	const liveState = new Map(); // agentId -> {state, text, ts} latest per agent
 
 	function el(tag, cls, text) {
 		const e = document.createElement(tag);
@@ -22,6 +24,23 @@
 
 	let addingAgent = false;
 
+	// ---- status helpers -----------------------------------------------------
+	const STATE_LABEL = {
+		online: "מחובר", connecting: "מתחבר…", working: "עובד…",
+		replied: "ענה", offline: "מנותק", error: "שגיאה", idle: "ממתין", local: "מקומי",
+	};
+	function statusClass(a) {
+		const ls = liveState.get(a.id);
+		if (ls && ls.state) return ls.state;
+		return a.status || (a.present ? "online" : "offline");
+	}
+	function statusText(a) {
+		const ls = liveState.get(a.id);
+		if (ls && ls.state === "working") return ls.text || "עובד…";
+		const st = statusClass(a);
+		return STATE_LABEL[st] || st;
+	}
+
 	function shell() {
 		app.innerHTML = "";
 		const wrap = el("div", "fleet");
@@ -30,7 +49,8 @@
 		const rh = el("div", "rosterHead");
 		rh.appendChild(el("span", "rMark", "☀"));
 		const rt = el("div", "rTitle", "Fleet");
-		rt.appendChild(el("small", "", agents.length + " agents · inside Solstice"));
+		const online = agents.filter((a) => statusClass(a) === "online").length;
+		rt.appendChild(el("small", "", agents.length + " agents · " + online + " online"));
 		rh.appendChild(rt);
 		roster.appendChild(rh);
 		const list = el("div", "rosterList");
@@ -40,6 +60,7 @@
 		wrap.appendChild(roster);
 
 		wrap.appendChild(chatPane());
+		wrap.appendChild(activityPane());
 		app.appendChild(wrap);
 	}
 
@@ -49,10 +70,13 @@
 		const meta = el("div", "aMeta");
 		const name = el("div", "aName");
 		name.appendChild(el("span", "", a.name));
-		name.appendChild(el("span", "aDot" + (a.present ? "" : " off")));
+		const dot = el("span", "aDot aDot--" + statusClass(a));
+		if (statusClass(a) === "working" || statusClass(a) === "connecting") dot.classList.add("aDot--pulse");
+		name.appendChild(dot);
 		meta.appendChild(name);
 		meta.appendChild(el("div", "aRole", a.role));
-		meta.appendChild(el("div", "aModel", a.model));
+		const sline = el("div", "aStatus aStatus--" + statusClass(a), statusText(a));
+		meta.appendChild(sline);
 		row.appendChild(meta);
 		if (a.removable !== false) {
 			const x = el("button", "aRemove", "×");
@@ -113,6 +137,69 @@
 		return box;
 	}
 
+	// ---- activity rail ------------------------------------------------------
+	const ACT_GLYPH = {
+		online: "●", connecting: "◐", working: "◆", replied: "✓",
+		offline: "○", error: "⚠", idle: "·", local: "◇",
+	};
+	function activityPane() {
+		const pane = el("div", "activity");
+		const h = el("div", "actHead");
+		h.appendChild(el("span", "actPulse"));
+		h.appendChild(el("span", "actTitle", "Live activity"));
+		pane.appendChild(h);
+		const feed = el("div", "actFeed");
+		feed.id = "actFeed";
+		if (!activity.length) {
+			feed.appendChild(el("div", "actEmpty", "פעילות הסוכנים תופיע כאן בזמן אמת."));
+		} else {
+			for (let i = activity.length - 1; i >= 0; i--) feed.appendChild(actRow(activity[i]));
+		}
+		pane.appendChild(feed);
+		return pane;
+	}
+	function actRow(ev) {
+		const a = agentById(ev.agent) || { name: ev.agent, glyph: "◆" };
+		const row = el("div", "actItem actItem--" + ev.state);
+		row.appendChild(el("span", "actGlyph", ACT_GLYPH[ev.state] || "·"));
+		const body = el("div", "actBody");
+		const top = el("div", "actTop");
+		top.appendChild(el("span", "actName", a.name));
+		top.appendChild(el("span", "actTime", time(ev.ts)));
+		body.appendChild(top);
+		body.appendChild(el("div", "actText", ev.text || STATE_LABEL[ev.state] || ev.state));
+		row.appendChild(body);
+		return row;
+	}
+	function pushActivity(ev) {
+		activity.push(ev);
+		if (activity.length > 120) activity.splice(0, activity.length - 120);
+		liveState.set(ev.agent, { state: ev.state, text: ev.text, ts: ev.ts });
+		const feed = document.getElementById("actFeed");
+		if (feed) {
+			const empty = feed.querySelector(".actEmpty");
+			if (empty) empty.remove();
+			feed.insertBefore(actRow(ev), feed.firstChild);
+		}
+		// refresh the roster row status without a full re-render
+		refreshRosterStatus(ev.agent);
+	}
+	function refreshRosterStatus(agentId) {
+		// cheap: re-render the whole shell only if the changed agent is visible.
+		// roster is small, so a targeted DOM patch keeps the chat scroll intact.
+		const rows = document.querySelectorAll(".roster .agent");
+		const idx = agents.findIndex((a) => a.id === agentId);
+		if (idx < 0 || !rows[idx]) return;
+		const a = agents[idx];
+		const dot = rows[idx].querySelector(".aDot");
+		const sline = rows[idx].querySelector(".aStatus");
+		const cls = statusClass(a);
+		if (dot) { dot.className = "aDot aDot--" + cls; if (cls === "working" || cls === "connecting") dot.classList.add("aDot--pulse"); }
+		if (sline) { sline.className = "aStatus aStatus--" + cls; sline.textContent = statusText(a); }
+		const head = document.querySelector(".rosterHead small");
+		if (head) head.textContent = agents.length + " agents · " + agents.filter((x) => statusClass(x) === "online").length + " online";
+	}
+
 	function renderWorking() {
 		const msgs = document.getElementById("msgs");
 		if (!msgs) return;
@@ -149,6 +236,14 @@
 		ht.appendChild(el("div", "chatHeadName", a.name));
 		ht.appendChild(el("div", "chatHeadRole", a.role + " · " + a.model));
 		head.appendChild(ht);
+		const clear = el("button", "chatClear", "נקה");
+		clear.title = "נקה היסטוריה";
+		clear.addEventListener("click", () => {
+			threads.set(a.id, []);
+			vscode.postMessage({ type: "clearThread", agent: a.id });
+			shell();
+		});
+		head.appendChild(clear);
 		chat.appendChild(head);
 
 		const banner = el("div", "liveBanner");
@@ -249,6 +344,20 @@
 				if (!agents.some((a) => a.id === activeId)) activeId = agents.length ? agents[0].id : null;
 				addingAgent = false;
 				shell();
+				break;
+			case "history":
+				if (msg.threads && typeof msg.threads === "object") {
+					for (const id of Object.keys(msg.threads)) {
+						if (Array.isArray(msg.threads[id])) threads.set(id, msg.threads[id].slice());
+					}
+					shell();
+				}
+				break;
+			case "activity":
+				pushActivity({ agent: msg.agent, state: msg.state, text: msg.text, ts: msg.ts || Date.now() });
+				break;
+			case "focusAgent":
+				if (msg.agent) { activeId = msg.agent; shell(); }
 				break;
 			case "sent":
 				if (!msg.ok) {

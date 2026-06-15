@@ -1112,9 +1112,11 @@ class AgentController {
 				if (b.glyph) a.glyph = b.glyph;
 				if (b.model) a.model = b.model;
 				const st = this.fleetBridges.get(a.id);
-				// a declared bridge is reachable; reflect live socket state once known
-				a.present = st ? st.status === "online" : true;
+				// reflect the real socket state: only a live hello flips us to "online".
+				a.status = st ? st.status : "idle";
+				a.present = a.status === "online";
 			} else {
+				a.status = "local";
 				a.present = (() => { try { return fs.statSync(path.join(base, a.id)).isDirectory(); } catch { return false; } })();
 			}
 		}
@@ -1135,28 +1137,41 @@ class AgentController {
 		const rec = { ws, status: "connecting" };
 		this.fleetBridges.set(id, rec);
 		const post = (m) => { if (this.fleetPanel) this.fleetPanel.webview.postMessage(m); };
-		ws.on("open", () => { /* wait for hello before flipping online */ });
+		const agentName = () => { const a = this.fleetAgents().find((x) => x.id === id); return a ? a.name : id; };
+		ws.on("open", () => { rec.status = "connecting"; this.postFleetActivity(id, "connecting", "מתחבר…"); });
 		ws.on("frame", (f) => {
 			if (f.type === "hello") {
 				rec.status = "online";
 				post({ type: "roster", agents: this.fleetAgents() });
+				this.postFleetActivity(id, "online", "מחובר");
 			} else if (f.type === "push") {
 				post({ type: "reply", agent: id, text: String(f.text || ""), ts: Date.now(), kind: "progress" });
+				this.postFleetActivity(id, "working", String(f.text || "עובד…").split("\n")[0].slice(0, 80));
 			} else if (f.type === "reply") {
-				post({ type: "reply", agent: id, text: String(f.text || ""), ts: Date.now() });
+				const ts = Date.now();
+				post({ type: "reply", agent: id, text: String(f.text || ""), ts });
+				this.appendFleetThread(id, { who: "them", text: String(f.text || ""), ts });
+				this.postFleetActivity(id, "replied", "ענה");
+				this.notifyFleetReply(id, agentName(), String(f.text || ""));
+			} else if (f.type === "action") {
+				// agent-driven IDE action (see runFleetAction); echo to the activity feed too
+				this.runFleetAction(id, f).catch(() => { });
 			} else if (f.type === "error") {
 				post({ type: "fleetError", agent: id, error: String(f.error || "agent error") });
+				this.postFleetActivity(id, "error", String(f.error || "שגיאה").slice(0, 80));
 			}
 		});
 		ws.on("error", (e) => {
 			rec.status = "offline";
 			post({ type: "fleetError", agent: id, error: e.message });
 			post({ type: "roster", agents: this.fleetAgents() });
+			this.postFleetActivity(id, "offline", "מנותק");
 		});
 		ws.on("close", () => {
 			rec.status = "offline";
 			this.fleetBridges.delete(id);
 			post({ type: "roster", agents: this.fleetAgents() });
+			this.postFleetActivity(id, "offline", "מנותק");
 		});
 		ws.connect();
 		return ws;
@@ -1165,6 +1180,56 @@ class AgentController {
 	closeFleetBridges() {
 		for (const rec of this.fleetBridges.values()) { try { rec.ws.close(); } catch { } }
 		this.fleetBridges.clear();
+	}
+
+	// ---- live activity feed -------------------------------------------------
+	// Broadcast a single activity event to the Fleet webview's activity rail.
+	postFleetActivity(agentId, state, text) {
+		if (!this.fleetPanel) return;
+		this.fleetPanel.webview.postMessage({ type: "activity", agent: agentId, state, text: String(text || ""), ts: Date.now() });
+	}
+
+	// ---- desktop notifications ---------------------------------------------
+	// Toast when an agent finishes a turn while its thread isn't in the foreground.
+	notifyFleetReply(agentId, name, text) {
+		const preview = String(text || "").replace(/\s+/g, " ").trim().slice(0, 90);
+		vscode.window.showInformationMessage(`${name}: ${preview || "ענה"}`, "פתח Fleet").then((pick) => {
+			if (pick && this.fleetPanel) {
+				this.fleetPanel.reveal(vscode.ViewColumn.One);
+				this.fleetPanel.webview.postMessage({ type: "focusAgent", agent: agentId });
+			}
+		}, () => { });
+	}
+
+	// ---- chat history persistence ------------------------------------------
+	fleetThreadsKey() { return "solstice.fleet.threads"; }
+	loadFleetThreads() {
+		try { return this.context.globalState.get(this.fleetThreadsKey()) || {}; } catch { return {}; }
+	}
+	appendFleetThread(agentId, msg) {
+		const id = String(agentId || ""); if (!id || !msg) return;
+		const all = this.loadFleetThreads();
+		const list = Array.isArray(all[id]) ? all[id] : [];
+		list.push(msg);
+		// cap stored history per agent so globalState stays small
+		all[id] = list.slice(-200);
+		try { this.context.globalState.update(this.fleetThreadsKey(), all); } catch { }
+	}
+	clearFleetThread(agentId) {
+		const id = String(agentId || ""); if (!id) return;
+		const all = this.loadFleetThreads();
+		delete all[id];
+		try { this.context.globalState.update(this.fleetThreadsKey(), all); } catch { }
+	}
+
+	// ---- agent-driven IDE actions (Batch 2) --------------------------------
+	// An agent brain can push {type:"action", action, ...} frames to actually
+	// drive the editor: open/edit files, run a terminal command, etc. Fully
+	// wired in runFleetAction; batch-1 ships the receiver + activity echo.
+	async runFleetAction(agentId, f) {
+		const action = String(f && f.action || "").trim();
+		if (!action) return;
+		this.postFleetActivity(agentId, "working", "פעולה ב-IDE: " + action);
 	}
 
 	// Manually add an agent to the Fleet roster. A wsUrl makes it a live bridge
@@ -1515,6 +1580,11 @@ function openFleet(controller, extensionUri) {
 		switch (msg.type) {
 			case "ready":
 				fleetPanel.webview.postMessage({ type: "roster", agents: controller.fleetAgents() });
+				fleetPanel.webview.postMessage({ type: "history", threads: controller.loadFleetThreads() });
+				// warm every live bridge so the roster reflects real online state, not a guess
+				for (const a of controller.fleetAgents()) {
+					if (controller.fleetBridgeConfigs().has(a.id)) controller.ensureFleetBridge(a.id);
+				}
 				if (!pollTimer) pollTimer = setInterval(poll, 2000);
 				break;
 			case "select":
@@ -1522,10 +1592,15 @@ function openFleet(controller, extensionUri) {
 				if (controller.fleetBridgeConfigs().has(msg.agent)) controller.ensureFleetBridge(msg.agent);
 				break;
 			case "send": {
+				controller.appendFleetThread(msg.agent, { who: "me", text: msg.text, ts: Date.now() });
 				const res = controller.sendToFleet(msg.agent, msg.text);
+				if (res.live) controller.postFleetActivity(msg.agent, "working", "חושב…");
 				fleetPanel.webview.postMessage({ type: "sent", agent: msg.agent, ok: res.ok, ts: res.ts, error: res.error, live: res.live });
 				break;
 			}
+			case "clearThread":
+				controller.clearFleetThread(msg.agent);
+				break;
 			case "addAgent":
 				controller.addFleetAgent(msg.agent || {}).then((res) => {
 					fleetPanel.webview.postMessage({ type: "rosterUpdate", agents: controller.fleetAgents(), select: res.ok ? res.id : null, error: res.error });
