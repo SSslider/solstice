@@ -6,7 +6,7 @@
 
 	const STATUS = {
 		connected: { label: "מחובר", cls: "ok" },
-		requested: { label: "ממתין לטוקן מ-Thomas", cls: "wait" },
+		requested: { label: "ממתין לאישור — לחץ 'חבר'", cls: "wait" },
 		disconnected: { label: "לא מחובר", cls: "off" },
 	};
 
@@ -33,7 +33,7 @@
 		for (const c of connectors) grid.appendChild(card(c));
 		app.appendChild(grid);
 
-		app.appendChild(el("div", "cNote", "הערה: כל חיבור דורש טוקן/מפתח של הספק. ה-UI מוכן — ברגע ש-Thomas יספק את הטוקן, החיבור נדלק אוטומטית."));
+		app.appendChild(el("div", "cNote", "לחיצה על 'חבר' פותחת את דף ההתחברות של הספק בדפדפן — מתחברים, יוצרים token ומדביקים בשדה מאובטח. ה-credential נשמר בכספת המוצפנת (לא נחשף לסוכן ולא נכתב לקובץ)."));
 	}
 
 	function card(c) {
@@ -56,15 +56,11 @@
 		card.appendChild(el("div", "cToken", "token: " + c.tokenKey));
 
 		if (c.status === "connected") {
-			const b = el("button", "cBtn cBtn--ok", "מחובר ✓");
-			b.disabled = true;
-			card.appendChild(b);
-		} else if (c.status === "requested") {
-			const b = el("button", "cBtn", "נשלחה בקשה — ממתין");
-			b.disabled = true;
+			const b = el("button", "cBtn cBtn--ok", "מחובר ✓ — נתק");
+			b.addEventListener("click", () => vscode.postMessage({ type: "disconnect", id: c.id }));
 			card.appendChild(b);
 		} else {
-			const b = el("button", "cBtn cBtn--primary", "חבר");
+			const b = el("button", "cBtn cBtn--primary", c.status === "requested" ? "חבר עכשיו" : "חבר");
 			b.addEventListener("click", () => vscode.postMessage({ type: "connect", id: c.id }));
 			card.appendChild(b);
 		}

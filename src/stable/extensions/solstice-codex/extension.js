@@ -2120,6 +2120,66 @@ self.addEventListener("fetch", (e) => {
 		});
 	}
 
+	// ---- connectors: on-demand link-auth + vault (Phase 4) -----------------
+	// Credentials live in the OS-keychain vault (context.secrets), never in
+	// config/globalState/logs and never in the model's context. Reads fall back
+	// to env/legacy-config so existing setups keep working.
+	connectorSecretKey(id) { return "solstice.connector." + String(id || ""); }
+	async connectorToken(id) {
+		const c = CONNECTOR_CATALOG.find((x) => x.id === id);
+		if (!c) return "";
+		try { const v = await this.context.secrets.get(this.connectorSecretKey(id)); if (v && v.trim()) return v.trim(); } catch { }
+		return String(process.env[c.tokenKey] || this.cfg().get("connector." + id + "Token") || "").trim();
+	}
+	async connectorConnected(id) { return !!(await this.connectorToken(id)); }
+	refreshConnectorsPanel() { try { if (this._pushConnectors) this._pushConnectors(); } catch { } }
+
+	// The on-demand flow: open the provider's auth/token page, let Thomas log in
+	// and approve online, then paste the credential into a secure (password)
+	// input that stores it straight into the vault. Provider-agnostic.
+	async connectProvider(id, opts) {
+		const c = CONNECTOR_CATALOG.find((x) => x.id === id);
+		if (!c) { vscode.window.showErrorMessage("Solstice: ספק לא ידוע — " + id); return false; }
+		if (await this.connectorConnected(id)) { vscode.window.showInformationMessage(`${c.name} כבר מחובר.`); return true; }
+		// 1) emit the auth link — open it so Thomas authenticates in the browser
+		if (c.authUrl) { try { await vscode.env.openExternal(vscode.Uri.parse(c.authUrl)); } catch { } }
+		// 2) Thomas pastes the credential (password field — not echoed, not logged)
+		const token = await vscode.window.showInputBox({
+			title: `חיבור ${c.name}`,
+			prompt: (c.authUrl ? `נפתח בדפדפן: ${c.authUrl}\n` : "") + (c.howto || "הדבק את ה-token/מפתח כאן."),
+			placeHolder: c.tokenKey,
+			password: true,
+			ignoreFocusOut: true,
+		});
+		if (!token || !token.trim()) { vscode.window.showWarningMessage(`חיבור ${c.name} בוטל.`); return false; }
+		// 3) store in the vault — never to config/globalState/model context
+		try { await this.context.secrets.store(this.connectorSecretKey(id), token.trim()); }
+		catch (e) { vscode.window.showErrorMessage(`שמירת ה-credential נכשלה: ${e && e.message || e}`); return false; }
+		try { const req = this.context.globalState.get("solstice.fleet.connectorsRequested") || {}; delete req[id]; this.context.globalState.update("solstice.fleet.connectorsRequested", req); } catch { }
+		vscode.window.showInformationMessage(`✅ ${c.name} מחובר. ה-credential נשמר בכספת — לא נחשף לסוכן.`);
+		this.refreshConnectorsPanel();
+		if (opts && opts.agentId) this.postFleetActivity(opts.agentId, "online", `${c.name} חובר ✓`);
+		return true;
+	}
+	async disconnectProvider(id) {
+		const c = CONNECTOR_CATALOG.find((x) => x.id === id);
+		try { await this.context.secrets.delete(this.connectorSecretKey(id)); } catch { }
+		try { const req = this.context.globalState.get("solstice.fleet.connectorsRequested") || {}; delete req[id]; this.context.globalState.update("solstice.fleet.connectorsRequested", req); } catch { }
+		vscode.window.showInformationMessage(`${c ? c.name : id} נותק.`);
+		this.refreshConnectorsPanel();
+	}
+	// An agent that needs a not-yet-connected service requests it on-demand; we
+	// surface the link to Thomas (mark "requested" so the panel reflects it).
+	async requestConnect(agentId, id) {
+		const c = CONNECTOR_CATALOG.find((x) => x.id === id);
+		if (!c) { this.postFleetActivity(agentId, "error", "ספק לא ידוע: " + id); return false; }
+		if (await this.connectorConnected(id)) { this.postFleetActivity(agentId, "online", `${c.name} כבר מחובר`); return true; }
+		try { const req = this.context.globalState.get("solstice.fleet.connectorsRequested") || {}; req[id] = Date.now(); this.context.globalState.update("solstice.fleet.connectorsRequested", req); } catch { }
+		this.refreshConnectorsPanel();
+		this.postFleetActivity(agentId, "working", `מבקש חיבור ${c.name} — נשלח לינק ל-Thomas`);
+		return this.connectProvider(id, { agentId });
+	}
+
 	// ---- build journal (relaunch recovery) ---------------------------------
 	// A build is a long, multi-minute CLI turn. If the IDE/extension is closed
 	// or crashes mid-build, the in-memory _activeBuild is lost and the dispatching
@@ -2292,6 +2352,14 @@ self.addEventListener("fetch", (e) => {
 				this.appendFleetThread(to, { who: "me", text: "[מ-" + name + "] " + text, ts: Date.now() });
 				if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "reply", agent: to, text: "↳ משימה מ-" + name + ": " + text, ts: Date.now(), kind: "dispatch" });
 				if (res.live) this.postFleetActivity(to, "working", "קיבל משימה מ-" + name);
+				return;
+			}
+			if (action === "connect") {
+				// on-demand connector: the agent hit a not-yet-connected service and
+				// asks Thomas to authorize it. We open the auth link + secure paste.
+				const provider = String(f.provider || f.id || "").trim().toLowerCase();
+				if (!provider) return this.postFleetActivity(agentId, "error", "חסר שם ספק לחיבור");
+				await this.requestConnect(agentId, provider);
 				return;
 			}
 			if (action === "build" || action === "prompt" || action === "inject") {
@@ -2853,21 +2921,29 @@ function openGallery(controller, extensionUri) {
 
 let connectorsPanel = null;
 
-// Built-in connector catalog. UI/config only — the actual integration is gated
-// on Thomas providing each provider's secret token (env/setting), so a click
-// just records "requested" until a token lands.
+// Provider-agnostic connector catalog. On-demand link-auth flow (Phase 4):
+// when a connection is needed, Solstice opens the provider's auth/token page,
+// Thomas logs in and approves online (proving it's him), pastes the credential
+// into a secure input, and it lands in the OS-keychain vault (context.secrets) —
+// never in config, globalState, or the model's context. Add a provider by
+// appending one row here; no hard-wiring of any single service.
 const CONNECTOR_CATALOG = [
-	{ id: "vercel", name: "Vercel", glyph: "▲", blurb: "פריסת אתרים ואפליקציות בלחיצה", tokenKey: "VERCEL_TOKEN" },
-	{ id: "github", name: "GitHub", glyph: "❮❯", blurb: "דחיפת קוד הפרויקט לריפו", tokenKey: "GITHUB_TOKEN" },
-	{ id: "email", name: "Email (SMTP/Resend)", glyph: "✉", blurb: "שליחת מיילים מפרויקטים", tokenKey: "EMAIL_API_KEY" },
+	{ id: "vercel", name: "Vercel", glyph: "▲", blurb: "פריסת אתרים ואפליקציות בלחיצה", tokenKey: "VERCEL_TOKEN", authUrl: "https://vercel.com/account/tokens", howto: "צור Token חדש (Scope: Full Account) והדבק כאן." },
+	{ id: "github", name: "GitHub", glyph: "❮❯", blurb: "דחיפת קוד הפרויקט לריפו", tokenKey: "GITHUB_TOKEN", authUrl: "https://github.com/settings/tokens/new?scopes=repo&description=Solstice", howto: "צור Personal Access Token עם הרשאת repo והדבק כאן." },
+	{ id: "email", name: "Email (Resend)", glyph: "✉", blurb: "שליחת מיילים מפרויקטים", tokenKey: "EMAIL_API_KEY", authUrl: "https://resend.com/api-keys", howto: "צור API Key ב-Resend והדבק כאן." },
 ];
 
-function connectorState(controller) {
+// Async: presence of a credential is checked in the vault first (never logged),
+// then legacy env/config for back-compat. "requested" = an agent asked Thomas to
+// connect and we're waiting for the paste to complete.
+async function connectorState(controller) {
 	const req = controller.context.globalState.get("solstice.fleet.connectorsRequested") || {};
-	return CONNECTOR_CATALOG.map((c) => {
-		const hasToken = !!String(process.env[c.tokenKey] || controller.cfg().get("connector." + c.id + "Token") || "").trim();
-		return { ...c, status: hasToken ? "connected" : (req[c.id] ? "requested" : "disconnected") };
-	});
+	const out = [];
+	for (const c of CONNECTOR_CATALOG) {
+		const hasToken = await controller.connectorConnected(c.id);
+		out.push({ id: c.id, name: c.name, glyph: c.glyph, blurb: c.blurb, tokenKey: c.tokenKey, authUrl: c.authUrl, status: hasToken ? "connected" : (req[c.id] ? "requested" : "disconnected") });
+	}
+	return out;
 }
 
 function openConnectors(controller, extensionUri) {
@@ -2879,22 +2955,16 @@ function openConnectors(controller, extensionUri) {
 		{ enableScripts: true, retainContextWhenHidden: true, localResourceRoots: webviewResourceRoots(extensionUri) }
 	);
 	connectorsPanel.webview.html = mediaHtml(connectorsPanel.webview, extensionUri, "connectors.js", "connectors.css");
-	const push = () => connectorsPanel.webview.postMessage({ type: "connectors", connectors: connectorState(controller) });
-	connectorsPanel.webview.onDidReceiveMessage((msg) => {
+	const push = async () => { if (connectorsPanel) connectorsPanel.webview.postMessage({ type: "connectors", connectors: await connectorState(controller) }); };
+	controller._pushConnectors = push;
+	connectorsPanel.webview.onDidReceiveMessage(async (msg) => {
 		switch (msg.type) {
 			case "ready": push(); break;
-			case "connect": {
-				const req = controller.context.globalState.get("solstice.fleet.connectorsRequested") || {};
-				req[msg.id] = Date.now();
-				controller.context.globalState.update("solstice.fleet.connectorsRequested", req);
-				const c = CONNECTOR_CATALOG.find((x) => x.id === msg.id);
-				vscode.window.showInformationMessage(`חיבור ${c ? c.name : msg.id} ממתין ל-${c ? c.tokenKey : "token"} מ-Thomas.`);
-				push();
-				break;
-			}
+			case "connect": await controller.connectProvider(msg.id); push(); break;
+			case "disconnect": await controller.disconnectProvider(msg.id); push(); break;
 		}
 	});
-	connectorsPanel.onDidDispose(() => { connectorsPanel = null; });
+	connectorsPanel.onDidDispose(() => { connectorsPanel = null; controller._pushConnectors = null; });
 }
 
 let workflowPanel = null;
