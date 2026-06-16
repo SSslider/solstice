@@ -1977,6 +1977,21 @@ self.addEventListener("fetch", (e) => {
 				if (res.live) this.postFleetActivity(to, "working", "קיבל משימה מ-" + name);
 				return;
 			}
+			if (action === "build" || action === "prompt" || action === "inject") {
+				// a fleet agent hands a build task to the IDE's own builder (grok/codex).
+				// mirrors the inbox-watcher inject path so WS dispatch == file-drop dispatch:
+				// focus panel, light the live flow, and feed the task as a builder prompt.
+				const task = String(f.text || f.task || "").trim();
+				if (!task) return;
+				await vscode.commands.executeCommand("solstice.agentPanel.focus").then(undefined, () => { });
+				this.activeFleetAgent = agentId;
+				if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "liveTask", from: agentId, task });
+				this.fleetFlow("dispatch", { from: agentId, task });
+				this.postFleetActivity(agentId, "working", "משגר בנייה ל-Solstice: " + task.slice(0, 50));
+				const text = `\u{1f4e5} \u05de\u05e9\u05d9\u05de\u05d4 \u05de-${name} (\u05e6\u05d9 \u05d4\u05e1\u05d5\u05db\u05e0\u05d9\u05dd):\n\n${task}`;
+				setTimeout(() => this.post({ type: "injectPrompt", text }), 1200);
+				return;
+			}
 			// unknown action — just echo it
 			this.postFleetActivity(agentId, "working", "פעולה ב-IDE: " + action);
 		} catch (e) {
