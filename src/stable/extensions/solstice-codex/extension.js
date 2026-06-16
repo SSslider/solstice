@@ -858,13 +858,56 @@ self.addEventListener("fetch", (e) => {
 		}
 	}
 
+	// Ordered auto-failover chain. Claude is intentionally NEVER here — it is
+	// manual-only (solstice.codex.allowClaude), per Thomas: the IDE runs on the
+	// freshest non-Claude models. Config-driven so newer/stronger models can be
+	// slotted in without code changes.
+	failoverChain() {
+		const def = ["gpt-5.5", "composer-2.5", "grok-build"];
+		let chain = this.cfg().get("failoverChain");
+		if (!Array.isArray(chain) || !chain.length) chain = def;
+		// hard guard: claude can never enter the automatic chain
+		return chain.map((s) => String(s)).filter((k) => k && k !== "claude");
+	}
+
+	// Auto-failover: on a quota/rate-limit error, transparently advance to the
+	// next untried model in the chain and re-run the last prompt — no user click.
+	// Falls back to the manual suggestion only when the chain is exhausted.
+	async autoFailover(reason) {
+		const chain = this.failoverChain();
+		const cur = this.providerKey();
+		if (!this._failoverTried) this._failoverTried = new Set();
+		this._failoverTried.add(cur);
+		const next = chain.find((k) => !this._failoverTried.has(k));
+		if (!next) {
+			// chain exhausted — fall back to the manual prompt (may include Claude
+			// if the user opted in) so the build isn't silently stuck.
+			this.suggestFallback();
+			return;
+		}
+		const label = (k) => k === "gpt-5.5" ? "GPT-5.5" : (GROK_MODELS[k] ? GROK_MODELS[k].label : k);
+		this.output.append(`\n[failover] ${label(cur)} hit ${reason}; switching to ${label(next)} and retrying.\n`);
+		vscode.window.setStatusBarMessage(`Solstice: ${label(cur)} → ${label(next)} (auto-failover)`, 6000);
+		await this.cfg().update("provider", next, this.cfgTarget());
+		this.applyProviderToWebviews();
+		this.sendBuildStatus("building", { text: `failover → ${label(next)}` });
+		const prompt = this._lastUserPrompt;
+		if (prompt) {
+			// new provider = new turn context; clear codex thread so the retry
+			// starts cleanly on the new backend.
+			this.threadId = null;
+			try { await this.send(prompt); }
+			catch (e) { this.output.append(`[failover] retry failed: ${e && e.message || e}\n`); }
+		}
+	}
+
 	suggestFallback() {
 		if (this.fallbackPrompted) return;
 		this.fallbackPrompted = true;
 		const choices = ["Grok 4.3 Build", "Composer 2.5 Fast", "Stay"];
 		if (this.claudeAllowed()) choices.unshift("Claude Code");
 		vscode.window.showWarningMessage(
-			"Codex (GPT-5.5) hit its usage limit. Switch the Solstice agent to a fallback model?",
+			"All auto-failover models hit their limit. Switch the Solstice agent manually?",
 			...choices
 		).then(async (pick) => {
 			const key = pick === "Claude Code" ? "claude" : pick === "Grok 4.3 Build" ? "grok-build" : pick === "Composer 2.5 Fast" ? "composer-2.5" : null;
@@ -1147,7 +1190,7 @@ self.addEventListener("fetch", (e) => {
 			const th = this.upsertThread({ id: tid });
 			th.activeTurnId = null;
 			th.status = "idle";
-			if (tid === this.threadId) { this.markBusy("_builder", false); this.postPreview({ type: "building", on: false }); this.fleetFlow("done"); }
+			if (tid === this.threadId) { this.markBusy("_builder", false); this.postPreview({ type: "building", on: false }); this.fleetFlow("done"); this._failoverTried = null; }
 			this.pushThreads();
 			if (tid === this.threadId) this.drainSteerQueue();
 		} else if (method === "turn/diff/updated" && tid) {
@@ -1171,8 +1214,9 @@ self.addEventListener("fetch", (e) => {
 			params.item.status !== "failed";
 		if (isImageItem) this.openImage(this.imageAbsPath(params.item));
 		if (method === "error" && params && params.error &&
-			/usage limit|rate limit/i.test(params.error.message || "") && this.providerKey() === "gpt-5.5") {
-			this.suggestFallback();
+			/usage limit|rate limit|quota/i.test(params.error.message || "") &&
+			this.failoverChain().includes(this.providerKey())) {
+			this.autoFailover("usage limit");
 		}
 		if (SIDEBAR_FORWARDED.has(method) && (!tid || tid === this.threadId)) {
 			const p = isImageItem ? { ...params, item: this.withImageUri(params.item, this.webview) } : params;
@@ -1342,6 +1386,9 @@ self.addEventListener("fetch", (e) => {
 
 	// sidebar send: lazily creates the sidebar thread
 	async send(text) {
+		// remember the last prompt so auto-failover can transparently re-run it
+		// on the next model in the chain after a quota/rate-limit error.
+		if (text) this._lastUserPrompt = text;
 		const provider = this.providerKey();
 		// A spawned-CLI turn (grok/claude) is already running: never let send()
 		// reject ("a turn is already running") and silently drop the prompt —
