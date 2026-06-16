@@ -2106,6 +2106,8 @@ self.addEventListener("fetch", (e) => {
 				this.fleetFlow("dispatch", { from: agentId, task });
 				this.postFleetActivity(agentId, "working", "משגר בנייה ל-Solstice: " + task.slice(0, 50));
 				const text = `\u{1f4e5} \u05de\u05e9\u05d9\u05de\u05d4 \u05de-${name} (\u05e6\u05d9 \u05d4\u05e1\u05d5\u05db\u05e0\u05d9\u05dd):\n\n${task}`;
+				// show the exact prompt the agent is writing into the Solstice builder
+				if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "flowGuidance", from: agentId, prompt: text });
 				setTimeout(() => this.post({ type: "injectPrompt", text }), 1200);
 				return;
 			}
@@ -2861,7 +2863,10 @@ function activate(context) {
 		const text = `\u{1f4e5} \u05de\u05e9\u05d9\u05de\u05d4 \u05de-${from} (\u05e6\u05d9 \u05d4\u05e1\u05d5\u05db\u05e0\u05d9\u05dd):\n\n${task}`;
 		// light up the Fleet panel: a fleet agent just dispatched a build to Solstice
 		controller.activeFleetAgent = from;
-		if (controller.fleetPanel) controller.fleetPanel.webview.postMessage({ type: "liveTask", from, task });
+		if (controller.fleetPanel) {
+			controller.fleetPanel.webview.postMessage({ type: "liveTask", from, task });
+			controller.fleetPanel.webview.postMessage({ type: "flowGuidance", from, prompt: text });
+		}
 		controller.fleetFlow("dispatch", { from, task });
 		setTimeout(() => controller.post({ type: "injectPrompt", text }), 1200);
 	};

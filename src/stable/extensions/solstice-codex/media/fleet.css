@@ -231,6 +231,25 @@ html, body { margin: 0; height: 100%; background: var(--vscode-editor-background
 .flowTaskQ { color: var(--amber); font-size: 15px; line-height: 1; flex: none; }
 .flowTaskTxt { flex: 1 1 auto; min-width: 0; }
 
+/* fleet agent dictating the build prompt to the Solstice builder */
+.flowGuide { margin-top: 12px; border-radius: 11px; overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--amber) 26%, var(--line));
+  background: color-mix(in srgb, var(--amber) 6%, var(--surface-2)); transition: opacity .3s; }
+.flowGuide--sent { opacity: .72; }
+.flowGuideHead { display: flex; align-items: center; gap: 8px; padding: 8px 11px;
+  border-bottom: 1px solid color-mix(in srgb, var(--amber) 18%, transparent);
+  font-size: 11px; }
+.flowGuideAv { width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center;
+  font-size: 12px; background: color-mix(in srgb, var(--amber) 20%, transparent); flex: none; }
+.flowGuideWho { font-weight: 700; color: var(--vscode-foreground); }
+.flowGuideArrow { margin-inline-start: auto; color: color-mix(in srgb, var(--amber) 92%, #fff); font-weight: 600; }
+.flowGuideBody { padding: 10px 12px; font-size: 11.5px; line-height: 1.55;
+  color: var(--vscode-foreground); white-space: pre-wrap; word-break: break-word;
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace); }
+.flowGuideCaret { display: inline-block; width: 7px; height: 14px; margin-inline-start: 2px;
+  background: var(--amber); vertical-align: text-bottom; animation: guideBlink 1s steps(1) infinite; }
+@keyframes guideBlink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+
 .msgs { flex: 1; overflow-y: auto; padding: 20px 22px; display: flex; flex-direction: column; gap: 12px; }
 .row { display: flex; }
 .row.me { justify-content: flex-end; }

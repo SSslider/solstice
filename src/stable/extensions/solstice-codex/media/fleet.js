@@ -402,7 +402,7 @@
 		btn.addEventListener("click", doSend);
 		composer.append(ta, btn);
 		chat.appendChild(composer);
-		setTimeout(() => { renderWorking(); msgs.scrollTop = msgs.scrollHeight; ta.focus(); }, 0);
+		setTimeout(() => { renderFlow(); renderWorking(); msgs.scrollTop = msgs.scrollHeight; ta.focus(); }, 0);
 		return chat;
 	}
 
@@ -525,6 +525,23 @@
 			task.appendChild(el("span", "flowTaskTxt", flow.task.length > 140 ? flow.task.slice(0, 140) + "…" : flow.task));
 			wrap.appendChild(task);
 		}
+
+		// the fleet agent dictating to the Solstice builder: show the exact prompt
+		// it is writing into the builder, framed as agent → builder guidance.
+		if (flow.guide) {
+			const a = agentById(flow.from) || { name: flow.from, glyph: "◆" };
+			const g = el("div", "flowGuide" + (rank > 1 ? " flowGuide--sent" : ""));
+			const gh = el("div", "flowGuideHead");
+			gh.appendChild(el("span", "flowGuideAv", a.glyph || "◆"));
+			gh.appendChild(el("span", "flowGuideWho", a.name));
+            gh.appendChild(el("span", "flowGuideArrow", "✍ כותב לבונה של Solstice"));
+			g.appendChild(gh);
+			const body = el("div", "flowGuideBody");
+			body.appendChild(el("span", "flowGuideTxt", flow.guide.length > 320 ? flow.guide.slice(0, 320) + "…" : flow.guide));
+			if (rank <= 1) body.appendChild(el("span", "flowGuideCaret", ""));
+			g.appendChild(body);
+			wrap.appendChild(g);
+		}
 	}
 	// map the builder liveness layer/kind into a short Hebrew sub-status
 	function flowSubFromLiveness(lv) {
@@ -620,6 +637,10 @@
 				break;
 			case "liveTask":
 				showLive(msg.from, msg.task);
+				break;
+			case "flowGuidance":
+				setFlowStage("dispatch", { from: msg.from });
+				if (flow) { flow.guide = String(msg.prompt || ""); renderFlow(); }
 				break;
 			case "approval":
 				pendingApprovals.push({ key: msg.key, agent: msg.agent, name: msg.name, kind: msg.kind, detail: msg.detail, label: msg.label, ts: msg.ts });
