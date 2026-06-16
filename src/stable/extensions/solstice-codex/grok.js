@@ -4,6 +4,16 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+// SIGTERM the whole process group, not just the CLI parent. The grok/claude
+// CLIs spawn their own model subprocess; killing only the parent orphans it.
+// detached:true at spawn makes the child a group leader so process.kill(-pid)
+// reaches the entire subtree. Falls back to a plain kill if the group is gone.
+function killTree(child, signal = "SIGTERM") {
+	if (!child || child.killed) return;
+	try { process.kill(-child.pid, signal); }
+	catch { try { child.kill(signal); } catch { } }
+}
+
 // Synthesize a unified diff from a full-file edit (oldText -> newText) by
 // trimming the common prefix/suffix lines — enough for the panel's Changes card.
 function unifiedDiff(relPath, oldText, newText) {
@@ -130,7 +140,7 @@ class GrokProvider {
 	get busy() { return !!this.child; }
 
 	interrupt() {
-		if (this.child) { try { this.child.kill("SIGTERM"); } catch { } }
+		killTree(this.child);
 	}
 
 	send(providerKey, text, preamble) {
@@ -296,7 +306,7 @@ class GrokProvider {
 		}
 
 		return new Promise((resolve) => {
-			const child = spawn(this.bin, args, { cwd: this.cwd, env });
+			const child = spawn(this.bin, args, { cwd: this.cwd, env, detached: true });
 			this.child = child;
 			let buf = "";
 			// Progress-aware stall watchdog: a healthy turn streams reasoning /
@@ -313,7 +323,7 @@ class GrokProvider {
 				if (!stalled && Date.now() - lastActivity > STALL_MS) {
 					stalled = true;
 					this.notify("turn/stalled", { threadId: tid, turn: { id: turnId }, idleMs: Date.now() - lastActivity });
-					try { this.child.kill("SIGTERM"); } catch { }
+					killTree(this.child);
 				}
 			}, 15000);
 			child.stdout.on("data", (d) => {
@@ -360,4 +370,4 @@ class GrokProvider {
 	}
 }
 
-module.exports = { GrokProvider, GROK_MODELS, unifiedDiff };
+module.exports = { GrokProvider, GROK_MODELS, unifiedDiff, killTree };

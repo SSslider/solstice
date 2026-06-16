@@ -2,7 +2,7 @@
 const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
-const { unifiedDiff } = require("./grok");
+const { unifiedDiff, killTree } = require("./grok");
 
 const CLAUDE_LABEL = "Claude Code";
 
@@ -52,7 +52,7 @@ class ClaudeProvider {
 	get busy() { return !!this.child; }
 
 	interrupt() {
-		if (this.child) { try { this.child.kill("SIGTERM"); } catch { } }
+		killTree(this.child);
 	}
 
 	relPath(p) {
@@ -322,7 +322,7 @@ class ClaudeProvider {
 		};
 
 		return new Promise((resolve) => {
-			const child = spawn(this.bin, args, { cwd: this.cwd, env });
+			const child = spawn(this.bin, args, { cwd: this.cwd, env, detached: true });
 			this.child = child;
 			child.stdin.write(prompt);
 			child.stdin.end();

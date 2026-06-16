@@ -3,6 +3,7 @@ const { spawn } = require("child_process");
 const readline = require("readline");
 const fs = require("fs");
 const path = require("path");
+const { killTree } = require("./grok");
 
 // JSON-RPC 2.0 over line-delimited JSON on stdio of `codex app-server`.
 class CodexClient {
@@ -21,7 +22,7 @@ class CodexClient {
 		if (this.running) return;
 		const env = { ...process.env };
 		if (this.opts.codexHome) env.CODEX_HOME = this.opts.codexHome;
-		this.child = spawn(this.opts.binPath, ["app-server"], { stdio: ["pipe", "pipe", "pipe"], env });
+		this.child = spawn(this.opts.binPath, ["app-server"], { stdio: ["pipe", "pipe", "pipe"], env, detached: true });
 		const rl = readline.createInterface({ input: this.child.stdout });
 		rl.on("line", (line) => this._onLine(line));
 		this.child.stderr.on("data", (d) => this.opts.log && this.opts.log(String(d)));
@@ -34,7 +35,7 @@ class CodexClient {
 	}
 
 	stop() {
-		if (this.child) this.child.kill();
+		killTree(this.child);
 	}
 
 	_onLine(line) {
