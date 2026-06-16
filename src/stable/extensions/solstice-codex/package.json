@@ -285,6 +285,17 @@
           "default": "",
           "description": "Root directory the Projects Gallery scans for projects built on this server. Empty = auto-detect (~/solstice-deploys, then ~/Projects). Each immediate subfolder that looks like a project (package.json / index.html / .git / .solstice) becomes a gallery card."
         },
+        "solstice.codex.failoverChain": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [ "gpt-5.5", "composer-2.5", "grok-build" ],
+          "description": "Ordered model chain for automatic failover when a model hits its usage/rate limit. The agent transparently advances to the next model and re-runs the prompt. Claude is NEVER auto-failed-over to (it is manual-only via solstice.codex.allowClaude) and is filtered out even if listed here. Config-driven so newer/stronger models can be slotted in without a code change."
+        },
+        "solstice.codex.selfVerify": {
+          "type": "boolean",
+          "default": true,
+          "description": "After a fleet-dispatched build finishes with a live preview, automatically capture a screenshot of the result and feed it back to the agent once, asking it to verify the build matches the task and fix anything broken before declaring done. Bounded to a single auto-verify pass per build to avoid loops."
+        },
         "solstice.codex.galleryServerUrl": {
           "type": "string",
           "default": "http://100.88.154.26:8931",

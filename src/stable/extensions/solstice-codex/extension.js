@@ -93,6 +93,7 @@ class AgentController {
 		this.live = new Map();         // key -> liveness rec (progress-aware). "_builder" = local Solstice build
 		this.activeFleetAgent = null;  // fleet agent the live build is attributed to
 		this._pendingRecovery = null;  // unfinished build read from .solstice/BUILD.json on activation
+		this._verifyTaskId = null;     // taskId already given its one auto self-verify pass
 		this.output = vscode.window.createOutputChannel("Solstice Agent");
 	}
 
@@ -2018,6 +2019,16 @@ self.addEventListener("fetch", (e) => {
 	fleetFlow(stage, extra) {
 		if (stage === "dispatch") this._flowActive = true;
 		else if (!this._flowActive) return;
+		// Self-verify (Phase 3): hold the first "done" of a build and run one
+		// automatic verification pass (screenshot the preview → ask the agent to
+		// confirm it matches the task / fix issues). The verify turn ends with its
+		// own "done", which is no longer eligible (guard on _verifyTaskId), so the
+		// flow closes normally then.
+		if (stage === "done" && this.shouldSelfVerify()) {
+			this.startSelfVerify();
+			if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "flowStage", stage: "building", from: (extra && extra.from) || this.builderAgent(), ts: Date.now(), note: "self-verify" });
+			return;
+		}
 		// Round-trip the lifecycle back to the dispatching agent (Phase 1).
 		// "dispatch" already reports "started" from the build handler, so map
 		// building/preview/done here.
@@ -2049,6 +2060,64 @@ self.addEventListener("fetch", (e) => {
 		if (phase === "done" || phase === "error") this.clearJournal();
 		else this.writeJournal({ phase, ...(ex.previewUrl ? { previewUrl: ex.previewUrl } : {}), ...(ex.deployUrl ? { deployUrl: ex.deployUrl } : {}) });
 		try { rec.ws.send(frame); } catch (e) { this.output.append("[build_status] " + (e && e.message || e) + "\n"); }
+	}
+
+	// ---- self-verify (Phase 3) ---------------------------------------------
+	// One automatic verification pass per build: screenshot the live preview and
+	// feed it back to the agent so it visually checks its own work and fixes
+	// regressions before declaring done — instead of trusting a turn that
+	// "completed" but rendered a broken page.
+	shouldSelfVerify() {
+		const b = this._activeBuild;
+		if (!b || !b.taskId) return false;
+		if (this.cfg().get("selfVerify") === false) return false;
+		if (this._verifyTaskId === b.taskId) return false; // already verified this build
+		if (!this.previewUrl) return false;                // nothing live to screenshot
+		return true;
+	}
+	async startSelfVerify() {
+		const b = this._activeBuild;
+		if (!b) return;
+		this._verifyTaskId = b.taskId; // set before any await so a re-entrant "done" can't double-fire
+		const url = this.previewUrl;
+		const task = b.task || "";
+		this.output.append(`[self-verify] capturing preview ${url}\n`);
+		if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "activity", agent: b.agentId, state: "working", text: "בדיקה עצמית: מצלם את ה-preview…", ts: Date.now() });
+		let shot = null;
+		try { shot = await this.capturePreviewShot(url, b.taskId); }
+		catch (e) { this.output.append("[self-verify] capture failed: " + (e && e.message || e) + "\n"); }
+		const lines = [
+			"🔍 בדיקה עצמית אוטומטית לפני סגירת הבנייה:",
+			`ה-preview החי רץ ב-${url}.`,
+		];
+		if (shot) lines.push(`צילמתי screenshot של התוצאה: ${shot}`, "למד את הצילום לעומק (אותו תהליך כמו בבדיקת reference: codex exec -i עבור grok, או פתח אותו ישירות אם אתה codex).");
+		else lines.push(`לא הצלחתי לצלם אוטומטית — צלם בעצמך את ${url} עם כלי ה-screenshot ולמד את הצילום.`);
+		lines.push(
+			`האם התוצאה תואמת למשימה: "${task.slice(0, 240)}"?`,
+			"אם משהו שבור / חסר / לא מיושר / לא יפה — תקן עכשיו ואז עצור.",
+			"אם הכל תקין — אל תיגע בקוד, רק כתוב במשפט אחד שהבדיקה עברה."
+		);
+		this.post({ type: "injectPrompt", text: lines.join("\n") });
+	}
+	// Headless screenshot of the live preview into .solstice/verify-<taskId>.png.
+	// Spawns browse.js via the same ELECTRON_RUN_AS_NODE path the agent itself
+	// uses; group-spawned so a wedged Chrome is reaped on timeout.
+	capturePreviewShot(url, taskId) {
+		return new Promise((resolve) => {
+			const cwd = workspaceCwd();
+			if (!cwd || !url) return resolve(null);
+			const browseJs = path.join(this.context.extensionPath, "tools", "browse.js");
+			const outDir = path.join(cwd, ".solstice");
+			try { fs.mkdirSync(outDir, { recursive: true }); } catch { }
+			const out = path.join(outDir, `verify-${taskId || "build"}.png`);
+			const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
+			let child;
+			try { child = require("child_process").spawn(process.execPath, [browseJs, "shot", url, out, "1440x2200"], { env, detached: true, stdio: "ignore" }); }
+			catch (e) { this.output.append("[self-verify] spawn failed: " + (e && e.message || e) + "\n"); return resolve(null); }
+			const timer = setTimeout(() => { try { process.kill(-child.pid, "SIGTERM"); } catch { } resolve(null); }, 90000);
+			child.on("close", (code) => { clearTimeout(timer); resolve(code === 0 && fs.existsSync(out) ? out : null); });
+			child.on("error", () => { clearTimeout(timer); resolve(null); });
+		});
 	}
 
 	// ---- build journal (relaunch recovery) ---------------------------------
@@ -2234,7 +2303,8 @@ self.addEventListener("fetch", (e) => {
 				// Round-trip: remember who dispatched + the taskId so fleetFlow can
 				// report lifecycle + the live preview/deploy URL back over the bridge.
 				const taskId = String(f.taskId || "").trim();
-				this._activeBuild = taskId ? { agentId, taskId } : null;
+				this._activeBuild = taskId ? { agentId, taskId, task } : null;
+				if (taskId) this._verifyTaskId = null; // a new build is eligible for one auto-verify pass
 				if (this._activeBuild) this.writeJournal({ taskId, agentId, prompt: task, provider: this.providerKey(), phase: "dispatch", startedAt: Date.now() });
 				await vscode.commands.executeCommand("solstice.agentPanel.focus").then(undefined, () => { });
 				this.activeFleetAgent = agentId;
