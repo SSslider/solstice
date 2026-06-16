@@ -9,6 +9,7 @@ const { PreviewServer, detectDevServerUrl, hasFramework } = require("./preview")
 const { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor } = require("./grok");
 const { ClaudeProvider, CLAUDE_LABEL } = require("./claude");
 const { FleetBridge } = require("./fleetBridge");
+const { FelixSkills } = require("./felixSkills");
 
 // Subdirs that live alongside agent build workspaces but are not projects.
 const GALLERY_SKIP_DIRS = new Set([
@@ -95,6 +96,15 @@ class AgentController {
 		this._pendingRecovery = null;  // unfinished build read from .solstice/BUILD.json on activation
 		this._verifyTaskId = null;     // taskId already given its one auto self-verify pass
 		this.output = vscode.window.createOutputChannel("Solstice Agent");
+		this.skills = null;            // Felix's private self-improvement store (Phase 6)
+		try {
+			this.skills = new FelixSkills({
+				dir: path.join(context.globalStorageUri.fsPath, "felix-skills"),
+				embedderUrl: this.cfg().get("skillEmbedderUrl") || "",
+				log: (m) => this.output.append(m + "\n"),
+			});
+			this.skills.seedFrom(context.extensionPath);
+		} catch (e) { this.output.append("[skills] init failed: " + (e && e.message || e) + "\n"); }
 	}
 
 	// ---- stuck-agent watchdog ----------------------------------------------
@@ -2027,6 +2037,13 @@ self.addEventListener("fetch", (e) => {
 			if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "flowStage", stage: "building", from: (extra && extra.from) || this.builderAgent(), ts: Date.now(), note: "self-verify" });
 			return;
 		}
+		// Phase 6 write-back: a "done" reaching here is past the self-verify gate
+		// (verify ran for this build), so it is verified-good — distill a skill.
+		// If self-verify never ran (disabled / no preview), _verifyTaskId stays
+		// unset and Felix learns nothing, per "learn only from verified builds".
+		if (stage === "done" && this._activeBuild && this._verifyTaskId === this._activeBuild.taskId) {
+			this.learnFromBuild(this._activeBuild);
+		}
 		// Round-trip the lifecycle back to the dispatching agent (Phase 1).
 		// "dispatch" already reports "started" from the build handler, so map
 		// building/preview/done here.
@@ -2116,6 +2133,68 @@ self.addEventListener("fetch", (e) => {
 			child.on("close", (code) => { clearTimeout(timer); resolve(code === 0 && fs.existsSync(out) ? out : null); });
 			child.on("error", () => { clearTimeout(timer); resolve(null); });
 		});
+	}
+
+	// ---- self-improvement loop (Phase 6) -----------------------------------
+	// Retrieval at dispatch time: pull skills relevant to the task and return a
+	// prompt block to prepend. Read-only and best-effort — never blocks a build.
+	async skillsHint(task) {
+		try {
+			if (!this.skills) return "";
+			const hits = await this.skills.retrieve(task, 3);
+			if (!hits.length) return "";
+			const blocks = hits.map((h) =>
+				"• " + (h.meta.name || "skill") + (h.meta.tags && h.meta.tags.length ? " [" + h.meta.tags.join(", ") + "]" : "") +
+				"\n" + h.body.slice(0, 500).trim());
+			return "🧠 ידע נצבר רלוונטי (skills מבניות קודמות מאומתות — השתמש אם עוזר):\n" + blocks.join("\n\n") + "\n\n---\n\n";
+		} catch { return ""; }
+	}
+
+	// crude sector/tag inference from the task text (bilingual keywords).
+	inferSkillTags(task) {
+		const t = String(task || "").toLowerCase();
+		const map = {
+			dental: ["dental", "dentist", "שיניים", "שינניות", "מרפאת שיניים"],
+			restaurant: ["restaurant", "menu", "מסעדה", "תפריט"],
+			crm: ["crm", "leads", "לידים", "פלקון"],
+			ecommerce: ["shop", "store", "ecommerce", "cart", "checkout", "חנות", "מוצרים"],
+			landing: ["landing", "דף נחיתה", "לנדינג"],
+			dashboard: ["dashboard", "admin", "analytics", "דשבורד"],
+			portfolio: ["portfolio", "תיק עבודות"],
+			auth: ["auth", "login", "signup", "התחברות"],
+		};
+		const tags = [];
+		for (const [tag, kws] of Object.entries(map)) if (kws.some((k) => t.includes(k))) tags.push(tag);
+		return tags;
+	}
+	inferSkillSector(task) { const tags = this.inferSkillTags(task); return tags[0] || ""; }
+
+	// GATED write-back: only invoked from the post-verify "done" path, so the
+	// build was screenshot-verified before Felix distills a skill from it.
+	learnFromBuild(b) {
+		try {
+			if (!this.skills || !b || !b.task) return;
+			const task = b.task;
+			const sector = this.inferSkillSector(task);
+			const tags = this.inferSkillTags(task);
+			const name = "build-" + (sector || "app");
+			const body = [
+				"# Playbook: " + name,
+				"",
+				"Reusable approach distilled from a verified-good build (self-verify passed).",
+				"",
+				"## Task pattern",
+				task.slice(0, 600),
+				"",
+				"## Outcome",
+				"- provider: " + this.providerLabel(),
+				"- preview: " + (this.previewUrl || "(n/a)"),
+				"- build mode: " + (this.buildMode || "site"),
+				"- verified at: " + new Date().toISOString(),
+				"",
+			].join("\n");
+			this.skills.learn({ name, tags, sector, body, provenance: b.taskId || "" });
+		} catch (e) { this.output.append("[skills] learn failed: " + (e && e.message || e) + "\n"); }
 	}
 
 	// ---- connectors: on-demand link-auth + vault (Phase 4) -----------------
@@ -2378,7 +2457,9 @@ self.addEventListener("fetch", (e) => {
 				this.fleetFlow("dispatch", { from: agentId, task });
 				this.sendBuildStatus("started", { text: task.slice(0, 120) });
 				this.postFleetActivity(agentId, "working", "משגר בנייה ל-Solstice: " + task.slice(0, 50));
-				const text = `\u{1f4e5} \u05de\u05e9\u05d9\u05de\u05d4 \u05de-${name} (\u05e6\u05d9 \u05d4\u05e1\u05d5\u05db\u05e0\u05d9\u05dd):\n\n${task}`;
+				// Phase 6 retrieval: prepend relevant accrued skills to the task prompt.
+				const hint = await this.skillsHint(task);
+				const text = hint + `\u{1f4e5} \u05de\u05e9\u05d9\u05de\u05d4 \u05de-${name} (\u05e6\u05d9 \u05d4\u05e1\u05d5\u05db\u05e0\u05d9\u05dd):\n\n${task}`;
 				// show the exact prompt the agent is writing into the Solstice builder
 				if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "flowGuidance", from: agentId, prompt: text });
 				setTimeout(() => this.post({ type: "injectPrompt", text }), 1200);

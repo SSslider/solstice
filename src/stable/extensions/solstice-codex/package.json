@@ -296,6 +296,11 @@
           "default": true,
           "description": "After a fleet-dispatched build finishes with a live preview, automatically capture a screenshot of the result and feed it back to the agent once, asking it to verify the build matches the task and fix anything broken before declaring done. Bounded to a single auto-verify pass per build to avoid loops."
         },
+        "solstice.codex.skillEmbedderUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL of the central fleet embedder (POST /embed) used to rank Felix's accrued skills against a task at dispatch time (Phase 6 self-improvement). When empty, retrieval falls back to keyword/tag overlap. Uses the shared embedding service — never an in-process model — to avoid memory bloat. Skills are Felix-private; write-back is gated behind the self-verify pass."
+        },
         "solstice.codex.galleryServerUrl": {
           "type": "string",
           "default": "http://100.88.154.26:8931",
