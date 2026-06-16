@@ -1969,10 +1969,34 @@ self.addEventListener("fetch", (e) => {
 	fleetFlow(stage, extra) {
 		if (stage === "dispatch") this._flowActive = true;
 		else if (!this._flowActive) return;
-		if (!this.fleetPanel) return;
+		// Round-trip the lifecycle back to the dispatching agent (Phase 1).
+		// "dispatch" already reports "started" from the build handler, so map
+		// building/preview/done here.
+		if (stage === "building") this.sendBuildStatus("building");
+		else if (stage === "preview") this.sendBuildStatus("preview", { previewUrl: this.previewUrl || (extra && extra.url) || "" });
+		else if (stage === "done") this.sendBuildStatus("done", { previewUrl: this.previewUrl || "" });
+		if (!this.fleetPanel) {
+			if (stage === "done") { this._flowActive = false; this._activeBuild = null; }
+			return;
+		}
 		const from = (extra && extra.from) || this.builderAgent();
 		this.fleetPanel.webview.postMessage({ type: "flowStage", stage, from, ts: Date.now(), ...(extra || {}) });
-		if (stage === "done") this._flowActive = false;
+		if (stage === "done") { this._flowActive = false; this._activeBuild = null; }
+	}
+
+	// Report a build lifecycle frame back to the agent that dispatched it, over
+	// the same fleet bridge WS. No-op for in-panel builds (no _activeBuild).
+	sendBuildStatus(phase, extra) {
+		const b = this._activeBuild;
+		if (!b || !b.agentId || !b.taskId) return;
+		const rec = this.fleetBridges.get(b.agentId);
+		if (!rec || !rec.ws) return;
+		const frame = { type: "build_status", taskId: b.taskId, phase: String(phase || "") };
+		const ex = extra || {};
+		for (const k of ["previewUrl", "deployUrl", "diffStat", "text", "error"]) {
+			if (ex[k]) frame[k] = ex[k];
+		}
+		try { rec.ws.send(frame); } catch (e) { this.output.append("[build_status] " + (e && e.message || e) + "\n"); }
 	}
 
 	// ---- xAI/Grok token meter ----------------------------------------------
@@ -2100,10 +2124,15 @@ self.addEventListener("fetch", (e) => {
 				// focus panel, light the live flow, and feed the task as a builder prompt.
 				const task = String(f.text || f.task || "").trim();
 				if (!task) return;
+				// Round-trip: remember who dispatched + the taskId so fleetFlow can
+				// report lifecycle + the live preview/deploy URL back over the bridge.
+				const taskId = String(f.taskId || "").trim();
+				this._activeBuild = taskId ? { agentId, taskId } : null;
 				await vscode.commands.executeCommand("solstice.agentPanel.focus").then(undefined, () => { });
 				this.activeFleetAgent = agentId;
 				if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "liveTask", from: agentId, task });
 				this.fleetFlow("dispatch", { from: agentId, task });
+				this.sendBuildStatus("started", { text: task.slice(0, 120) });
 				this.postFleetActivity(agentId, "working", "משגר בנייה ל-Solstice: " + task.slice(0, 50));
 				const text = `\u{1f4e5} \u05de\u05e9\u05d9\u05de\u05d4 \u05de-${name} (\u05e6\u05d9 \u05d4\u05e1\u05d5\u05db\u05e0\u05d9\u05dd):\n\n${task}`;
 				// show the exact prompt the agent is writing into the Solstice builder
