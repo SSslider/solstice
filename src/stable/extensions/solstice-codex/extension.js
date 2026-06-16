@@ -284,7 +284,9 @@ class AgentController {
 			"- Installable PWA: include a web app manifest (name, icons, theme/background color, display: standalone) and a basic service worker so it can be added to the home screen.",
 			"- Prefer an SPA stack (Vite + React/Router) unless told otherwise; keep it runnable with `npm run dev`.",
 			"- Treat each screen as a deliverable: build the navigation skeleton first, then fill screens so the preview is always interactive.",
-			"- A runnable PWA app-shell scaffold (index.html + app.js hash-router + bottom tab bar + manifest + service worker) may already exist in the workspace (Solstice's 'Scaffold App Shell'). If so, BUILD ON IT — add screens/routes and flesh out the existing tabs rather than starting a single-page site from scratch.",
+			"- A runnable PWA app-shell scaffold (index.html + app.js hash-router + bottom tab bar + manifest + service worker + data.js mock store) may already exist in the workspace (Solstice's 'Scaffold App Shell'). If so, BUILD ON IT — add screens/routes and flesh out the existing tabs rather than starting a single-page site from scratch.",
+			"- Data layer: read/write app data through `window.DB` (data.js) — a seeded localStorage CRUD store. Build lists/detail screens off it; swap it for a real backend later. Every write surfaces live in Solstice's State inspector.",
+			"- Solstice's live preview gives you app tooling: a phone/tablet/desktop device switcher, a 'מסכים' screens-flow map (reads your hash routes / data-route screens), and a 'State' inspector (live localStorage). Use hash routes (#/screen) and localStorage so these light up.",
 		].join("\n");
 	}
 
@@ -320,6 +322,7 @@ class AgentController {
     <a href="#/explore" class="tab" data-route="/explore"><span class="tab-ico">⌕</span><span>גלה</span></a>
     <a href="#/profile" class="tab" data-route="/profile"><span class="tab-ico">◑</span><span>פרופיל</span></a>
   </nav>
+  <script src="data.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
@@ -367,11 +370,21 @@ body{ display:flex; flex-direction:column; min-height:100vh; }
       <section class="card"><div class="row"><div class="ico">⚡</div><div class="meta"><b>מהיר</b><small>נטען מיידית, עובד אופליין</small></div></div>
         <div class="row"><div class="ico">📲</div><div class="meta"><b>מותקנת</b><small>הוסף למסך הבית כאפליקציה</small></div></div></section>\`; },
       after(){ const c=document.getElementById("cnt"); document.getElementById("inc").onclick=()=>{ store.k=store.k+1; c.textContent=store.k; }; } },
-    "/explore": { title: "גלה", render(){ return \`
-      <section class="card"><div class="row"><div class="ico">🎨</div><div class="meta"><b>עיצוב</b><small>ספריית רכיבים</small></div></div>
-        <div class="row"><div class="ico">🧭</div><div class="meta"><b>ניווט</b><small>מעבר חלק בין מסכים</small></div></div>
-        <div class="row"><div class="ico">💾</div><div class="meta"><b>נתונים</b><small>שמירה מקומית</small></div></div></section>
-      <section class="card"><div class="muted">זה מסך "גלה". כאן הסוכן יבנה את התוכן האמיתי של האפליקציה.</div></section>\`; } },
+    "/explore": { title: "גלה", render(){
+      var items = (window.DB ? DB.all() : []);
+      var rows = items.map(function(it){ return \`<div class="row" data-id="\${it.id}">
+        <div class="ico" style="\${it.done?'background:rgba(52,211,153,.16);color:#34d399':''}">\${it.done?'✓':'○'}</div>
+        <div class="meta"><b>\${it.title}</b><small>\${it.note||''}</small></div></div>\`; }).join("");
+      return \`<section class="card"><div class="muted">רשימה חיה משכבת ה-data (\${items.length} פריטים, נשמרים ב-localStorage):</div></section>
+      <section class="card" id="list">\${rows || '<div class="muted">אין פריטים</div>'}</section>
+      <section class="card"><button class="btn" id="add">הוסף פריט +</button>
+        <button class="btn ghost" id="reset" style="margin-top:10px">אפס נתונים</button></section>\`; },
+      after(){
+        var list = document.getElementById("list");
+        list.querySelectorAll(".row").forEach(function(r){ r.onclick=function(){ DB.toggle(r.dataset.id); route(); }; });
+        document.getElementById("add").onclick=function(){ DB.add({ title:"פריט חדש", note:"נוצר עכשיו", done:false }); route(); };
+        document.getElementById("reset").onclick=function(){ DB.reset(); route(); };
+      } },
     "/profile": { title: "פרופיל", render(){ return \`
       <section class="card"><div class="row"><div class="ico">🙂</div><div class="meta"><b>המשתמש שלך</b><small>guest@solstice.app</small></div></div></section>
       <section class="card"><button class="btn ghost" id="reset">אפס מונה</button></section>\`; },
@@ -395,9 +408,35 @@ body{ display:flex; flex-direction:column; min-height:100vh; }
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(()=>{});
 })();
 `;
+		const dataJs = `"use strict";
+// Mock data layer — the app-vs-site distinction made tangible. A real app needs
+// DATA and CRUD; a marketing site doesn't. Seed records + a tiny store persisted
+// to localStorage, with a clean API the build agent swaps for a real backend
+// (fetch/Supabase/Firebase) later. Lists/detail screens read from window.DB, and
+// every write shows up live in Solstice's State inspector.
+(function () {
+  const KEY = "app.items";
+  const SEED = [
+    { id: 1, title: "להתחיל פרויקט", note: "מסך ראשון של האפליקציה", done: false },
+    { id: 2, title: "לעצב מסכים", note: "ניווט תחתון + מעבר חלק", done: false },
+    { id: 3, title: "לחבר נתונים", note: "שכבת data עם שמירה מקומית", done: true },
+  ];
+  function load() { try { const v = JSON.parse(localStorage.getItem(KEY)); return Array.isArray(v) ? v : SEED.slice(); } catch (e) { return SEED.slice(); } }
+  function save(items) { try { localStorage.setItem(KEY, JSON.stringify(items)); } catch (e) {} }
+  window.DB = {
+    all() { return load(); },
+    get(id) { return load().find((x) => String(x.id) === String(id)); },
+    add(item) { const items = load(); item.id = Date.now(); items.unshift(item); save(items); return item; },
+    update(id, patch) { save(load().map((x) => String(x.id) === String(id) ? Object.assign({}, x, patch) : x)); },
+    toggle(id) { save(load().map((x) => String(x.id) === String(id) ? Object.assign({}, x, { done: !x.done }) : x)); },
+    remove(id) { save(load().filter((x) => String(x.id) !== String(id))); },
+    reset() { try { localStorage.removeItem(KEY); } catch (e) {} },
+  };
+})();
+`;
 		const swJs = `// Minimal offline-first service worker for the app shell.
 const CACHE = "solstice-app-v1";
-const ASSETS = ["./", "index.html", "app.css", "app.js", "manifest.webmanifest", "icon.svg"];
+const ASSETS = ["./", "index.html", "app.css", "app.js", "data.js", "manifest.webmanifest", "icon.svg"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener("fetch", (e) => {
@@ -411,6 +450,7 @@ self.addEventListener("fetch", (e) => {
 			"index.html": indexHtml,
 			"app.css": appCss,
 			"app.js": appJs,
+			"data.js": dataJs,
 			"sw.js": swJs,
 			"manifest.webmanifest": manifest,
 			"icon.svg": icon,

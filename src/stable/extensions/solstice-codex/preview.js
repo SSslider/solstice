@@ -142,10 +142,63 @@ const SELECT_SCRIPT = `<script data-solstice-select>
 })();
 </script>`;
 
+// Injected alongside the selector: an app-introspection bridge that reports the
+// page's screens/routes, the current route, and the live localStorage snapshot
+// up to the preview webview (via window.parent.postMessage), and accepts
+// commands back (navigate to a screen, edit/clear storage). This powers the
+// app-mode "Screens flow" map and the "State" inspector — the tangible
+// app-vs-site distinction in the live preview. Works for same-origin previews
+// (the static PreviewServer and the PWA app-shell scaffold).
+const BRIDGE_SCRIPT = `<script data-solstice-bridge>
+(function () {
+  if (window.__solsticeBridge) return;
+  window.__solsticeBridge = true;
+
+  function routes() {
+    var out = [], seen = {};
+    var nodes = document.querySelectorAll('a[href^="#"],[data-route]');
+    for (var i = 0; i < nodes.length; i++) {
+      var a = nodes[i];
+      var r = a.getAttribute('data-route') || (a.getAttribute('href') || '').replace(/^#/, '');
+      if (!r) r = '/';
+      if (r.charAt(0) !== '/') r = '/' + r;
+      if (seen[r]) continue; seen[r] = 1;
+      var label = (a.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 22) || r;
+      out.push({ route: r, label: label });
+    }
+    return out;
+  }
+  function snapshot() {
+    var ls = {};
+    try { for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); ls[k] = localStorage.getItem(k); } } catch (e) {}
+    var cur = (location.hash || '').replace(/^#/, '') || '/';
+    if (cur.charAt(0) !== '/') cur = '/' + cur;
+    try { window.parent.postMessage({ __sol: 'bridge', routes: routes(), current: cur, storage: ls, href: location.href, title: document.title || '' }, '*'); } catch (e) {}
+  }
+  window.addEventListener('hashchange', snapshot);
+  try {
+    var _s = localStorage.setItem.bind(localStorage); localStorage.setItem = function (k, v) { _s(k, v); setTimeout(snapshot, 0); };
+    var _r = localStorage.removeItem.bind(localStorage); localStorage.removeItem = function (k) { _r(k); setTimeout(snapshot, 0); };
+    var _c = localStorage.clear.bind(localStorage); localStorage.clear = function () { _c(); setTimeout(snapshot, 0); };
+  } catch (e) {}
+  window.addEventListener('message', function (e) {
+    var m = e.data || {};
+    if (m.__solCmd === 'nav') { var r = String(m.route || '/'); location.hash = '#' + (r.charAt(0) === '/' ? r : '/' + r); }
+    else if (m.__solCmd === 'clearStorage') { try { localStorage.clear(); } catch (e2) {} snapshot(); }
+    else if (m.__solCmd === 'setItem') { try { localStorage.setItem(m.key, m.value); } catch (e2) {} snapshot(); }
+    else if (m.__solCmd === 'removeItem') { try { localStorage.removeItem(m.key); } catch (e2) {} snapshot(); }
+    else if (m.__solCmd === 'snapshot') { snapshot(); }
+  });
+  function boot() { snapshot(); setInterval(snapshot, 2500); }
+  if (document.body) boot(); else document.addEventListener('DOMContentLoaded', boot);
+})();
+</script>`;
+
 function injectSelect(html) {
+	const payload = SELECT_SCRIPT + BRIDGE_SCRIPT;
 	const idx = html.toLowerCase().lastIndexOf("</body>");
-	if (idx === -1) return html + SELECT_SCRIPT;
-	return html.slice(0, idx) + SELECT_SCRIPT + html.slice(idx);
+	if (idx === -1) return html + payload;
+	return html.slice(0, idx) + payload + html.slice(idx);
 }
 
 // ---- dev-server detection ---------------------------------------------------
