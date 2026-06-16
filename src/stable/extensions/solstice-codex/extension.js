@@ -92,6 +92,7 @@ class AgentController {
 		this.watchTimer = null;
 		this.live = new Map();         // key -> liveness rec (progress-aware). "_builder" = local Solstice build
 		this.activeFleetAgent = null;  // fleet agent the live build is attributed to
+		this._pendingRecovery = null;  // unfinished build read from .solstice/BUILD.json on activation
 		this.output = vscode.window.createOutputChannel("Solstice Agent");
 	}
 
@@ -1958,6 +1959,7 @@ self.addEventListener("fetch", (e) => {
 				rec.status = "online";
 				post({ type: "roster", agents: this.fleetAgents() });
 				this.postFleetActivity(id, "online", "מחובר");
+				this.flushBuildRecovery(id);
 			} else if (f.type === "push") {
 				post({ type: "reply", agent: id, text: String(f.text || ""), ts: Date.now(), kind: "progress" });
 				this.postFleetActivity(id, "working", String(f.text || "עובד…").split("\n")[0].slice(0, 80));
@@ -2043,7 +2045,65 @@ self.addEventListener("fetch", (e) => {
 		for (const k of ["previewUrl", "deployUrl", "diffStat", "text", "error"]) {
 			if (ex[k]) frame[k] = ex[k];
 		}
+		// keep the on-disk journal in step so a crash mid-build is recoverable.
+		if (phase === "done" || phase === "error") this.clearJournal();
+		else this.writeJournal({ phase, ...(ex.previewUrl ? { previewUrl: ex.previewUrl } : {}), ...(ex.deployUrl ? { deployUrl: ex.deployUrl } : {}) });
 		try { rec.ws.send(frame); } catch (e) { this.output.append("[build_status] " + (e && e.message || e) + "\n"); }
+	}
+
+	// ---- build journal (relaunch recovery) ---------------------------------
+	// A build is a long, multi-minute CLI turn. If the IDE/extension is closed
+	// or crashes mid-build, the in-memory _activeBuild is lost and the dispatching
+	// agent would wait forever for a terminal frame. We mirror the build's state
+	// to .solstice/BUILD.json so the next activation can detect the interruption,
+	// report a terminal "error" back over the bridge, and offer to resume.
+	_journalPath() {
+		const cwd = workspaceCwd();
+		return cwd ? path.join(cwd, ".solstice", "BUILD.json") : null;
+	}
+	writeJournal(patch) {
+		const p = this._journalPath();
+		if (!p) return;
+		try {
+			let cur = {};
+			try { cur = JSON.parse(fs.readFileSync(p, "utf8")) || {}; } catch { }
+			const next = { ...cur, ...patch, updatedAt: Date.now() };
+			fs.mkdirSync(path.dirname(p), { recursive: true });
+			fs.writeFileSync(p, JSON.stringify(next, null, 2));
+		} catch (e) { this.output.append("[journal] write failed: " + (e && e.message || e) + "\n"); }
+	}
+	clearJournal() {
+		const p = this._journalPath();
+		if (!p) return;
+		try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch { }
+	}
+	// Called once on activation: if a build was left unfinished, queue a recovery
+	// that fires the moment that agent's bridge reconnects (see ensureFleetBridge).
+	recoverBuildJournal() {
+		const p = this._journalPath();
+		if (!p) return;
+		let j;
+		try { j = JSON.parse(fs.readFileSync(p, "utf8")); } catch { return; }
+		if (!j || !j.taskId || !j.agentId || j.phase === "done" || j.phase === "error") { this.clearJournal(); return; }
+		// stale journals (>6h) are almost certainly orphaned — drop silently.
+		if (Date.now() - (j.startedAt || j.updatedAt || 0) > 6 * 3600 * 1000) { this.clearJournal(); return; }
+		this._pendingRecovery = j;
+		this.output.append(`[journal] interrupted build ${j.taskId} (agent ${j.agentId}) — will report on reconnect\n`);
+		try { this.ensureFleetBridge(j.agentId); } catch { }
+	}
+	// Flush a queued recovery once the dispatching agent's bridge is online.
+	flushBuildRecovery(agentId) {
+		const j = this._pendingRecovery;
+		if (!j || j.agentId !== agentId) return;
+		this._pendingRecovery = null;
+		this._activeBuild = { agentId: j.agentId, taskId: j.taskId };
+		this.sendBuildStatus("error", { error: "ה-IDE נסגר/אותחל באמצע הבנייה — הריצה הופסקה (אפשר לשגר שוב)." });
+		this._activeBuild = null;
+		this.clearJournal();
+		if (j.prompt) {
+			vscode.window.showWarningMessage("Solstice: בנייה הופסקה באתחול ה-IDE. להמשיך מאיפה שעצרנו?", "המשך בנייה")
+				.then((pick) => { if (pick) this.post({ type: "injectPrompt", text: j.prompt }); });
+		}
 	}
 
 	// ---- xAI/Grok token meter ----------------------------------------------
@@ -2175,6 +2235,7 @@ self.addEventListener("fetch", (e) => {
 				// report lifecycle + the live preview/deploy URL back over the bridge.
 				const taskId = String(f.taskId || "").trim();
 				this._activeBuild = taskId ? { agentId, taskId } : null;
+				if (this._activeBuild) this.writeJournal({ taskId, agentId, prompt: task, provider: this.providerKey(), phase: "dispatch", startedAt: Date.now() });
 				await vscode.commands.executeCommand("solstice.agentPanel.focus").then(undefined, () => { });
 				this.activeFleetAgent = agentId;
 				if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "liveTask", from: agentId, task });
@@ -2909,6 +2970,9 @@ function activate(context) {
 	// "Exploring…") past the threshold with no fresh progress event.
 	controller.startWatchdog();
 	context.subscriptions.push({ dispose: () => { if (controller.watchTimer) { clearInterval(controller.watchTimer); controller.watchTimer = null; } } });
+	// relaunch recovery: if a build was interrupted by an IDE restart, report a
+	// terminal frame to the dispatching agent the moment its bridge reconnects.
+	try { controller.recoverBuildJournal(); } catch { }
 	// live research dashboard: render DECONSTRUCT.md / RESEARCH.md as the agent writes it
 	// (no brace glob — filter by basename; grok writes from outside the editor)
 	const researchWatcher = vscode.workspace.createFileSystemWatcher("**/*.md");
