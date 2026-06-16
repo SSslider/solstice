@@ -564,12 +564,8 @@ self.addEventListener("fetch", (e) => {
 		this.lastPlanFileText = text;
 		const file = path.join(dir, "PLAN.md");
 		try { fs.writeFileSync(file, text); } catch { return; }
-		if (!this.planFileOpened) {
-			this.planFileOpened = true;
-			vscode.window.showTextDocument(vscode.Uri.file(file), {
-				viewColumn: vscode.ViewColumn.One, preview: true, preserveFocus: true,
-			}).then(undefined, () => { });
-		}
+		// PLAN.md stays on disk as an artifact, but we no longer open it as raw
+		// markdown — the visual plan webview (openPlanPanel) owns the center view.
 	}
 
 	onFilesChanged(item) {
@@ -1122,6 +1118,7 @@ self.addEventListener("fetch", (e) => {
 			const th = this.upsertThread({ id: tid });
 			th.plan = params.plan || null;
 			this.writePlanFile(th);
+			this.pushPlanPanel(th);
 		}
 		if (method === "usage" && params && params.total) {
 			this.recordTokenUsage(params);
@@ -1485,6 +1482,38 @@ self.addEventListener("fetch", (e) => {
 			this.researchPanel.webview.onDidReceiveMessage((m) => { if (m.type === "ready") this.pushResearch(); });
 			this.researchPanel.onDidDispose(() => { this.researchPanel = null; });
 		}
+	}
+
+	// ---- center-editor plan view (high-quality visual decomposition) -------
+	// When the agent decomposes a build into steps, render them as a graphical
+	// timeline in the main editor column — the same rich shape as the side
+	// panel, scaled up. Mirrors openResearchPanel.
+	openPlanPanel() {
+		if (!this.planPanel) {
+			this.planPanel = vscode.window.createWebviewPanel(
+				"solstice.plan",
+				"🗺 Agent Plan",
+				{ viewColumn: vscode.ViewColumn.One, preserveFocus: true },
+				{
+					enableScripts: true,
+					retainContextWhenHidden: true,
+					localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media")],
+				}
+			);
+			this.planPanel.webview.html = mediaHtml(this.planPanel.webview, this.context.extensionUri, "plan.js", "plan.css");
+			this.planPanel.webview.onDidReceiveMessage((m) => { if (m.type === "ready") this.pushPlanPanel(); });
+			this.planPanel.onDidDispose(() => { this.planPanel = null; });
+		}
+	}
+
+	pushPlanPanel(th) {
+		th = th || this.planThread;
+		if (!th || !Array.isArray(th.plan) || !th.plan.length) return;
+		this.planThread = th;
+		try { this.openPlanPanel(); } catch (e) { this.output.append("plan panel: " + e.message + "\n"); return; }
+		const title = (th.preview || "").split("\n")[0].slice(0, 100);
+		this.planPanel.webview.postMessage({ type: "plan", plan: th.plan, title, time: Date.now() });
+		this.planPanel.reveal(vscode.ViewColumn.One, true);
 	}
 
 	// ---- projects gallery (home view inside Solstice) ----

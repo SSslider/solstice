@@ -1,0 +1,227 @@
+:root {
+	--sol-accent: #f59e0b;
+	--sol-accent-soft: rgba(245, 158, 11, 0.14);
+	--sol-line: #33333c;
+	--sol-bg: var(--vscode-editor-background, #15151a);
+	--sol-fg: var(--vscode-foreground, #e7e7ea);
+	--sol-dim: var(--vscode-descriptionForeground, #9a9aa4);
+}
+
+* { box-sizing: border-box; }
+
+body {
+	margin: 0;
+	padding: 0;
+	direction: rtl;
+	font-family: var(--vscode-font-family, system-ui);
+	color: var(--sol-fg);
+	background:
+		radial-gradient(1100px 480px at 88% -8%, var(--sol-accent-soft), transparent 60%),
+		var(--sol-bg);
+}
+
+#planRoot {
+	max-width: 880px;
+	margin: 0 auto;
+	padding: 34px 30px 60px;
+}
+
+/* ---- hero header ---- */
+#pHero {
+	display: flex;
+	gap: 24px;
+	align-items: center;
+	padding-bottom: 22px;
+	margin-bottom: 18px;
+	border-bottom: 1px solid var(--sol-line);
+}
+
+.pHeroRing {
+	flex: 0 0 auto;
+	position: relative;
+	width: 92px;
+	height: 92px;
+}
+
+#pRing {
+	position: absolute;
+	inset: 0;
+	border-radius: 50%;
+	background: conic-gradient(var(--sol-accent) 0%, #2c2c34 0);
+	-webkit-mask: radial-gradient(circle 31px at center, transparent 98%, #000 100%);
+	        mask: radial-gradient(circle 31px at center, transparent 98%, #000 100%);
+	transition: background 0.5s ease;
+}
+/* the percentage sits on top of the ring, outside the masked element */
+#pRingTxt {
+	position: absolute;
+	inset: 0;
+	display: grid;
+	place-items: center;
+	font-size: 21px;
+	font-weight: 700;
+	color: var(--sol-fg);
+}
+
+.pHeroText { min-width: 0; flex: 1; }
+
+.pKicker {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	font-size: 12.5px;
+	letter-spacing: 0.04em;
+	color: var(--sol-dim);
+	text-transform: uppercase;
+}
+.pIcon { font-size: 15px; }
+
+.pLive {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	margin-inline-start: 4px;
+	padding: 2px 8px;
+	border-radius: 999px;
+	background: var(--sol-accent-soft);
+	color: var(--sol-accent);
+	font-size: 10.5px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+}
+.pPulse {
+	width: 7px; height: 7px;
+	border-radius: 50%;
+	background: var(--sol-accent);
+	animation: pblink 1.4s ease-in-out infinite;
+}
+.pLive.stale { opacity: 0.4; }
+.pLive.stale .pPulse { animation: none; }
+@keyframes pblink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+#pTitle {
+	margin: 7px 0 9px;
+	font-size: 23px;
+	font-weight: 650;
+	line-height: 1.25;
+	color: var(--sol-fg);
+}
+
+.pStatus {
+	font-size: 13.5px;
+	color: var(--sol-accent);
+	min-height: 18px;
+	font-weight: 500;
+}
+
+.pChips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.pChip {
+	padding: 3px 11px;
+	border-radius: 999px;
+	font-size: 12px;
+	font-weight: 600;
+	border: 1px solid var(--sol-line);
+	color: var(--sol-dim);
+}
+.pChip--done { color: #6ee7a8; border-color: rgba(110, 231, 168, 0.3); }
+.pChip--run { color: var(--sol-accent); border-color: rgba(245, 158, 11, 0.35); background: var(--sol-accent-soft); }
+
+/* ---- empty ---- */
+#pEmpty {
+	color: var(--sol-dim);
+	font-size: 14px;
+	padding: 40px 4px;
+	text-align: center;
+}
+
+/* ---- timeline ---- */
+.pTL { position: relative; }
+
+.pGroup {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--sol-dim);
+	margin: 22px 0 10px;
+	padding-inline-start: 4px;
+	border-inline-start: 3px solid var(--sol-accent);
+	padding-block: 2px;
+}
+.pGroup:first-child { margin-top: 4px; }
+
+.pStep {
+	position: relative;
+	display: flex;
+	gap: 16px;
+	padding: 4px 0;
+	animation: pstepin 0.34s ease both;
+}
+@keyframes pstepin { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+.pRail {
+	position: relative;
+	flex: 0 0 auto;
+	width: 38px;
+	display: flex;
+	justify-content: center;
+}
+/* connector line through the rail */
+.pRail::before {
+	content: "";
+	position: absolute;
+	top: 38px; bottom: -8px;
+	width: 2px;
+	background: var(--sol-line);
+}
+.pStep:last-child .pRail::before { display: none; }
+.p--completed .pRail::before { background: rgba(110, 231, 168, 0.5); }
+
+.pDot {
+	width: 38px; height: 38px;
+	border-radius: 50%;
+	display: grid;
+	place-items: center;
+	font-size: 16px;
+	background: var(--vscode-editorWidget-background, #1f1f27);
+	border: 2px solid var(--sol-line);
+	z-index: 1;
+	transition: border-color 0.3s, background 0.3s;
+}
+.p--completed .pDot { border-color: #6ee7a8; color: #6ee7a8; background: rgba(110, 231, 168, 0.12); }
+.p--inProgress .pDot { border-color: var(--sol-accent); background: var(--sol-accent-soft); }
+.pDot--pulse { animation: pdot 1.6s ease-in-out infinite; }
+@keyframes pdot {
+	0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.45); }
+	50% { box-shadow: 0 0 0 7px rgba(245, 158, 11, 0); }
+}
+
+.pStepBody {
+	flex: 1;
+	min-width: 0;
+	padding: 6px 0 16px;
+}
+.pStepTitle { font-size: 15px; font-weight: 550; line-height: 1.4; color: var(--sol-fg); }
+.p--pending .pStepTitle { color: var(--sol-dim); }
+.p--completed .pStepTitle { color: var(--sol-fg); opacity: 0.78; }
+.pStepDetail { font-size: 12.5px; color: var(--sol-dim); margin-top: 3px; line-height: 1.45; }
+
+.pSubCap { font-size: 11px; color: var(--sol-dim); margin-top: 7px; font-weight: 600; }
+.pSubs {
+	margin-top: 6px;
+	padding-inline-start: 4px;
+	border-inline-start: 1px dashed var(--sol-line);
+}
+.pSub {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	font-size: 12.5px;
+	padding: 2px 0 2px 8px;
+	color: var(--sol-dim);
+}
+.pSubMark { flex: 0 0 auto; width: 12px; text-align: center; }
+.pSub.p--completed { color: #6ee7a8; }
+.pSub.p--completed .pSubTxt { color: var(--sol-fg); opacity: 0.7; }
+.pSub.p--inProgress { color: var(--sol-accent); }
+.pSubTxt { line-height: 1.4; }
