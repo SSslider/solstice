@@ -40,11 +40,34 @@ function unifiedDiff(relPath, oldText, newText) {
 	return lines.join("\n");
 }
 
-// Both fallback models are served by the same `grok` CLI (Grok Build TUI).
-const GROK_MODELS = {
-	"grok-build": { id: "grok-build", label: "Grok 4.3 Build" },
-	"composer-2.5": { id: "grok-composer-2.5-fast", label: "Composer 2.5 Fast" },
+// Declarative model registry — the single source of truth for every provider
+// Felix can drive. Slotting in a newer/stronger model is one entry here:
+//   runner: which CLI spawns it (codex | grok | claude)
+//   grokId: the model id passed to the grok CLI (grok runner only)
+//   gated:  true => hidden unless explicitly opted in (e.g. claudeAllowed())
+//   order:  display order in the model picker
+// The auto-failover chain (package.json solstice.codex.failoverChain) references
+// these keys; Claude is intentionally excluded from any auto chain (gated).
+const MODEL_REGISTRY = {
+	"gpt-5.5": { label: "GPT-5.5 (Codex)", desc: "ChatGPT subscription — full agent: plans, approvals, image gen", runner: "codex", order: 0 },
+	"claude": { label: "Claude Code", desc: "claude CLI — opt-in via solstice.codex.allowClaude", runner: "claude", gated: true, order: 1 },
+	"grok-build": { label: "Grok 4.3 Build", desc: "grok CLI — agentic fallback when Codex quota runs out", runner: "grok", grokId: "grok-build", order: 2 },
+	"composer-2.5": { label: "Composer 2.5 Fast", desc: "grok CLI — fast builder", runner: "grok", grokId: "grok-composer-2.5-fast", order: 3 },
 };
+
+// Which CLI runner serves a given model key (defaults to codex).
+function runnerFor(key) {
+	const m = MODEL_REGISTRY[key];
+	return (m && m.runner) || "codex";
+}
+
+// Both fallback models are served by the same `grok` CLI (Grok Build TUI).
+// Derived from MODEL_REGISTRY so there is a single source of truth.
+const GROK_MODELS = Object.fromEntries(
+	Object.entries(MODEL_REGISTRY)
+		.filter(([, m]) => m.runner === "grok")
+		.map(([key, m]) => [key, { id: m.grokId || key, label: m.label }])
+);
 
 // The grok CLI's streaming-json stdout only carries thought/text chunks.
 // Tool activity (shell commands, file edits, reads) is written to the
@@ -370,4 +393,4 @@ class GrokProvider {
 	}
 }
 
-module.exports = { GrokProvider, GROK_MODELS, unifiedDiff, killTree };
+module.exports = { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, unifiedDiff, killTree };

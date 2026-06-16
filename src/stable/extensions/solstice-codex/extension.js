@@ -6,7 +6,7 @@ const path = require("path");
 const os = require("os");
 const { CodexClient, resolveCodexBinary } = require("./codexClient");
 const { PreviewServer, detectDevServerUrl, hasFramework } = require("./preview");
-const { GrokProvider, GROK_MODELS } = require("./grok");
+const { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor } = require("./grok");
 const { ClaudeProvider, CLAUDE_LABEL } = require("./claude");
 const { FleetBridge } = require("./fleetBridge");
 
@@ -785,22 +785,19 @@ self.addEventListener("fetch", (e) => {
 	providerLabel() {
 		const k = this.providerKey();
 		if (k === "claude") return CLAUDE_LABEL;
-		return k === "gpt-5.5" ? "gpt-5.5" : (GROK_MODELS[k] ? GROK_MODELS[k].label : k);
+		const m = MODEL_REGISTRY[k];
+		return k === "gpt-5.5" ? "gpt-5.5" : (m ? m.label : k);
 	}
 
 	// Single source of truth for the model list — shared by the command-palette
 	// quick-pick and the inline picker rendered at the bottom of the chat panel.
+	// Derived from MODEL_REGISTRY (grok.js): a new model is one entry there.
+	// Gated models (claude) only appear when explicitly opted in.
 	modelChoices() {
-		const items = [
-			{ key: "gpt-5.5", label: "GPT-5.5 (Codex)", description: "ChatGPT subscription — full agent: plans, approvals, image gen" },
-			{ key: "grok-build", label: "Grok 4.3 Build", description: "grok CLI — agentic fallback when Codex quota runs out" },
-			{ key: "composer-2.5", label: "Composer 2.5 Fast", description: "grok CLI — fast builder" },
-		];
-		// Claude only appears as a choice when explicitly opted in.
-		if (this.claudeAllowed()) {
-			items.splice(1, 0, { key: "claude", label: "Claude Code", description: "claude CLI — opt-in via solstice.codex.allowClaude" });
-		}
-		return items;
+		return Object.entries(MODEL_REGISTRY)
+			.filter(([, m]) => !m.gated || this.claudeAllowed())
+			.sort((a, b) => (a[1].order || 0) - (b[1].order || 0))
+			.map(([key, m]) => ({ key, label: m.label, description: m.desc }));
 	}
 
 	async selectModel() {
@@ -850,8 +847,8 @@ self.addEventListener("fetch", (e) => {
 		const models = { type: "models", list: this.modelChoices(), current: this.providerKey() };
 		this.post(models);
 		this.postManager(models);
-		if (this.providerKey() !== "gpt-5.5") {
-			const auth = { type: "auth", authMethod: this.providerKey() === "claude" ? "claude-cli" : "grok-cli" };
+		if (runnerFor(this.providerKey()) !== "codex") {
+			const auth = { type: "auth", authMethod: runnerFor(this.providerKey()) === "claude" ? "claude-cli" : "grok-cli" };
 			this.post(auth);
 			this.postManager(auth);
 		} else {
@@ -1274,9 +1271,9 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	async refreshAccount(target) {
-		if (this.providerKey() !== "gpt-5.5") {
+		if (runnerFor(this.providerKey()) !== "codex") {
 			// grok/claude CLI auth lives in the CLI itself — no codex login flow needed
-			const method = this.providerKey() === "claude" ? "claude-cli" : "grok-cli";
+			const method = runnerFor(this.providerKey()) === "claude" ? "claude-cli" : "grok-cli";
 			const msg = { type: "auth", authMethod: method };
 			const mt = { type: "thread", model: this.providerLabel() };
 			if (target === "manager") { this.postManager(msg); this.postManager(mt); }
@@ -1392,15 +1389,16 @@ self.addEventListener("fetch", (e) => {
 		// on the next model in the chain after a quota/rate-limit error.
 		if (text) this._lastUserPrompt = text;
 		const provider = this.providerKey();
+		const runner = runnerFor(provider);
 		// A spawned-CLI turn (grok/claude) is already running: never let send()
 		// reject ("a turn is already running") and silently drop the prompt —
 		// route it to the steer queue so it drains into the next turn.
-		if (provider !== "gpt-5.5") {
-			const prov = provider === "claude" ? this.claude : this.grok;
+		if (runner !== "codex") {
+			const prov = runner === "claude" ? this.claude : this.grok;
 			if (prov && prov.busy) return this.steer(this.threadId, text);
 		}
-		if (provider === "claude") return this.sendClaude(text);
-		if (provider !== "gpt-5.5") return this.sendGrok(text);
+		if (runner === "claude") return this.sendClaude(text);
+		if (runner === "grok") return this.sendGrok(text);
 		if (!this.threadId) {
 			const { id, model } = await this.startThread();
 			this.threadId = id;
@@ -1415,8 +1413,8 @@ self.addEventListener("fetch", (e) => {
 		// grok / claude run as spawned CLIs with no native mid-turn injection.
 		// While they're busy, queue the steer and drain it into a follow-up turn
 		// the moment the current turn completes (re-prioritised next).
-		if (provider !== "gpt-5.5") {
-			const prov = provider === "claude" ? this.claude : this.grok;
+		if (runnerFor(provider) !== "codex") {
+			const prov = runnerFor(provider) === "claude" ? this.claude : this.grok;
 			if (prov && prov.busy) {
 				this.steerQueue.push(text);
 				const r = this.liveRec("_builder"); r.queued = this.steerQueue.length;
