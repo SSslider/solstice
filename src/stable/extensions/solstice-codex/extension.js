@@ -1711,24 +1711,54 @@ self.addEventListener("fetch", (e) => {
 		}
 	}
 
-	// Returns { dest, copied } or throws.
+	// Is a handed-off project a web app (vs. a marketing site)? Drives the future
+	// conditional "אפליקציה" tab on the Atrium client card — only builds where an
+	// app was produced advertise kind:"app".
+	projectKind(project) {
+		const tags = ((project && project.tags) || []).join(" ").toLowerCase();
+		if (/\bapp\b|pwa|expo|react-native|אפליקצי/.test(tags)) return "app";
+		const dir = project && project.dir;
+		if (dir && !(project.remote)) {
+			try {
+				if (fs.existsSync(path.join(dir, "manifest.webmanifest")) ||
+					fs.existsSync(path.join(dir, "public", "manifest.json")) ||
+					fs.existsSync(path.join(dir, "public", "manifest.webmanifest"))) return "app";
+				const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+				const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+				if (deps.expo || deps["react-native"]) return "app";
+			} catch { }
+		}
+		if (this.buildMode === "app") return "app";
+		return "site";
+	}
+
+	// Returns { dest, copied, manifest } or throws. Writes the per-build handoff
+	// manifest AND maintains a per-client `solstice/builds.json` index — the
+	// contract the Atrium client card reads to list builds, deep-link the live
+	// URL, and (when kind === "app") light up the app tab.
 	handoffToClient(project, client) {
 		const name = String((project && (project.name)) || "site").replace(/[^\w.-]+/g, "-");
 		const cl = String(client || "").replace(/[^\w.-]+/g, "-");
 		if (!cl) throw new Error("no client");
-		const dest = path.join(this.atriumClientsDir(), cl, "solstice", name);
+		const clientRoot = path.join(this.atriumClientsDir(), cl, "solstice");
+		const dest = path.join(clientRoot, name);
 		fs.mkdirSync(dest, { recursive: true });
 		let copied = false;
 		const srcDir = project && project.dir;
 		if (srcDir && !(project.remote)) {
 			try { if (fs.statSync(srcDir).isDirectory()) { this.copyTree(srcDir, path.join(dest, "build")); copied = true; } } catch { }
 		}
+		const kind = this.projectKind(project);
+		const slug = name.toLowerCase();
 		const manifest = {
 			project: name,
+			slug,
 			client: cl,
+			kind,                       // "site" | "app" — drives the Atrium app tab
 			source: srcDir || null,
 			remote: !!(project && project.remote),
 			liveUrl: (project && (project.openUrl || project.liveUrl)) || null,
+			thumbnail: (project && project.preview) || null,
 			stack: (project && project.tags) || [],
 			agent: (project && project.agent && project.agent.id) || null,
 			provider: this.providerLabel ? this.providerLabel() : "Composer 2.5",
@@ -1736,7 +1766,25 @@ self.addEventListener("fetch", (e) => {
 			handedOffAt: new Date().toISOString(),
 		};
 		try { fs.writeFileSync(path.join(dest, "handoff.json"), JSON.stringify(manifest, null, 2)); } catch { }
-		return { dest, copied };
+		// merge into the per-client builds index (newest first, dedup by slug)
+		try {
+			const idxPath = path.join(clientRoot, "builds.json");
+			let builds = [];
+			try { const v = JSON.parse(fs.readFileSync(idxPath, "utf8")); if (Array.isArray(v)) builds = v; } catch { }
+			builds = builds.filter((b) => b && b.slug !== slug);
+			builds.unshift({ slug, project: name, kind, liveUrl: manifest.liveUrl, thumbnail: manifest.thumbnail, agent: manifest.agent, handedOffAt: manifest.handedOffAt, path: dest });
+			fs.mkdirSync(clientRoot, { recursive: true });
+			fs.writeFileSync(idxPath, JSON.stringify(builds, null, 2));
+		} catch { }
+		return { dest, copied, manifest };
+	}
+
+	// Deep-link to a client's card in Atrium, if a base URL is configured. We do
+	// NOT guess routes — only open when `solstice.atrium.baseUrl` is set.
+	atriumClientUrl(client) {
+		const base = (this.cfg().get("atrium.baseUrl") || "").trim().replace(/\/+$/, "");
+		if (!base) return null;
+		return base + "/clients/" + encodeURIComponent(String(client || "").toLowerCase());
 	}
 
 	// ---- Fleet (talk to Orion/Jasper/Asher from inside Solstice) ----
@@ -2459,16 +2507,35 @@ async function handoffProjectToClient(controller, project) {
 		if (!client) return;
 	}
 	try {
-		const { dest, copied } = controller.handoffToClient(project, client);
-		const open = "פתח תיקייה";
-		const choice = await vscode.window.showInformationMessage(
-			"נמסר ל-" + client + (copied ? " (כולל קבצי הבילד)" : " (מניפסט בלבד — מקור מרוחק)") + "  ·  " + dest,
-			open
-		);
-		if (choice === open) vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(dest)).then(undefined, () => { });
+		const { dest, copied, manifest } = controller.handoffToClient(project, client);
+		openAtriumHandoffPanel(controller, { manifest, dest, copied, atriumUrl: controller.atriumClientUrl(client) });
 	} catch (e) {
 		vscode.window.showErrorMessage("מסירה נכשלה: " + String(e && e.message || e));
 	}
+}
+
+// Visual confirmation of a Solstice → Atrium client handoff: the Build → Atrium →
+// Client flow, the written manifest contract, and quick actions.
+let atriumHandoffPanel = null;
+function openAtriumHandoffPanel(controller, result) {
+	if (!atriumHandoffPanel) {
+		atriumHandoffPanel = vscode.window.createWebviewPanel(
+			"solstice.atrium", "🗂 מסירה ל-Atrium",
+			{ viewColumn: vscode.ViewColumn.One, preserveFocus: false },
+			{ enableScripts: true, retainContextWhenHidden: true,
+			  localResourceRoots: [vscode.Uri.joinPath(controller.context.extensionUri, "media")] }
+		);
+		atriumHandoffPanel.webview.html = mediaHtml(atriumHandoffPanel.webview, controller.context.extensionUri, "atrium.js", "atrium.css");
+		atriumHandoffPanel.webview.onDidReceiveMessage((m) => {
+			if (m.type === "ready") atriumHandoffPanel.webview.postMessage({ type: "handoff", ...result });
+			else if (m.type === "openFolder" && m.path) vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(m.path)).then(undefined, () => { });
+			else if (m.type === "openAtrium" && m.url) vscode.env.openExternal(vscode.Uri.parse(m.url)).then(undefined, () => { });
+		});
+		atriumHandoffPanel.onDidDispose(() => { atriumHandoffPanel = null; });
+	} else {
+		atriumHandoffPanel.reveal(vscode.ViewColumn.One);
+	}
+	atriumHandoffPanel.webview.postMessage({ type: "handoff", ...result });
 }
 
 // Pull a server-built (remote) project down to a folder on Thomas's PC as a

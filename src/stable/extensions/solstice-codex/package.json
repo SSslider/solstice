@@ -363,6 +363,11 @@
           "default": "",
           "description": "Root of the Atrium client folders that finished Solstice builds are handed off into (one subfolder per client, e.g. kobi/tali/moshiko). Empty = auto-detect ~/Julius-cc-x/agents/atrium/output. Handoff writes <clientsDir>/<client>/solstice/<project>/handoff.json plus a copy of the build when source and clients dir share a filesystem."
         },
+        "solstice.atrium.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL of the Atrium app (e.g. http://localhost:5180 or the deployed URL). When set, the Solstice→Atrium handoff panel deep-links the client card at <baseUrl>/clients/<client>. Empty = no deep-link (folder handoff still works)."
+        },
         "solstice.fleet.hidden": {
           "type": "array",
           "default": [],
