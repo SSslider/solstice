@@ -382,7 +382,7 @@ class GrokProvider {
 				if (stalled) {
 					this.notify("error", { threadId: tid, error: { message: `grok turn stalled (no output for ${Math.round(STALL_MS / 1000)}s) and was ended — your next message resumes the session.` } });
 				} else if (code !== 0 && code !== null) {
-					this.notify("error", { threadId: tid, error: { message: `grok exited with code ${code} — check the Solstice Agent output log.` } });
+					this.notify("error", { threadId: tid, error: { message: `grok exited with code ${code} — check the Felix output log.` } });
 				}
 				if (turnOut >= 0) this.tokens.out += turnOut; // estimate path (real usage already applied)
 				this.notify("usage", { threadId: tid, model, exact: this.tokensExact, turn: { in: turnIn, out: turnOut < 0 ? null : turnOut }, total: { in: this.tokens.in, out: this.tokens.out } });

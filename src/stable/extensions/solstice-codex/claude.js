@@ -353,7 +353,7 @@ class ClaudeProvider {
 				// close any block still streaming (interrupted turn)
 				for (const b of blocks.values()) completeBlock(b);
 				if (code !== 0 && code !== null) {
-					this.notify("error", { threadId: tid, error: { message: `claude exited with code ${code} — check the Solstice Agent output log.` } });
+					this.notify("error", { threadId: tid, error: { message: `claude exited with code ${code} — check the Felix output log.` } });
 				}
 				this.notify("turn/completed", { threadId: tid, turn: { id: turnId } });
 				resolve();

@@ -2,6 +2,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const { spawn } = require("child_process");
 
 const MIME = {
 	".html": "text/html; charset=utf-8",
@@ -332,4 +333,97 @@ class PreviewServer {
 	}
 }
 
-module.exports = { PreviewServer, detectDevServerUrl, hasFramework };
+// Which npm script actually starts the dev server for this project.
+function devScriptName(root) {
+	try {
+		const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+		const s = pkg.scripts || {};
+		if (s.dev) return "dev";
+		if (s.start) return "start";
+		if (s.serve) return "serve";
+	} catch { }
+	return null;
+}
+
+// Owns the lifecycle of the project's dev server. The agent writes a framework
+// app but never had a way to actually RUN it — so the live preview probed ports
+// that nothing was listening on and stayed blank. This boots `npm install` (only
+// when node_modules is absent) then the dev script, and resolves once a port is
+// live so the preview can point at it.
+class DevServer {
+	constructor(root, opts) {
+		this.root = root;
+		this.onLog = (opts && opts.onLog) || (() => { });
+		this.proc = null;
+		this.starting = null;     // in-flight start() promise (dedupe)
+		this.url = null;
+	}
+
+	log(s) { try { this.onLog(s); } catch { } }
+
+	// Resolve to a live dev-server URL, starting the server if needed. Returns
+	// null only if the project has no dev script or the server never came up.
+	async ensure() {
+		const existing = await detectDevServerUrl(this.root).catch(() => null);
+		if (existing) { this.url = existing; return existing; }
+		if (this.url && this.proc && this.proc.exitCode === null) return this.url;
+		if (this.starting) return this.starting;
+		this.starting = this._start().finally(() => { this.starting = null; });
+		return this.starting;
+	}
+
+	async _start() {
+		const script = devScriptName(this.root);
+		if (!script) { this.log("[dev] no dev/start script in package.json — skipping auto-run\n"); return null; }
+
+		if (!fs.existsSync(path.join(this.root, "node_modules"))) {
+			this.log("[dev] installing dependencies (npm install)…\n");
+			const ok = await this._run("install", ["install", "--no-audit", "--no-fund"], 8 * 60 * 1000);
+			if (!ok) { this.log("[dev] npm install failed — preview unavailable\n"); return null; }
+		}
+
+		this.log(`[dev] starting dev server (npm run ${script})…\n`);
+		const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+		this.proc = spawn(npm, ["run", script], {
+			cwd: this.root,
+			shell: process.platform === "win32",
+			env: { ...process.env, BROWSER: "none", FORCE_COLOR: "0" },
+		});
+		this.proc.stdout.on("data", (d) => this.log(String(d)));
+		this.proc.stderr.on("data", (d) => this.log(String(d)));
+		this.proc.on("exit", (code) => { this.log(`[dev] dev server exited (${code})\n`); this.proc = null; this.url = null; });
+
+		// Poll for the port to come up (Vite/Next cold-start can take a while).
+		const DEADLINE = Date.now() + 90 * 1000;
+		while (Date.now() < DEADLINE) {
+			if (!this.proc) return null;           // crashed during boot
+			const url = await detectDevServerUrl(this.root).catch(() => null);
+			if (url) { this.url = url; this.log(`[dev] live at ${url}\n`); return url; }
+			await new Promise((r) => setTimeout(r, 1500));
+		}
+		this.log("[dev] dev server did not become reachable within 90s\n");
+		return null;
+	}
+
+	_run(label, args, timeoutMs) {
+		return new Promise((resolve) => {
+			const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+			const p = spawn(npm, args, { cwd: this.root, shell: process.platform === "win32", env: process.env });
+			const t = setTimeout(() => { try { p.kill(); } catch { } resolve(false); }, timeoutMs);
+			p.stdout.on("data", (d) => this.log(String(d)));
+			p.stderr.on("data", (d) => this.log(String(d)));
+			p.on("error", () => { clearTimeout(t); resolve(false); });
+			p.on("exit", (code) => { clearTimeout(t); resolve(code === 0); });
+		});
+	}
+
+	dispose() {
+		if (this.proc) {
+			try { process.platform === "win32" ? spawn("taskkill", ["/pid", String(this.proc.pid), "/T", "/F"]) : this.proc.kill("SIGTERM"); } catch { }
+			this.proc = null;
+		}
+		this.url = null;
+	}
+}
+
+module.exports = { PreviewServer, DevServer, detectDevServerUrl, hasFramework };

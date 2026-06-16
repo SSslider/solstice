@@ -59,7 +59,7 @@
 		<div id="loginOverlay" class="hidden">
 			<div class="loginCard">
 				<div class="loginLogo">☀️</div>
-				<h2>Solstice Agent Manager</h2>
+				<h2>Felix Manager</h2>
 				<button id="loginBtn" class="btn primary big">Sign in with ChatGPT</button>
 			</div>
 		</div>`;

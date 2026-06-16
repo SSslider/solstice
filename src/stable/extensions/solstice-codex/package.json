@@ -1,6 +1,6 @@
 {
   "name": "solstice-codex",
-  "displayName": "Solstice Agent",
+  "displayName": "Felix",
   "description": "Built-in AI agent panel powered by Codex (ChatGPT subscription).",
   "version": "0.7.1",
   "publisher": "solstice",
@@ -26,7 +26,7 @@
       "secondarySidebar": [
         {
           "id": "solstice-agent",
-          "title": "Solstice Agent",
+          "title": "Felix",
           "icon": "media/icon.svg"
         }
       ]
@@ -174,7 +174,7 @@
       ]
     },
     "configuration": {
-      "title": "Solstice Agent",
+      "title": "Felix",
       "properties": {
         "solstice.codex.provider": {
           "type": "string",

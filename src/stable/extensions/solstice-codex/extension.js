@@ -5,7 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { CodexClient, resolveCodexBinary } = require("./codexClient");
-const { PreviewServer, detectDevServerUrl, hasFramework } = require("./preview");
+const { PreviewServer, DevServer, detectDevServerUrl, hasFramework } = require("./preview");
 const { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor } = require("./grok");
 const { ClaudeProvider, CLAUDE_LABEL } = require("./claude");
 const { FleetBridge } = require("./fleetBridge");
@@ -77,6 +77,7 @@ class AgentController {
 		this.pendingApprovals = new Map(); // approvalKey -> resolve(decision)
 		this.terminal = null;          // integrated terminal spawned from the panel
 		this.preview = null;
+		this.devServer = null;         // auto-started dev server (npm run dev) for framework apps
 		this.previewUrl = "";
 		this.previewPanel = null;      // device-frame live preview webview (center column)
 		this.previewKind = "site";     // "site" | "app" — drives default device frame
@@ -95,7 +96,7 @@ class AgentController {
 		this.activeFleetAgent = null;  // fleet agent the live build is attributed to
 		this._pendingRecovery = null;  // unfinished build read from .solstice/BUILD.json on activation
 		this._verifyTaskId = null;     // taskId already given its one auto self-verify pass
-		this.output = vscode.window.createOutputChannel("Solstice Agent");
+		this.output = vscode.window.createOutputChannel("Felix");
 		this.skills = null;            // Felix's private self-improvement store (Phase 6)
 		try {
 			this.skills = new FelixSkills({
@@ -509,6 +510,10 @@ self.addEventListener("fetch", (e) => {
 			// app can't run as flat files. Fall back to the static server only for
 			// plain-HTML projects.
 			url = await detectDevServerUrl(root).catch(() => null);
+			// Framework project with no live server: boot the dev server rather than
+			// static-serving an un-bundled (broken) page. ensureDevServer re-enters
+			// openPreview with the real URL once the port is up.
+			if (!url && hasFramework(root)) { await this.ensureDevServer().catch(() => { }); return; }
 			if (!url) {
 				if (!this.preview) this.preview = new PreviewServer(root, {
 					onSelect: (pick) => this.post({ type: "elementSelected", pick }),
@@ -537,21 +542,41 @@ self.addEventListener("fetch", (e) => {
 		const root = workspaceCwd();
 		if (!root) return;
 		const framework = hasFramework(root);
+		// Plain-HTML projects: open the static server right away.
+		if (!framework) { this.openPreview("").catch(() => { }); return; }
+		// Framework projects: a static serve would render a broken, un-bundled page,
+		// so we need the real dev server. The agent writes the app but never started
+		// it — so we boot it ourselves (npm install if needed + npm run dev) and open
+		// the preview the moment the port is live.
 		let elapsed = 0;
-		const STEP = 2500, MAX = 60000;
+		const STEP = 2500, MAX = 30000;
 		const tick = async () => {
 			if (this.previewUrl) { this.stopPreviewWatch(); return; }
 			const dev = await detectDevServerUrl(root).catch(() => null);
 			if (dev) { this.stopPreviewWatch(); await this.openPreview(dev).catch(() => { }); return; }
-			// no dev server yet: plain-HTML projects can open the static server
-			// immediately; framework projects wait (a static serve would render a
-			// broken, un-bundled page).
-			if (!framework) { this.stopPreviewWatch(); await this.openPreview("").catch(() => { }); return; }
 			elapsed += STEP;
-			if (elapsed >= MAX) this.stopPreviewWatch();
+			// Already-running server not found quickly → start it ourselves.
+			if (elapsed >= MAX) { this.stopPreviewWatch(); this.ensureDevServer().catch(() => { }); }
 		};
 		this._previewWatch = setInterval(tick, STEP);
 		tick();
+	}
+
+	// Boot (or reuse) the project's dev server, streaming its log to the agent
+	// terminal, then point the live preview at it. This is what makes the center
+	// window actually render the built site instead of staying blank.
+	async ensureDevServer() {
+		const root = workspaceCwd();
+		if (!root || this.previewUrl) return;
+		if (!this.devServer) {
+			this.devServer = new DevServer(root, {
+				onLog: (s) => { try { this.output.append(s); } catch { } },
+			});
+		}
+		this.post({ type: "systemNote", text: "🚀 מריץ את שרת הפיתוח (npm run dev)… התצוגה תיפתח כשהוא יעלה." });
+		const url = await this.devServer.ensure().catch(() => null);
+		if (url) { await this.openPreview(url).catch(() => { }); }
+		else { this.post({ type: "systemNote", text: "⚠️ לא הצלחתי להריץ את שרת הפיתוח — בדוק את הטרמינל." }); }
 	}
 
 	stopPreviewWatch() {
@@ -2652,6 +2677,7 @@ self.addEventListener("fetch", (e) => {
 		if (this.researchPanel) this.researchPanel.dispose();
 		if (this.galleryPanel) this.galleryPanel.dispose();
 		if (this.preview) this.preview.dispose();
+		if (this.devServer) this.devServer.dispose();
 		if (this.grokWatcher) this.grokWatcher.dispose();
 		if (this.grok) this.grok.interrupt();
 		if (this.claude) this.claude.interrupt();

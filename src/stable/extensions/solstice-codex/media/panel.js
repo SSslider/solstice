@@ -42,7 +42,7 @@
 		<div id="loginOverlay" class="hidden">
 			<div class="loginCard">
 				<div class="loginLogo">☀️</div>
-				<h2>Solstice Agent</h2>
+				<h2>Felix</h2>
 				<p>Build with GPT-5.5 using your ChatGPT subscription.</p>
 				<button id="loginBtn" class="btn primary big">Sign in with ChatGPT</button>
 				<p id="loginNote" class="muted"></p>
@@ -965,7 +965,7 @@
 			case "thread":
 				model = msg.model || "";
 				modelEl.textContent = model || "—";
-				if (brandModelEl) brandModelEl.textContent = model || "Solstice Agent";
+				if (brandModelEl) brandModelEl.textContent = model || "Felix";
 				break;
 			case "models":
 				modelChoices = Array.isArray(msg.list) ? msg.list : [];
