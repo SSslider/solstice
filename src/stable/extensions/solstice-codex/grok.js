@@ -244,6 +244,9 @@ class GrokProvider {
 			if (u.sessionUpdate !== "tool_call" && u.sessionUpdate !== "tool_call_update") return;
 			const tcId = u.toolCallId;
 			if (!tcId) return;
+			// Tool work (shell/edit/read) is real progress even when the CLI's stdout
+			// is silent — bump the stall clock so long builds aren't force-killed.
+			this._grokActivityAt = Date.now();
 			let t = tools.get(tcId);
 			if (!t) {
 				t = { id: "gtl" + this.seq++, kind: null, command: null, out: "", paths: [], done: false, started: false, title: "" };
@@ -320,6 +323,7 @@ class GrokProvider {
 				}
 			}
 		};
+		this._grokActivityAt = Date.now(); // stall clock: bumped by stdout AND tool activity (onUpdate)
 		const tailer = new UpdatesTailer(this.cwd, Date.now() - (this.turns > 1 ? 6 * 3600 * 1000 : 2000), onUpdate, this.log);
 		tailer.start();
 		// turn 2+ continues an existing session file — skip its history
@@ -333,19 +337,22 @@ class GrokProvider {
 			this.child = child;
 			let buf = "";
 			// Progress-aware stall watchdog: a healthy turn streams reasoning /
-			// message / tool deltas continuously. If the CLI goes fully silent for
-			// STALL_MS it is hung (not "thinking") — end the turn so queued steers
-			// drain. Session state survives: the next turn resumes it with `-c`.
-			// (Never a blind wall-clock restart — any stdout resets the clock.)
-			const STALL_MS = 180000;
-			let lastActivity = Date.now();
+			// message deltas on stdout OR tool activity into updates.jsonl. The clock
+			// (this._grokActivityAt) is reset by BOTH — stdout below and onUpdate above.
+			// This matters because real build work (npm install, file edits, shell)
+			// can keep stdout silent for minutes while updates.jsonl streams tool
+			// calls; counting only stdout falsely killed long builds at 180s and left
+			// turn 2's `-c` resume against a half-killed session (the "stuck after the
+			// first prompt" + "grok timeout" bug). Only a genuinely hung CLI — no
+			// stdout AND no tool activity for STALL_MS — is ended; session survives via `-c`.
+			const STALL_MS = 600000;
 			let stalled = false;
-			const bumpActivity = () => { lastActivity = Date.now(); };
+			const bumpActivity = () => { this._grokActivityAt = Date.now(); };
 			const stallTimer = setInterval(() => {
 				if (!this.child) return;
-				if (!stalled && Date.now() - lastActivity > STALL_MS) {
+				if (!stalled && Date.now() - this._grokActivityAt > STALL_MS) {
 					stalled = true;
-					this.notify("turn/stalled", { threadId: tid, turn: { id: turnId }, idleMs: Date.now() - lastActivity });
+					this.notify("turn/stalled", { threadId: tid, turn: { id: turnId }, idleMs: Date.now() - this._grokActivityAt });
 					killTree(this.child);
 				}
 			}, 15000);
