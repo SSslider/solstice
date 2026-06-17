@@ -527,10 +527,30 @@ self.addEventListener("fetch", (e) => {
 				url = `http://127.0.0.1:${port}/${rel}`;
 			}
 		}
+		// Route a live dev server through the injecting proxy so click-to-select works
+		// on framework apps too (not just plain HTML). Keeps the URL we actually load.
+		url = await this.proxyDevServerForSelect(url).catch(() => url);
 		this.previewUrl = url;
 		this.previewKind = this.detectPreviewKind();
 		this.openPreviewPanel(url, this.defaultDevice());
 		this.fleetFlow("preview", { url });
+	}
+
+	// If `url` is a live local dev server (Vite/Next/CRA the agent started), wrap it
+	// in the static PreviewServer running as an injecting reverse-proxy, so the
+	// click-to-select picker + app bridge are present. No-op for remote URLs or when
+	// the URL is already our own (already-injected) static server.
+	async proxyDevServerForSelect(url) {
+		let u;
+		try { u = new URL(url); } catch { return url; }
+		if (u.hostname !== "127.0.0.1" && u.hostname !== "localhost") return url;
+		if (!this.preview) this.preview = new PreviewServer(workspaceCwd(), {
+			onSelect: (pick) => this.post({ type: "elementSelected", pick }),
+		});
+		const port = await this.preview.ensure();
+		if (Number(u.port) === port) return url; // already our static server → already injected
+		this.preview.setProxyTarget(`${u.protocol}//${u.host}`);
+		return `http://127.0.0.1:${port}${u.pathname}${u.search || ""}`;
 	}
 
 	// First previewable file → auto-open the center preview (regression fix: this

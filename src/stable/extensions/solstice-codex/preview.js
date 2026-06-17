@@ -262,13 +262,23 @@ class PreviewServer {
 	constructor(root, opts) {
 		this.root = root;
 		this.onSelect = (opts && opts.onSelect) || null;
+		// When set (e.g. "http://127.0.0.1:5173"), the server stops serving static
+		// files and instead reverse-proxies to the agent's dev server, injecting the
+		// click-to-select picker into HTML responses and proxying the HMR WebSocket.
+		// This is what makes component-select work for framework apps (Vite/Next/…),
+		// not just plain-HTML projects.
+		this.proxyTarget = (opts && opts.proxyTarget) || null;
 		this.server = null;
 		this.port = 0;
 	}
 
+	setProxyTarget(target) { this.proxyTarget = target || null; }
+
 	async ensure() {
 		if (this.server) return this.port;
 		this.server = http.createServer((req, res) => this.handle(req, res));
+		// Proxy HMR / live-reload WebSocket upgrades through to the dev server.
+		this.server.on("upgrade", (req, socket, head) => this.handleUpgrade(req, socket, head));
 		await new Promise((resolve, reject) => {
 			this.server.once("error", reject);
 			this.server.listen(0, "127.0.0.1", resolve);
@@ -281,7 +291,8 @@ class PreviewServer {
 		try {
 			let urlPath = decodeURIComponent((req.url || "/").split("?")[0]);
 
-			// click-to-select callback from the injected page script
+			// click-to-select callback from the injected page script (handled locally
+			// even in proxy mode, so it never reaches the dev server)
 			if (urlPath === SELECT_ENDPOINT) {
 				if (req.method !== "POST") { res.writeHead(405); res.end(); return; }
 				let body = "";
@@ -293,6 +304,10 @@ class PreviewServer {
 				});
 				return;
 			}
+
+			// Reverse-proxy mode: forward everything else to the dev server, injecting
+			// the picker into HTML responses.
+			if (this.proxyTarget) { this.proxyHttp(req, res); return; }
 
 			if (urlPath.endsWith("/")) urlPath += "index.html";
 			const filePath = path.normalize(path.join(this.root, urlPath));
@@ -326,6 +341,67 @@ class PreviewServer {
 		} catch (e) {
 			res.writeHead(500); res.end(String(e && e.message || e));
 		}
+	}
+
+	// Reverse-proxy an HTTP request to the dev server. HTML responses are buffered
+	// and the picker is injected; everything else streams straight through.
+	proxyHttp(req, res) {
+		let target;
+		try { target = new URL(this.proxyTarget); } catch { res.writeHead(502); res.end("bad proxy target"); return; }
+		const headers = { ...req.headers, host: target.host };
+		// Force identity so HTML comes back uncompressed and is injectable.
+		headers["accept-encoding"] = "identity";
+		const opts = { protocol: target.protocol, hostname: target.hostname, port: target.port, method: req.method, path: req.url, headers };
+		const pReq = http.request(opts, (pRes) => {
+			const ct = String(pRes.headers["content-type"] || "");
+			if (/text\/html/i.test(ct)) {
+				const chunks = [];
+				pRes.on("data", (c) => chunks.push(c));
+				pRes.on("end", () => {
+					const html = injectSelect(Buffer.concat(chunks).toString("utf8"));
+					const out = Buffer.from(html, "utf8");
+					const h = { ...pRes.headers };
+					delete h["content-length"]; delete h["content-encoding"]; delete h["transfer-encoding"];
+					h["content-length"] = out.length;
+					h["cache-control"] = "no-store";
+					res.writeHead(pRes.statusCode || 200, h);
+					res.end(out);
+				});
+				pRes.on("error", () => { try { res.end(); } catch { } });
+			} else {
+				res.writeHead(pRes.statusCode || 200, pRes.headers);
+				pRes.pipe(res);
+			}
+		});
+		pReq.on("error", (e) => { try { res.writeHead(502); res.end("preview proxy error: " + (e && e.message || e)); } catch { } });
+		req.pipe(pReq);
+	}
+
+	// Proxy a WebSocket upgrade (Vite/Next HMR, live-reload) to the dev server by
+	// piping the raw sockets once the upstream completes its 101 handshake.
+	handleUpgrade(req, socket, head) {
+		if (!this.proxyTarget) { try { socket.destroy(); } catch { } return; }
+		let target;
+		try { target = new URL(this.proxyTarget); } catch { try { socket.destroy(); } catch { } return; }
+		const pReq = http.request({
+			protocol: target.protocol, hostname: target.hostname, port: target.port,
+			method: req.method, path: req.url, headers: { ...req.headers, host: target.host },
+		});
+		pReq.on("upgrade", (pRes, pSocket, pHead) => {
+			const lines = [`HTTP/1.1 ${pRes.statusCode} ${pRes.statusMessage || "Switching Protocols"}`];
+			for (const [k, v] of Object.entries(pRes.headers)) {
+				if (Array.isArray(v)) v.forEach((vv) => lines.push(`${k}: ${vv}`));
+				else lines.push(`${k}: ${v}`);
+			}
+			try { socket.write(lines.join("\r\n") + "\r\n\r\n"); } catch { }
+			if (pHead && pHead.length) { try { pSocket.unshift(pHead); } catch { } }
+			pSocket.pipe(socket); socket.pipe(pSocket);
+			pSocket.on("error", () => { try { socket.destroy(); } catch { } });
+			socket.on("error", () => { try { pSocket.destroy(); } catch { } });
+		});
+		pReq.on("error", () => { try { socket.destroy(); } catch { } });
+		if (head && head.length) { try { pReq.write(head); } catch { } }
+		pReq.end();
 	}
 
 	dispose() {
