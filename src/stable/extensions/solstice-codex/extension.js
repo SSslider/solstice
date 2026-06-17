@@ -1150,7 +1150,7 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	grokPreamble() {
-		const browseJs = path.join(this.context.extensionPath, "tools", "browse.js");
+		const browseJs = path.join(this.context.extensionPath, "webtools", "browse.js"); // dir is "webtools" not "tools": the Windows build's 7z -x!tools strips any nested tools/ dir
 		const node = process.execPath;
 		const shot = process.platform === "win32"
 			? `cmd /c "set ELECTRON_RUN_AS_NODE=1&& ""${node}"" ""${browseJs}"" shot <url> <out.png>"`
@@ -1186,7 +1186,7 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	claudePreamble() {
-		const browseJs = path.join(this.context.extensionPath, "tools", "browse.js");
+		const browseJs = path.join(this.context.extensionPath, "webtools", "browse.js"); // dir is "webtools" not "tools": the Windows build's 7z -x!tools strips any nested tools/ dir
 		const node = process.execPath;
 		const shot = process.platform === "win32"
 			? `cmd /c "set ELECTRON_RUN_AS_NODE=1&& ""${node}"" ""${browseJs}"" shot <url> <out.png>"`
@@ -1492,7 +1492,7 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	developerInstructions() {
-		const browseJs = path.join(this.context.extensionPath, "tools", "browse.js");
+		const browseJs = path.join(this.context.extensionPath, "webtools", "browse.js"); // dir is "webtools" not "tools": the Windows build's 7z -x!tools strips any nested tools/ dir
 		const node = process.execPath;
 		const run = process.platform === "win32"
 			? `cmd /c "set ELECTRON_RUN_AS_NODE=1&& ""${node}"" ""${browseJs}"" shot <url> <out.png>"`
@@ -2292,7 +2292,7 @@ self.addEventListener("fetch", (e) => {
 		return new Promise((resolve) => {
 			const cwd = workspaceCwd();
 			if (!cwd || !url) return resolve(null);
-			const browseJs = path.join(this.context.extensionPath, "tools", "browse.js");
+			const browseJs = path.join(this.context.extensionPath, "webtools", "browse.js"); // dir is "webtools" not "tools": the Windows build's 7z -x!tools strips any nested tools/ dir
 			const outDir = path.join(cwd, ".solstice");
 			try { fs.mkdirSync(outDir, { recursive: true }); } catch { }
 			const out = path.join(outDir, `verify-${taskId || "build"}.png`);
