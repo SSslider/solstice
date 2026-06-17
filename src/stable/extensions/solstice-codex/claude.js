@@ -3,6 +3,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const { unifiedDiff, killTree } = require("./grok");
+const { resolveWinSpawn } = require("./winspawn");
 
 const CLAUDE_LABEL = "Claude Code";
 
@@ -322,7 +323,9 @@ class ClaudeProvider {
 		};
 
 		return new Promise((resolve) => {
-			const child = spawn(this.bin, args, { cwd: this.cwd, env, detached: true });
+			// Windows npm-shim EPERM guard (see winspawn.js) — no-op on Linux/macOS.
+			const sp = resolveWinSpawn(this.bin, args);
+			const child = spawn(sp.cmd, sp.args, { cwd: this.cwd, env: sp.env ? { ...env, ...sp.env } : env, detached: true });
 			this.child = child;
 			child.stdin.write(prompt);
 			child.stdin.end();

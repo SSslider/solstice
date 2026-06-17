@@ -3,6 +3,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { resolveWinSpawn } = require("./winspawn");
 
 // SIGTERM the whole process group, not just the CLI parent. The grok/claude
 // CLIs spawn their own model subprocess; killing only the parent orphans it.
@@ -360,7 +361,12 @@ class GrokProvider {
 		tailer.start();
 
 		return new Promise((resolve) => {
-			const child = spawn(this.bin, args, { cwd: this.cwd, env, detached: true });
+			// On Windows the grok CLI is an npm .cmd shim that CreateProcess can't
+			// launch directly (=> `spawn grok EPERM`); resolveWinSpawn rewrites it to
+			// a direct `node <cli.js>` invocation, preserving the newline-bearing
+			// --system-prompt-override arg. No-op on Linux/macOS.
+			const sp = resolveWinSpawn(this.bin, args);
+			const child = spawn(sp.cmd, sp.args, { cwd: this.cwd, env: sp.env ? { ...env, ...sp.env } : env, detached: true });
 			this.child = child;
 			let buf = "";
 			const cleanupFile = () => { try { fs.unlinkSync(promptFile); } catch { } };
