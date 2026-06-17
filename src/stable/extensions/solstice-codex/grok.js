@@ -158,6 +158,11 @@ class GrokProvider {
 		this.seq = 0;
 		this.tokens = { in: 0, out: 0 }; // session-cumulative (real if CLI emits usage, else estimate)
 		this.tokensExact = false;
+		// Conversation history kept in-process. Each turn re-sends the recent
+		// history baked into the prompt instead of using grok's `-c` resume —
+		// see the comment in send() for why.
+		this.history = []; // [{ role: "user"|"assistant", text }]
+		this._sys = "";    // remembered system prompt (sent every turn)
 	}
 
 	get busy() { return !!this.child; }
@@ -166,16 +171,43 @@ class GrokProvider {
 		killTree(this.child);
 	}
 
+	// Bake the recent conversation into the prompt (stateless multi-turn). Last 8
+	// entries (~4 exchanges) is enough context to continue without re-sending the
+	// whole transcript every turn.
+	_composePrompt(text) {
+		const recent = this.history.slice(-8);
+		if (!recent.length) return text;
+		const block = recent.map((h) => (h.role === "user" ? "User: " : "Assistant: ") + h.text).join("\n\n");
+		return `══ recent conversation so far (context only — continue from it, don't repeat it) ══\n${block}\n\n══ current request ══\n${text}`;
+	}
+
 	send(providerKey, text, preamble) {
 		if (this.child) return Promise.reject(new Error("a turn is already running"));
 		const model = GROK_MODELS[providerKey] || GROK_MODELS["grok-build"];
-		const prompt = this.turns === 0 && preamble ? `${preamble}\n\n## Task\n${text}` : text;
-		const args = ["--cwd", this.cwd, "-m", model.id, "--always-approve", "--output-format", "streaming-json"];
-		// -c continues the CLI's most recent session for this cwd (turn 2+)
-		if (this.turns > 0) args.push("-c");
-		args.push("-p", prompt);
+
+		// STATELESS turn — NO `-c` resume. Root cause of "stuck after the first
+		// prompt": `grok -c` resuming a large session (after a long build) performs
+		// a long, completely SILENT context reload — no stdout AND no tool activity —
+		// that scales with session size, so any idle watchdog kills it before it
+		// speaks. Our own fleet runs the SAME grok/Composer binary robustly by NOT
+		// resuming: it re-sends recent history in the prompt, splits the system
+		// prompt from the user prompt, and uses a generous total-time budget with no
+		// idle kill. We mirror that proven pattern here.
+		if (preamble) this._sys = preamble;            // remember system prompt across turns
+		const userPrompt = this._composePrompt(text);
+		// History+prompt can be large → pass via --prompt-file (avoids ARG_MAX).
+		const promptFile = path.join(os.tmpdir(), `solstice-grok-${Date.now().toString(36)}-${this.seq++}.txt`);
+		try { fs.writeFileSync(promptFile, userPrompt, "utf8"); } catch { }
+		const args = ["--cwd", this.cwd, "-m", model.id,
+			"--permission-mode", "bypassPermissions",
+			// Composer occasionally hallucinates PascalCase Claude-Code tool names;
+			// blocking them makes those fail fast instead of SIGTERM-killing the turn.
+			"--disallowed-tools", "Read,Write,Edit,Bash,Glob,Grep,List,LS,WebFetch,WebSearch",
+			"--output-format", "streaming-json"];
+		if (this._sys) args.push("--system-prompt-override", this._sys);
+		args.push("--prompt-file", promptFile);
 		this.turns++;
-		const turnIn = Math.ceil((prompt || "").length / 4);
+		const turnIn = Math.ceil((userPrompt || "").length / 4);
 		let turnOut = 0; // estimated from streamed deltas unless the CLI reports real usage
 		this.tokens.in += turnIn;
 		const env = { ...process.env };
@@ -187,6 +219,7 @@ class GrokProvider {
 
 		let reasoning = null; // { id, text }
 		let message = null;   // { id, text }
+		let assistantOut = ""; // full assistant text this turn → saved to history
 		const closeReasoning = () => {
 			if (!reasoning) return;
 			this.notify("item/completed", { threadId: tid, item: { id: reasoning.id, type: "reasoning", text: reasoning.text } });
@@ -219,6 +252,7 @@ class GrokProvider {
 					this.notify("item/started", { threadId: tid, item: { id: message.id, type: "agentMessage" } });
 				}
 				message.text += e.data || "";
+				assistantOut += e.data || "";
 				turnOut += Math.ceil((e.data || "").length / 4);
 				this.notify("item/agentMessage/delta", { threadId: tid, itemId: message.id, delta: e.data || "" });
 			} else if (e.type === "error") {
@@ -244,9 +278,6 @@ class GrokProvider {
 			if (u.sessionUpdate !== "tool_call" && u.sessionUpdate !== "tool_call_update") return;
 			const tcId = u.toolCallId;
 			if (!tcId) return;
-			// Tool work (shell/edit/read) is real progress even when the CLI's stdout
-			// is silent — bump the stall clock so long builds aren't force-killed.
-			this._grokActivityAt = Date.now();
 			let t = tools.get(tcId);
 			if (!t) {
 				t = { id: "gtl" + this.seq++, kind: null, command: null, out: "", paths: [], done: false, started: false, title: "" };
@@ -323,41 +354,28 @@ class GrokProvider {
 				}
 			}
 		};
-		this._grokActivityAt = Date.now(); // stall clock: bumped by stdout AND tool activity (onUpdate)
-		const tailer = new UpdatesTailer(this.cwd, Date.now() - (this.turns > 1 ? 6 * 3600 * 1000 : 2000), onUpdate, this.log);
+		// Every turn is now a fresh grok session (stateless), so always tail the
+		// newest session file created from ~now — the same logic that made turn 1 work.
+		const tailer = new UpdatesTailer(this.cwd, Date.now() - 2000, onUpdate, this.log);
 		tailer.start();
-		// turn 2+ continues an existing session file — skip its history
-		if (this.turns > 1) {
-			const f = tailer.findFile();
-			if (f) { tailer.file = f; try { tailer.offset = fs.statSync(f).size; } catch { } }
-		}
 
 		return new Promise((resolve) => {
 			const child = spawn(this.bin, args, { cwd: this.cwd, env, detached: true });
 			this.child = child;
 			let buf = "";
-			// Progress-aware stall watchdog: a healthy turn streams reasoning /
-			// message deltas on stdout OR tool activity into updates.jsonl. The clock
-			// (this._grokActivityAt) is reset by BOTH — stdout below and onUpdate above.
-			// This matters because real build work (npm install, file edits, shell)
-			// can keep stdout silent for minutes while updates.jsonl streams tool
-			// calls; counting only stdout falsely killed long builds at 180s and left
-			// turn 2's `-c` resume against a half-killed session (the "stuck after the
-			// first prompt" + "grok timeout" bug). Only a genuinely hung CLI — no
-			// stdout AND no tool activity for STALL_MS — is ended; session survives via `-c`.
-			const STALL_MS = 600000;
-			let stalled = false;
-			const bumpActivity = () => { this._grokActivityAt = Date.now(); };
-			const stallTimer = setInterval(() => {
+			const cleanupFile = () => { try { fs.unlinkSync(promptFile); } catch { } };
+			// Total-turn budget — NOT an idle watchdog. A turn is ended only if it
+			// exceeds the whole-turn wall-clock ceiling; we never kill on "silence"
+			// because real work (npm install, big edits, model thinking) is legitimately
+			// quiet for stretches. 30 min mirrors the fleet's proven Composer budget.
+			const TURN_BUDGET_MS = 30 * 60 * 1000;
+			let timedOut = false;
+			const budgetTimer = setTimeout(() => {
 				if (!this.child) return;
-				if (!stalled && Date.now() - this._grokActivityAt > STALL_MS) {
-					stalled = true;
-					this.notify("turn/stalled", { threadId: tid, turn: { id: turnId }, idleMs: Date.now() - this._grokActivityAt });
-					killTree(this.child);
-				}
-			}, 15000);
+				timedOut = true;
+				killTree(this.child);
+			}, TURN_BUDGET_MS);
 			child.stdout.on("data", (d) => {
-				bumpActivity();
 				buf += d.toString();
 				let i;
 				while ((i = buf.indexOf("\n")) !== -1) {
@@ -370,8 +388,9 @@ class GrokProvider {
 			child.stderr.on("data", (d) => this.log(d.toString()));
 			child.on("error", (e) => {
 				this.child = null;
-				clearInterval(stallTimer);
+				clearTimeout(budgetTimer);
 				tailer.stop();
+				cleanupFile();
 				this.notify("error", {
 					threadId: tid,
 					error: { message: `Could not start the grok CLI (${this.bin}): ${e.message}. Install it and sign in once, then retry.` },
@@ -382,12 +401,17 @@ class GrokProvider {
 			child.on("close", (code) => {
 				if (!this.child) return; // already resolved via "error"
 				this.child = null;
-				clearInterval(stallTimer);
+				clearTimeout(budgetTimer);
 				tailer.stop();
+				cleanupFile();
 				closeReasoning();
 				closeMessage();
-				if (stalled) {
-					this.notify("error", { threadId: tid, error: { message: `grok turn stalled (no output for ${Math.round(STALL_MS / 1000)}s) and was ended — your next message resumes the session.` } });
+				// Record the exchange so the NEXT turn has context (stateless multi-turn).
+				this.history.push({ role: "user", text });
+				this.history.push({ role: "assistant", text: assistantOut.trim() || "(no text response)" });
+				if (this.history.length > 16) this.history = this.history.slice(-16);
+				if (timedOut) {
+					this.notify("error", { threadId: tid, error: { message: `grok turn exceeded the ${Math.round(TURN_BUDGET_MS / 60000)}-minute budget and was ended. Anything already produced is kept — your next message continues from here.` } });
 				} else if (code !== 0 && code !== null) {
 					this.notify("error", { threadId: tid, error: { message: `grok exited with code ${code} — check the Felix output log.` } });
 				}
