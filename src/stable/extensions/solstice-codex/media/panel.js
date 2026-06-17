@@ -13,7 +13,7 @@
 	app.innerHTML = `
 		<div id="header">
 			<div id="brand">
-				<span class="brandMark">☀</span>
+				<span class="brandMark" id="felixMark"><span class="felixGlow"></span><span class="felixBody"></span><span class="felixSpark"></span></span>
 				<div class="brandText">
 					<div class="brandName">Solstice <span id="status"><span id="dot" class="dot"></span></span></div>
 					<div class="brandModel" id="brandModel">—</div>
@@ -54,6 +54,7 @@
 	const sendBtn = document.getElementById("sendBtn");
 	const stopBtn = document.getElementById("stopBtn");
 	const dotEl = document.getElementById("dot");
+	const felixMark = document.getElementById("felixMark"); // animated mascot; "working" class drives it
 	const modelEl = document.getElementById("model");
 	const brandModelEl = document.getElementById("brandModel");
 	const modelBtn = document.getElementById("modelBtn");
@@ -292,6 +293,8 @@
 	function setBusy(b) {
 		busy = b;
 		dotEl.className = "dot " + (b ? "busy" : "idle");
+		if (felixMark) felixMark.classList.toggle("working", b); // Felix mascot animates only while working
+
 		sendBtn.disabled = false;        // stays usable while busy so the user can steer
 		sendBtn.textContent = b ? "Steer" : "Send";
 		stopBtn.classList.toggle("hidden", !b);
