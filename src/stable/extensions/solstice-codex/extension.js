@@ -11,6 +11,28 @@ const { ClaudeProvider, CLAUDE_LABEL } = require("./claude");
 const { FleetBridge } = require("./fleetBridge");
 const { FelixSkills } = require("./felixSkills");
 
+// Resolve a bare CLI name against PATH the same way child_process.spawn would,
+// so we can tell BEFORE spawning whether the model binary actually exists on
+// this machine. On a packaged Windows/Mac desktop install the grok/claude/codex
+// CLIs are usually NOT present (unlike the dev server, where they are installed
+// and signed in), and a blind spawn just ENOENTs — see effectiveProvider().
+function binOnPath(bin) {
+	if (!bin) return false;
+	// An explicit path was configured/bundled — trust existsSync.
+	if (bin.includes("/") || bin.includes("\\")) {
+		try { return fs.existsSync(bin); } catch { return false; }
+	}
+	const isWin = process.platform === "win32";
+	const exts = isWin ? (process.env.PATHEXT || ".EXE;.CMD;.BAT;.COM").split(";") : [""];
+	const dirs = (process.env.PATH || "").split(isWin ? ";" : ":").filter(Boolean);
+	for (const dir of dirs) {
+		for (const ext of exts) {
+			try { if (fs.existsSync(path.join(dir, bin + ext))) return true; } catch { /* ignore */ }
+		}
+	}
+	return false;
+}
+
 // Subdirs that live alongside agent build workspaces but are not projects.
 const GALLERY_SKIP_DIRS = new Set([
 	"node_modules", "userdata", "exthost-logs",
@@ -830,6 +852,66 @@ self.addEventListener("fetch", (e) => {
 		return k;
 	}
 
+	// The CLI binary (path or bare name) a given runner will try to spawn —
+	// mirrors how each provider resolves its `bin`, including codex's bundled
+	// fallback and the per-runner override settings.
+	runnerBin(runner) {
+		if (runner === "codex") return resolveCodexBinary(this.context.extensionPath, this.cfg().get("path"));
+		if (runner === "claude") return this.cfg().get("claudePath") || "claude";
+		return this.cfg().get("grokPath") || "grok"; // grok runner (grok-build / composer-2.5)
+	}
+
+	runnerAvailable(runner) {
+		return binOnPath(this.runnerBin(runner));
+	}
+
+	// The provider we can ACTUALLY run on this machine. If the configured
+	// provider's CLI isn't installed (the desktop case — codex/grok/claude are
+	// not bundled), walk the failover chain to the first provider whose binary
+	// exists. Returns null when nothing is installed so send() can show a clear
+	// setup card instead of spawning straight into ENOENT.
+	effectiveProvider() {
+		const want = this.providerKey();
+		if (this.runnerAvailable(runnerFor(want))) return want;
+		for (const k of this.failoverChain()) {
+			if (k !== want && this.runnerAvailable(runnerFor(k))) return k;
+		}
+		// last resort: a gated-but-allowed claude that happens to be installed
+		if (this.claudeAllowed() && this.runnerAvailable("claude")) return "claude";
+		return null;
+	}
+
+	// Before any send, make sure the live provider has a runnable CLI. Switches
+	// to an installed one (with a visible notice) or surfaces an install card.
+	// Returns true when the agent can proceed, false when it cannot.
+	ensureRunnableProvider() {
+		const want = this.providerKey();
+		const eff = this.effectiveProvider();
+		if (eff === null) {
+			const runner = runnerFor(want);
+			const cli = runner === "codex" ? "codex" : runner === "claude" ? "claude" : "grok";
+			const install = cli === "codex"
+				? "npm i -g @openai/codex  →  codex login"
+				: cli === "grok"
+					? "npm i -g @vercel/grok  →  grok  (sign in once)"
+					: "install Claude Code  →  claude  (sign in once)";
+			this.onNotification("error", {
+				threadId: this.threadId,
+				error: { message: `No model CLI is installed on this machine, so the Solstice agent has no engine to run. Install one and sign in once, then retry:\n\n    ${install}\n\nThe agent drives a local model CLI — without it nothing can build.` },
+			});
+			vscode.window.showErrorMessage(`Solstice: the ${cli} CLI isn't installed — the agent can't run. Install it and sign in once.`);
+			return false;
+		}
+		if (eff !== want) {
+			this.output.append(`\n[provider] configured "${want}" CLI (${this.runnerBin(runnerFor(want))}) not found on this machine; using "${eff}" instead.\n`);
+			vscode.window.setStatusBarMessage(`Solstice: ${want} CLI missing → using ${eff}`, 6000);
+			// Persist so the picker reflects reality; cfgTarget keeps it per-scope.
+			this.cfg().update("provider", eff, this.cfgTarget());
+			this.applyProviderToWebviews();
+		}
+		return true;
+	}
+
 	designElevationOn() {
 		return this.cfg().get("designElevation") === true;
 	}
@@ -947,7 +1029,8 @@ self.addEventListener("fetch", (e) => {
 		const cur = this.providerKey();
 		if (!this._failoverTried) this._failoverTried = new Set();
 		this._failoverTried.add(cur);
-		const next = chain.find((k) => !this._failoverTried.has(k));
+		// only fail over to a model whose CLI is actually installed here
+		const next = chain.find((k) => !this._failoverTried.has(k) && this.runnerAvailable(runnerFor(k)));
 		if (!next) {
 			// chain exhausted — fall back to the manual prompt (may include Claude
 			// if the user opted in) so the build isn't silently stuck.
@@ -1300,6 +1383,13 @@ self.addEventListener("fetch", (e) => {
 			this.failoverChain().includes(this.providerKey())) {
 			this.autoFailover("usage limit");
 		}
+		// A spawned CLI died with ENOENT ("Could not start the … CLI") — the
+		// binary vanished/was uninstalled mid-session. Fail over to an installed
+		// model rather than leaving the build stuck on a missing engine.
+		else if (method === "error" && params && params.error &&
+			/could not start|enoent|not found|no such file/i.test(params.error.message || "")) {
+			this.autoFailover("missing CLI");
+		}
 		if (SIDEBAR_FORWARDED.has(method) && (!tid || tid === this.threadId)) {
 			const p = isImageItem ? { ...params, item: this.withImageUri(params.item, this.webview) } : params;
 			this.post({ type: "notification", method, params: p });
@@ -1475,6 +1565,10 @@ self.addEventListener("fetch", (e) => {
 		// remember the last prompt so auto-failover can transparently re-run it
 		// on the next model in the chain after a quota/rate-limit error.
 		if (text) this._lastUserPrompt = text;
+		// Make sure the live provider actually has an installed CLI on THIS
+		// machine before we try to spawn it — otherwise switch to one that does,
+		// or show an install card. Prevents the silent ENOENT desktop failure.
+		if (!this.ensureRunnableProvider()) return;
 		const provider = this.providerKey();
 		const runner = runnerFor(provider);
 		// A spawned-CLI turn (grok/claude) is already running: never let send()
