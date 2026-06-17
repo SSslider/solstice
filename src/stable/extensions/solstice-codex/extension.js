@@ -303,6 +303,21 @@ class AgentController {
 		].join("\n");
 	}
 
+	// Cross-provider "act like a real agent" guidance — persistence, ground-truth
+	// tool use, planning, self-verification, and knowing when to ask. Injected into
+	// every preamble so Felix behaves like an agent, not a one-shot chat model.
+	agentBehavior() {
+		return [
+			"",
+			"## How to operate — you are an AGENT, not a one-shot chat model",
+			"- PERSIST: keep going until the user's request is FULLY done. Don't stop and hand back after a single step — plan the steps, execute every one, verify, then finish. If you hit uncertainty mid-task, research or deduce the most reasonable path and CONTINUE rather than stopping.",
+			"- GET GROUND TRUTH, don't guess: when unsure about a file, the project, or how a design/site looks, use your tools (read files, search/read/crawl the web, screenshot + describe the image). Never invent something you could verify.",
+			"- PLAN first on any multi-step task and keep the plan updated as you go (the IDE renders it live).",
+			"- SELF-VERIFY before saying done: run/preview what you built, screenshot the live result, VIEW the screenshot, compare it to the goal, and fix issues — including a mobile-width pass. Placeholders, console errors, or an unopened preview mean it is NOT done.",
+			"- ASK only when genuinely blocked: if the request is truly ambiguous or you're missing something essential you cannot reasonably infer (brand, required content/copy, a decision with real trade-offs), ask the user ONE short, specific question instead of guessing wrong. Don't ask about things you can decide sensibly yourself — proceed and note the assumption.",
+		].join("\n");
+	}
+
 	// ---- PWA app-shell scaffold --------------------------------------------
 	// App mode's tangible distinctiveness: generate a REAL, runnable multi-screen
 	// PWA app shell (no build step — plain HTML/CSS/JS so it runs straight in the
@@ -1071,9 +1086,9 @@ self.addEventListener("fetch", (e) => {
 			`- Dump a website's raw rendered HTML (prefer 'read' above unless you need exact markup): ${dom}`,
 			`- Sample frames from a video on any page (case-study scroll videos, domain-locked Vimeo embeds): ${shot.replace(" shot <url> <out.png>", ' videoframes <url> <outPrefix> [frames] [referrer]')}`,
 			"- Research workflow: when the user asks you to imitate/take inspiration from a site or find references, SEARCH for it, READ or CRAWL the top results, and SCROLLSHOT the best ones before designing — don't guess from memory.",
-			"- You cannot view images yourself. To study a screenshot or any image, subcontract vision to codex:",
-			'  codex exec --skip-git-repo-check -i <image.png> "Describe this design in exhaustive detail: layout, every section top-to-bottom, colors (hex if possible), typography, imagery style, spacing, mood."',
-			"  Always do this for every reference screenshot before designing, and for your own verification screenshots before declaring done.",
+			`- VIEW ANY IMAGE (you cannot see images yourself — this gives you a detailed text read of one): ${shot.replace(" shot <url> <out.png>", ' describe <image.png> ["what to focus on"]')}`,
+			"  Use it for every reference screenshot BEFORE designing, and for your own verification screenshots before declaring done. It routes to a vision model for you, so it works even though your chat model is text-only.",
+			`- Capture a design TOP-TO-BOTTOM in DESKTOP and MOBILE (Behance/Dribbble show both): desktop full-page → ${shot.replace(" shot <url> <out.png>", ' scrollshot <url> <outPrefix> [stops]')}; mobile full-page → ${shot.replace("shot <url> <out.png>", "shot <url> <out.png> 390x3000")}. Then 'describe' each to study layout/colors/typography in both viewports.`,
 			"- Generate images by subcontracting to codex (it has an image generation tool):",
 			'  codex exec --skip-git-repo-check --full-auto "Use your image generation tool to create: <detailed description>. Then copy the EXACT file you just generated (by its precise filename from ~/.codex/generated_images/ — never the most recent file, other jobs may write there concurrently) into <workspace>/public/images/<descriptive-name>.png"',
 			"  Verify the file exists in the workspace afterwards, and view it with codex vision to confirm it shows the right subject before using it.",
@@ -1081,6 +1096,7 @@ self.addEventListener("fetch", (e) => {
 			"- For multi-step builds, write a structured plan to .solstice/PLAN.md and keep it updated live — the IDE renders it as a visual timeline. Use this shape: group steps under `## Phase name` headings; each step is `1. [ ] Step title`; add an optional one-line `_short detail_` under a step; nest concrete sub-tasks as indented `   - [ ] sub-task`. Mark progress as you go: `[x]` done, `[~]` current, `[ ]` pending. Keep titles short and outcome-oriented.",
 			"- When deconstructing / analyzing / researching a design, website, or app: maintain DECONSTRUCT.md (or RESEARCH.md) in the workspace root and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end. The IDE renders this file live to the user as a research dashboard. Include as you go: what you examined so far, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, techniques you detected (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed the frames/screenshots you examine as images with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
+			this.agentBehavior(),
 			this.appModeGuidance(),
 			playbook ? "\n" + playbook : "",
 		].join("\n");
@@ -1107,6 +1123,7 @@ self.addEventListener("fetch", (e) => {
 			`- Sample frames from a video on any page (case-study scroll videos, domain-locked Vimeo embeds): ${shot.replace(" shot <url> <out.png>", ' videoframes <url> <outPrefix> [frames] [referrer]')}`,
 			"- Research workflow: when the user asks you to imitate/take inspiration from a site or find references, SEARCH for it, READ or CRAWL the top results, and SCROLLSHOT the best ones before designing — don't guess from memory.",
 			"- You CAN view images: open any screenshot/reference image with your Read tool and study it in exhaustive detail (layout, sections, colors with hex, typography, imagery style, spacing, mood). Always do this for every reference screenshot before designing, and for your own verification screenshots before declaring done.",
+			`- Capture a design TOP-TO-BOTTOM in DESKTOP and MOBILE (Behance/Dribbble show both): desktop full-page → ${shot.replace(" shot <url> <out.png>", ' scrollshot <url> <outPrefix> [stops]')}; mobile full-page → ${shot.replace("shot <url> <out.png>", "shot <url> <out.png> 390x3000")}. Open each with your Read tool to study both viewports.`,
 			"- Generate images by subcontracting to codex (it has an image generation tool):",
 			'  codex exec --skip-git-repo-check --full-auto "Use your image generation tool to create: <detailed description>. Then copy the EXACT file you just generated (by its precise filename from ~/.codex/generated_images/ — never the most recent file, other jobs may write there concurrently) into <workspace>/public/images/<descriptive-name>.png"',
 			"  Verify the file exists in the workspace afterwards, and view it with your Read tool to confirm it shows the right subject before using it.",
@@ -1114,6 +1131,7 @@ self.addEventListener("fetch", (e) => {
 			"- For multi-step builds, use your todo/plan tool and keep step statuses updated as you work — the IDE renders it as a live checklist.",
 			"- When deconstructing / analyzing / researching a design, website, or app: maintain DECONSTRUCT.md (or RESEARCH.md) in the workspace root and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end. The IDE renders this file live to the user as a research dashboard. Include as you go: what you examined so far, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, techniques you detected (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed the frames/screenshots you examine as images with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
+			this.agentBehavior(),
 			this.appModeGuidance(),
 			playbook ? "\n" + playbook : "",
 		].join("\n");
@@ -1396,11 +1414,13 @@ self.addEventListener("fetch", (e) => {
 			"  Replace mode 'shot' with: 'search \"<query>\" [count]' to discover URLs for any topic / design references (Awwwards, Behance, Dribbble); 'read <url>' to get a page's main content as clean readable text (best for research); 'crawl <url> [depth] [maxPages]' to walk same-domain pages (e.g. an Awwwards gallery); 'dom <url>' for raw HTML; 'videoframes <url> <outPrefix> [frames] [referrer]' to sample frames from a video on the page.",
 			"  Research workflow: when asked to imitate/take inspiration from a site or find references, SEARCH, then READ or CRAWL the top results, and screenshot the best before designing — don't guess from memory.",
 			"  After taking a screenshot, ALWAYS open it with your view_image tool to study layout, colors, typography and content. Use this whenever the user asks to inspect, analyze or imitate a website or design (e.g. Behance/Dribbble references).",
+			"  Capture designs TOP-TO-BOTTOM in DESKTOP and MOBILE: desktop full-page via 'scrollshot <url> <outPrefix> [stops]', mobile full-page via 'shot <url> <out.png> 390x3000'; open each with view_image to study both viewports.",
 			"- Image generation: you can generate images; afterwards copy the generated file from your image output directory into the workspace with a proper name and reference it from the site.",
 			"- MANDATORY — real imagery, never placeholders: every page MUST use real images. NEVER leave gray boxes, solid-color rectangles, `placeholder.com` / `via.placeholder` / `dummyimage` / `picsum.photos` / `unsplash.com/random` URLs, empty `<img>`, or `TODO image` comments. Generate a real image for EVERY slot the design needs (hero, gallery, product, avatar, background) and save it into the workspace before finishing — placeholders mean the build is NOT done.",
 			"- For any multi-step build task, first create a plan with your plan tool and keep step statuses updated as you work.",
 			"- When deconstructing / analyzing / researching a design, website, or app: maintain DECONSTRUCT.md (or RESEARCH.md) in the workspace root and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end. The IDE renders this file live to the user as a research dashboard. Include as you go: what you examined so far, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, techniques you detected (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed the frames/screenshots you examine as images with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
+			this.agentBehavior(),
 			this.appModeGuidance(),
 			playbook ? "\n" + playbook : "",
 		].join("\n");

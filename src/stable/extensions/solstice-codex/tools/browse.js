@@ -347,8 +347,39 @@ async function crawl(bin, startUrl, depth, maxPages) {
 	});
 }
 
+// Model-agnostic image viewing. The default chat model (composer-2.5/grok) is
+// text-only and cannot see images, so "look at this Behance design" must be routed
+// to a vision-capable model. This shells out to codex (native `-i` vision) and
+// falls back to claude (Read tool), returning a text description either way — so
+// image viewing works regardless of which chat model drives the turn.
+function describeImage(imagePath, question) {
+	const abs = path.resolve(imagePath);
+	if (!fs.existsSync(abs)) { console.error(`describe: file not found: ${abs}`); process.exit(3); }
+	const q = question || "Describe this design/screenshot in exhaustive detail: overall layout and every section top-to-bottom, exact colors (hex where possible), typography, imagery style, spacing, components, and the visual mood. If it shows both mobile and desktop views, describe each.";
+	const env = { ...process.env };
+	delete env.ANTHROPIC_API_KEY; delete env.ANTHROPIC_BASE_URL; delete env.OPENAI_API_KEY; delete env.XAI_API_KEY;
+	const opts = { encoding: "utf8", env, timeout: 180000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] };
+	// 1) codex — native image vision
+	try {
+		const out = execFileSync("codex", ["exec", "--skip-git-repo-check", "--color", "never", "-i", abs, q], opts);
+		if (out && out.trim()) { process.stdout.write(out); return; }
+	} catch (e) { if (e && e.stdout && String(e.stdout).trim()) { process.stdout.write(String(e.stdout)); return; } }
+	// 2) claude — Read tool
+	try {
+		const out = execFileSync("claude", ["--print", "--allowedTools", "Read", "-p", `Use your Read tool to open the image at ${abs}, then ${q}`], opts);
+		if (out && out.trim()) { process.stdout.write(out); return; }
+	} catch (e) { if (e && e.stdout && String(e.stdout).trim()) { process.stdout.write(String(e.stdout)); return; } }
+	console.error("describe failed: no vision provider (codex or claude) could view the image. Ensure one is installed and signed in.");
+	process.exit(1);
+}
+
 function main() {
 	const [mode, url, out, size, extra] = process.argv.slice(2);
+	if (mode === "describe") {
+		if (!url) { console.error("usage: browse.js describe <image.png> [question]"); process.exit(2); }
+		describeImage(url, process.argv.slice(4).join(" ").trim());
+		return;
+	}
 	if (!mode || !url || ((mode === "shot" || mode === "scrollshot" || mode === "videoframes") && !out)) {
 		console.error("usage:\n  browse.js search <query> [count]            web search → ranked title/url/snippet list (no API key)\n  browse.js read <url>                        page main content as clean readable text/markdown\n  browse.js crawl <url> [depth] [maxPages]    same-site crawl → text of each page\n  browse.js shot <url> <out.png> [WxH]        screenshot\n  browse.js scrollshot <url> <outPrefix> [stops]\n  browse.js videoframes <url> <outPrefix> [frames] [referrer]\n  browse.js dom <url>                         raw rendered HTML");
 		process.exit(2);
