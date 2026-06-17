@@ -62,20 +62,27 @@ set +e
 
 for FILE in *; do
   if [[ -f "${FILE}" ]] && [[ "${FILE}" != *.sha1 ]] && [[ "${FILE}" != *.sha256 ]]; then
+    # The win32 build emits only a .sha256 (no .sha1); macOS emits both. Pass
+    # only the checksum files that actually exist, or `gh release upload` aborts
+    # with "no matches found for <FILE>.sha1" and the whole publish step fails.
+    SUMS=()
+    [[ -f "${FILE}.sha1" ]] && SUMS+=( "${FILE}.sha1" )
+    [[ -f "${FILE}.sha256" ]] && SUMS+=( "${FILE}.sha256" )
+
     echo "::group::Uploading '${FILE}' at $( date "+%T" )"
-    gh release upload --repo "${ASSETS_REPOSITORY}" "${RELEASE_VERSION}" "${FILE}" "${FILE}.sha1" "${FILE}.sha256"
+    gh release upload --repo "${ASSETS_REPOSITORY}" "${RELEASE_VERSION}" "${FILE}" "${SUMS[@]}"
 
     EXIT_STATUS=$?
     echo "exit: ${EXIT_STATUS}"
 
     if (( "${EXIT_STATUS}" )); then
       for (( i=0; i<10; i++ )); do
-        github-release delete --owner "${REPOSITORY_OWNER}" --repo "${REPOSITORY_NAME}" --tag "${RELEASE_VERSION}" "${FILE}" "${FILE}.sha1" "${FILE}.sha256"
+        github-release delete --owner "${REPOSITORY_OWNER}" --repo "${REPOSITORY_NAME}" --tag "${RELEASE_VERSION}" "${FILE}" "${SUMS[@]}"
 
         sleep $(( 15 * (i + 1)))
 
         echo "RE-Uploading '${FILE}' at $( date "+%T" )"
-        gh release upload --repo "${ASSETS_REPOSITORY}" "${RELEASE_VERSION}" "${FILE}" "${FILE}.sha1" "${FILE}.sha256"
+        gh release upload --repo "${ASSETS_REPOSITORY}" "${RELEASE_VERSION}" "${FILE}" "${SUMS[@]}"
 
         EXIT_STATUS=$?
         echo "exit: ${EXIT_STATUS}"
@@ -89,7 +96,7 @@ for FILE in *; do
       if (( "${EXIT_STATUS}" )); then
         echo "'${FILE}' hasn't been uploaded!"
 
-        github-release delete --owner "${REPOSITORY_OWNER}" --repo "${REPOSITORY_NAME}" --tag "${RELEASE_VERSION}" "${FILE}" "${FILE}.sha1" "${FILE}.sha256"
+        github-release delete --owner "${REPOSITORY_OWNER}" --repo "${REPOSITORY_NAME}" --tag "${RELEASE_VERSION}" "${FILE}" "${SUMS[@]}"
 
         exit 1
       fi
