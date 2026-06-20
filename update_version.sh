@@ -70,6 +70,15 @@ generateJson() {
     gh release download --repo "${ASSETS_REPOSITORY}" "${RELEASE_VERSION}" --dir "assets" --pattern "${ASSET_NAME}*"
   fi
 
+  # The build/release step does not always emit the checksum sidecars; derive
+  # them from the asset itself so the OTA manifest can always be generated.
+  if [[ ! -f "assets/${ASSET_NAME}.sha1" ]]; then
+    ( cd assets && sha1sum "${ASSET_NAME}" > "${ASSET_NAME}.sha1" )
+  fi
+  if [[ ! -f "assets/${ASSET_NAME}.sha256" ]]; then
+    ( cd assets && sha256sum "${ASSET_NAME}" > "${ASSET_NAME}.sha256" )
+  fi
+
   sha1hash=$( awk '{ print $1 }' "assets/${ASSET_NAME}.sha1" )
   sha256hash=$( awk '{ print $1 }' "assets/${ASSET_NAME}.sha256" )
 
