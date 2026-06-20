@@ -956,15 +956,46 @@ self.addEventListener("fetch", (e) => {
 		const cur = this.providerKey();
 		const items = this.modelChoices().map((it) => (it.key === cur ? { ...it, label: "$(check) " + it.label } : it));
 		const pick = await vscode.window.showQuickPick(items, { placeHolder: "Solstice agent model" });
-		if (!pick) return;
+		if (!pick || pick.key === cur) return;
+		if (this.agentBusy()) {
+			vscode.window.showWarningMessage("Solstice: finish or stop the current build before switching the model.");
+			return;
+		}
 		await this.cfg().update("provider", pick.key, this.cfgTarget());
+		this.resetAgentSession();
 		this.applyProviderToWebviews();
 	}
 
+	// Tear down the running agent session so the NEXT prompt spawns the freshly
+	// selected model/runner cleanly. The previous GrokProvider was bound to the
+	// old model; without this, switching models between prompts didn't take.
+	resetAgentSession() {
+		try { if (this.grok && typeof this.grok.dispose === "function") this.grok.dispose(); } catch { }
+		try { if (this.grok && typeof this.grok.stop === "function") this.grok.stop(); } catch { }
+		this.grok = null;
+		this.threadId = null;
+		this._failoverTried = null;
+	}
+
+	// True while a build/turn is actively running (don't switch model mid-build).
+	agentBusy() {
+		const prov = runnerFor(this.providerKey()) === "claude" ? this.claude : this.grok;
+		return !!(prov && prov.busy);
+	}
+
 	// Inline picker (bottom of chat panel) → set the model directly, no quick-pick.
+	// Switching is allowed BETWEEN prompts (not mid-build): we reset the session
+	// so the newly-selected model/runner takes effect on the next send.
 	async setModel(key) {
 		if (!key || !this.modelChoices().some((it) => it.key === key)) return;
+		if (key === this.providerKey()) return;
+		if (this.agentBusy()) {
+			vscode.window.showWarningMessage("Solstice: finish or stop the current build before switching the model.");
+			this.applyProviderToWebviews();
+			return;
+		}
 		await this.cfg().update("provider", key, this.cfgTarget());
+		this.resetAgentSession();
 		this.applyProviderToWebviews();
 	}
 
