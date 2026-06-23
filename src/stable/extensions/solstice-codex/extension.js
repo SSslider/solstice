@@ -1447,6 +1447,7 @@ self.addEventListener("fetch", (e) => {
 			(params.item.type === "imageGeneration" || params.item.type === "imageView") &&
 			params.item.status !== "failed";
 		if (isImageItem) this.openImage(this.imageAbsPath(params.item));
+		if (method === "item/completed" && params.item) this.maybePushBrowser(params.item); // #3: live Agent Browser
 		if (method === "error" && params && params.error &&
 			/usage limit|rate limit|quota/i.test(params.error.message || "") &&
 			this.failoverChain().includes(this.providerKey())) {
@@ -1819,6 +1820,50 @@ self.addEventListener("fetch", (e) => {
 			this.researchPanel.webview.onDidReceiveMessage((m) => { if (m.type === "ready") this.pushResearch(); });
 			this.researchPanel.onDidDispose(() => { this.researchPanel = null; });
 		}
+	}
+
+	// ---- live Agent Browser (#3): watch Felix browse the web, like Antigravity.
+	// The web tools (browse.js shot/read/crawl/search) run headless; this surfaces
+	// every page the agent visits — its URL + the screenshot it captured — LIVE in
+	// a browser-style panel, so the user watches the research/analysis happen.
+	maybePushBrowser(item) {
+		if (!item || item.type !== "commandExecution") return;
+		const cmd = String(item.command || (item.changes && item.changes[0] && item.changes[0].command) || "");
+		if (!/browse\.js/.test(cmd)) return;
+		const m = cmd.match(/browse\.js"?\s+(shot|read|crawl|search)\s+"?([^"\s]+)"?(?:\s+"?([^"\s]+\.png)"?)?/i);
+		if (!m) return;
+		const action = m[1].toLowerCase();
+		const arg = m[2];
+		const out = m[3];
+		this.openBrowserPanel();
+		if (!this.browserPanel) return;
+		let shot = null;
+		if (out) {
+			const abs = path.isAbsolute(out) ? out : path.join(workspaceCwd() || "", out);
+			try { if (fs.statSync(abs).isFile()) shot = this.browserPanel.webview.asWebviewUri(vscode.Uri.file(abs)).toString(); } catch { }
+		}
+		this.browserPanel.webview.postMessage({
+			type: "page", action,
+			url: action === "search" ? ("חיפוש: " + arg) : arg,
+			shot, time: Date.now(),
+		});
+		this.browserPanel.reveal(vscode.ViewColumn.One, true);
+	}
+	openBrowserPanel() {
+		if (this.browserPanel) return;
+		this.browserPanel = vscode.window.createWebviewPanel(
+			"solstice.browser", "🌐 Agent Browser",
+			{ viewColumn: vscode.ViewColumn.One, preserveFocus: true },
+			{
+				enableScripts: true, retainContextWhenHidden: true,
+				localResourceRoots: [
+					vscode.Uri.joinPath(this.context.extensionUri, "media"),
+					...(workspaceCwd() ? [vscode.Uri.file(workspaceCwd())] : []),
+				],
+			}
+		);
+		this.browserPanel.webview.html = mediaHtml(this.browserPanel.webview, this.context.extensionUri, "browser.js", "browser.css");
+		this.browserPanel.onDidDispose(() => { this.browserPanel = null; });
 	}
 
 	// ---- center-editor plan view (high-quality visual decomposition) -------
