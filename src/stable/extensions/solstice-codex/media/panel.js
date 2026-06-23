@@ -15,7 +15,7 @@
 			<div id="brand">
 				<span class="brandMark" id="felixMark"><span class="felixGlow"></span><span class="felixBody"></span><span class="felixSpark"></span></span>
 				<div class="brandText">
-					<div class="brandName">Solstice <span id="status"><span id="dot" class="dot"></span></span></div>
+					<div class="brandName">Felix <span id="status"><span id="dot" class="dot"></span></span></div>
 					<div class="brandModel" id="brandModel">—</div>
 				</div>
 			</div>
@@ -23,8 +23,11 @@
 		</div>
 		<div id="messages"></div>
 		<div id="composer">
+			<div id="attachBar" class="attachBar hidden"></div>
 			<textarea id="input" rows="3" placeholder="Describe a task for the agent…"></textarea>
+			<input id="fileInput" type="file" accept="image/*" multiple hidden />
 			<div id="composerBar">
+				<button id="attachBtn" class="btn attach" title="צרף תמונה/סקרינשוט לניתוח (או גרור/הדבק)" aria-label="Attach image">📎</button>
 				<button id="modelBtn" class="pickBtn" title="Select agent model">⌬ <span id="model">—</span> <span class="caret">▾</span></button>
 				<div id="buildMode" class="buildMode" title="מה בונים? אתר אינטרנט או אפליקציה">
 					<button id="modeSite" class="modeOpt active" data-mode="site">🌐 אתר</button>
@@ -259,20 +262,62 @@
 		if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 	});
 
+	// ---------- image / screenshot attachments (user → agent input) ----------
+	// Lets the user hand the agent images to analyze/add to the site, or a
+	// screenshot of a problem they see — via the 📎 button, drag-drop, or paste.
+	const attachBar = document.getElementById("attachBar");
+	const attachBtn = document.getElementById("attachBtn");
+	const fileInput = document.getElementById("fileInput");
+	let pendingAttachments = []; // [{ name, dataUrl }]
+	function renderAttachments() {
+		attachBar.innerHTML = "";
+		if (!pendingAttachments.length) { attachBar.classList.add("hidden"); return; }
+		attachBar.classList.remove("hidden");
+		pendingAttachments.forEach((a, i) => {
+			const chip = el("div", "attachChip");
+			const img = document.createElement("img");
+			img.src = a.dataUrl; img.alt = a.name; img.title = a.name;
+			const x = el("button", "attachX", "✕");
+			x.addEventListener("click", () => { pendingAttachments.splice(i, 1); renderAttachments(); });
+			chip.appendChild(img); chip.appendChild(x);
+			attachBar.appendChild(chip);
+		});
+	}
+	function addFiles(list) {
+		Array.from(list || []).filter((f) => f.type && f.type.startsWith("image/")).forEach((f) => {
+			const r = new FileReader();
+			r.onload = () => { pendingAttachments.push({ name: f.name || "screenshot.png", dataUrl: String(r.result) }); renderAttachments(); };
+			r.readAsDataURL(f);
+		});
+	}
+	attachBtn.addEventListener("click", () => fileInput.click());
+	fileInput.addEventListener("change", () => { addFiles(fileInput.files); fileInput.value = ""; });
+	inputEl.addEventListener("paste", (e) => {
+		const items = (e.clipboardData && e.clipboardData.items) || [];
+		const imgs = [];
+		for (const it of items) { if (it.kind === "file" && it.type && it.type.startsWith("image/")) { const f = it.getAsFile(); if (f) imgs.push(f); } }
+		if (imgs.length) { e.preventDefault(); addFiles(imgs); }
+	});
+	["dragenter", "dragover"].forEach((ev) => composerEl.addEventListener(ev, (e) => { e.preventDefault(); composerEl.classList.add("dragging"); }));
+	["dragleave", "drop"].forEach((ev) => composerEl.addEventListener(ev, (e) => { e.preventDefault(); composerEl.classList.remove("dragging"); }));
+	composerEl.addEventListener("drop", (e) => { if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files); });
+
 	function send() {
 		const shown = inputEl.value.trim();
-		if (!shown) return;
+		const atts = pendingAttachments.slice();
+		if (!shown && !atts.length) return;
 		const steering = busy;            // a turn is already running → steer it
 		const pick = pendingPick;
 		const text = pick ? pickPrefix(pick) + "\n" + shown : shown;
 		inputEl.value = "";
-		addUserMessage(shown, { steer: steering, pick });
+		pendingAttachments = []; renderAttachments();
+		addUserMessage(shown || "🖼 תמונה צורפה", { steer: steering, pick });
 		clearPick();
 		if (steering) {
-			vscode.postMessage({ type: "steer", text });
+			vscode.postMessage({ type: "steer", text, attachments: atts });
 		} else {
 			setBusy(true);
-			vscode.postMessage({ type: "send", text });
+			vscode.postMessage({ type: "send", text, attachments: atts });
 		}
 	}
 

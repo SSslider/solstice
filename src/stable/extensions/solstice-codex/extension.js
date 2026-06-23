@@ -303,6 +303,15 @@ class AgentController {
 		}
 	}
 
+	// Keep the CENTER live preview in sync after EVERY turn — not just the first.
+	// If a site is being served, open the preview if it was closed, else reload it
+	// so the user always sees the latest build per prompt. (Thomas #1, 22/06.)
+	refreshPreview() {
+		if (!this.previewUrl) return;
+		if (!this.previewPanel) { this.openPreviewPanel(this.previewUrl, this.defaultDevice()); return; }
+		if (this.previewReady) this.postPreview({ type: "load", url: this.previewUrl, device: this.defaultDevice() });
+	}
+
 	// Extra guidance appended to the build preamble when the user is in App mode,
 	// so a "build an app" request yields a real mobile-first installable app
 	// (screens + navigation + manifest) rather than a marketing website.
@@ -337,6 +346,7 @@ class AgentController {
 			"- PLAN first on any multi-step task and keep the plan updated as you go (the IDE renders it live).",
 			"- SELF-VERIFY before saying done: run/preview what you built, screenshot the live result, VIEW the screenshot, compare it to the goal, and fix issues — including a mobile-width pass. Placeholders, console errors, or an unopened preview mean it is NOT done.",
 			"- ASK only when genuinely blocked: if the request is truly ambiguous or you're missing something essential you cannot reasonably infer (brand, required content/copy, a decision with real trade-offs), ask the user ONE short, specific question instead of guessing wrong. Don't ask about things you can decide sensibly yourself — proceed and note the assumption.",
+			"- KNOW YOUR IDE WINDOWS: the CENTER window is a LIVE PREVIEW of the running site/app exactly as the user sees it (plan and research dashboards also render there); YOU are the RIGHT panel (this chat). The center preview AUTO-REFRESHES after every one of your turns, so the user sees your latest changes each prompt. If the user says \"the center/the site isn't updated\", it means the live preview isn't reflecting your work — ensure the dev server is running and your file changes are saved so the center shows them; the IDE will reload it. When the user SELECTS a component/section in the live preview, you are handed that element's identity (tag/id/class/text/path) — scope your change to THAT specific element.",
 		].join("\n");
 	}
 
@@ -754,6 +764,33 @@ self.addEventListener("fetch", (e) => {
 		vscode.commands.executeCommand("vscode.open", vscode.Uri.file(abs), {
 			viewColumn: vscode.ViewColumn.One, preview: true, preserveFocus: true,
 		}).then(undefined, () => { });
+	}
+
+	// Persist user-attached images (composer 📎 / paste / drag-drop) into the
+	// workspace so the agent can read & analyze them, and append a reference to
+	// the prompt. Lets the user hand the agent a reference image to add to the
+	// site, or a screenshot of a bug to fix. Returns the (augmented) text.
+	async withAttachments(text, attachments) {
+		const list = Array.isArray(attachments) ? attachments : [];
+		if (!list.length) return text;
+		const root = workspaceCwd();
+		if (!root) return text;
+		const dir = path.join(root, ".solstice", "attachments");
+		try { fs.mkdirSync(dir, { recursive: true }); } catch { }
+		const saved = [];
+		for (let i = 0; i < list.length; i++) {
+			const a = list[i] || {};
+			const m = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/.exec(String(a.dataUrl || ""));
+			if (!m) continue;
+			const ext = (m[1].split("/")[1] || "png").replace("+xml", "").replace("jpeg", "jpg");
+			const safe = String(a.name || "image").replace(/\.[^.]*$/, "").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40) || "image";
+			const abs = path.join(dir, `${Date.now()}_${i}_${safe}.${ext}`);
+			try { fs.writeFileSync(abs, Buffer.from(m[2], "base64")); saved.push(abs); } catch { }
+		}
+		if (!saved.length) return text;
+		const rels = saved.map((p) => path.relative(root, p));
+		const note = `\n\n[The user attached ${saved.length} image(s) for you to use: ${rels.join(", ")}. Open and analyze them directly, then act — incorporate into the site, or fix the issue shown in the screenshot.]`;
+		return (text || "Please look at the attached image(s).") + note;
 	}
 
 	// Voice dictation: webview records mic audio → Groq Whisper → text back into the composer.
@@ -1386,7 +1423,7 @@ self.addEventListener("fetch", (e) => {
 			const th = this.upsertThread({ id: tid });
 			th.activeTurnId = null;
 			th.status = "idle";
-			if (tid === this.threadId) { this.markBusy("_builder", false); this.postPreview({ type: "building", on: false }); this.fleetFlow("done"); this._failoverTried = null; }
+			if (tid === this.threadId) { this.markBusy("_builder", false); this.postPreview({ type: "building", on: false }); this.fleetFlow("done"); this._failoverTried = null; this.refreshPreview(); }
 			this.pushThreads();
 			if (tid === this.threadId) this.drainSteerQueue();
 		} else if (method === "turn/diff/updated" && tid) {
@@ -2594,7 +2631,10 @@ self.addEventListener("fetch", (e) => {
 				if (!uri) return this.postFleetActivity(agentId, "error", "נתיב לא חוקי");
 				this.postFleetActivity(agentId, "working", "פותח " + this.relPath(uri));
 				const doc = await vscode.workspace.openTextDocument(uri);
-				await vscode.window.showTextDocument(doc, { preview: true, viewColumn: vscode.ViewColumn.Beside });
+				// preserveFocus: agent-initiated open during a build must NOT steal focus
+				// from the composer — otherwise the user is kicked out mid-typing every
+				// time the agent opens a file. (Thomas focus-loss bug, 22/06.)
+				await vscode.window.showTextDocument(doc, { preview: true, viewColumn: vscode.ViewColumn.Beside, preserveFocus: true });
 				return;
 			}
 			if (action === "write" || action === "edit") {
@@ -2606,7 +2646,9 @@ self.addEventListener("fetch", (e) => {
 				this.postFleetActivity(agentId, "working", "כותב " + rel);
 				await this.writeWorkspaceFile(uri, String(f.content || ""));
 				const doc = await vscode.workspace.openTextDocument(uri);
-				await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+				// preserveFocus: see above — agent writing a file mid-build must not
+				// pull focus out of the composer while the user is typing.
+				await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside, preserveFocus: true });
 				this.postFleetActivity(agentId, "replied", "עודכן " + rel);
 				return;
 			}
@@ -2923,8 +2965,8 @@ class AgentViewProvider {
 						this.controller.applyAutonomyToWebviews();
 						this.controller.applyProviderToWebviews();
 						break;
-					case "send": await this.controller.send(msg.text); break;
-						case "steer": await this.controller.steer(this.controller.threadId, msg.text); break;
+					case "send": await this.controller.send(await this.controller.withAttachments(msg.text, msg.attachments)); break;
+						case "steer": await this.controller.steer(this.controller.threadId, await this.controller.withAttachments(msg.text, msg.attachments)); break;
 					case "login": await this.controller.login(); break;
 					case "approval": this.controller.resolveApproval(msg.key, msg.decision); break;
 					case "interrupt": await this.controller.interrupt(); break;

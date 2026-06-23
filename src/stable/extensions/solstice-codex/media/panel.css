@@ -44,27 +44,32 @@ body {
    Working: faster float, brighter pulsing glow, an orbiting spark. The .working
    class is toggled by setBusy() off the existing turn/started→completed signal. */
 .brandMark {
-	position: relative; width: 30px; height: 30px; flex: 0 0 auto;
+	position: relative; width: 48px; height: 48px; flex: 0 0 auto;
 	display: grid; place-items: center; background: none; box-shadow: none;
 }
 .felixGlow {
-	position: absolute; inset: -4px; border-radius: 50%;
-	background: radial-gradient(circle, rgba(155,108,255,0.7), rgba(155,108,255,0) 70%);
-	filter: blur(2px); opacity: 0.34; animation: felixGlowIdle 3.6s ease-in-out infinite;
+	position: absolute; inset: -6px; border-radius: 50%;
+	background: radial-gradient(circle, rgba(155,108,255,0.75), rgba(155,108,255,0) 70%);
+	filter: blur(3px); opacity: 0.4; animation: felixGlowIdle 3.2s ease-in-out infinite;
 }
 .felixBody {
-	position: relative; width: 30px; height: 30px; border-radius: 50%;
+	position: relative; width: 48px; height: 48px; border-radius: 50%;
 	background-image: url('felix-creature.png'); background-repeat: no-repeat;
 	background-size: 185%; background-position: 50% 26%;
-	animation: felixFloatIdle 3.6s ease-in-out infinite;
+	animation: felixFloatIdle 3.2s ease-in-out infinite;
 }
 .felixSpark {
 	position: absolute; top: 50%; left: 50%; width: 4px; height: 4px; border-radius: 50%;
 	background: #bdfcff; box-shadow: 0 0 6px #7af0ff; opacity: 0;
 }
 /* Idle: a gentle bob so Felix always looks alive. */
-@keyframes felixFloatIdle { 0%,100% { transform: translateY(0) scale(1) rotate(0); } 50% { transform: translateY(-4px) scale(1.06) rotate(-3deg); } }
-@keyframes felixGlowIdle { 0%,100% { opacity: 0.3; } 50% { opacity: 0.55; } }
+@keyframes felixFloatIdle {
+	0%,100% { transform: translateY(0) scale(1) rotate(0); }
+	25% { transform: translate(2px,-4px) scale(1.05) rotate(3deg); }
+	50% { transform: translateY(-7px) scale(1.09) rotate(-4deg); }
+	75% { transform: translate(-2px,-4px) scale(1.05) rotate(3deg); }
+}
+@keyframes felixGlowIdle { 0%,100% { opacity: 0.32; } 50% { opacity: 0.62; } }
 /* Working: pronounced, clearly-visible motion — bigger float, side-to-side
    sway, a wobble and a stronger scale pulse, plus a visibly orbiting spark and
    brighter pulsing glow. Tuned so Felix obviously "comes alive" while thinking. */
@@ -86,7 +91,7 @@ body {
 }
 .brandText { min-width: 0; line-height: 1.2; }
 .brandName {
-	font-size: 12.5px; font-weight: 700; letter-spacing: 0.2px;
+	font-size: 15px; font-weight: 800; letter-spacing: 0.2px;
 	display: flex; align-items: center; gap: 6px;
 }
 .brandModel {
@@ -546,3 +551,13 @@ details.diffFile[open] > .diffSum::before { content: "▾"; }
 	border: 1px solid color-mix(in srgb, var(--sol-accent) 26%, transparent); }
 .wCardTitle { font-size: 13.5px; font-weight: 640; letter-spacing: -0.2px; }
 .wCardSub { font-size: 11px; color: var(--vscode-descriptionForeground); margin-top: 2px; }
+
+/* ---------- image / screenshot attachments (user → agent input) ---------- */
+.attachBar { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 2px 2px; }
+.attachBar.hidden { display: none; }
+.attachChip { position: relative; width: 52px; height: 52px; border-radius: 8px; overflow: hidden; border: 1px solid var(--sol-line); background: var(--sol-surface); }
+.attachChip img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.attachChip .attachX { position: absolute; top: 1px; right: 1px; width: 16px; height: 16px; line-height: 14px; padding: 0; border-radius: 50%; border: none; background: rgba(0,0,0,0.62); color: #fff; font-size: 10px; cursor: pointer; }
+.attachChip .attachX:hover { background: rgba(248,81,73,0.9); }
+.btn.attach { background: transparent; }
+#composer.dragging { outline: 2px dashed var(--sol-accent); outline-offset: -3px; border-radius: 10px; }

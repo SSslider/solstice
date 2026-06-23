@@ -37,29 +37,32 @@ const SELECT_ENDPOINT = "/__solstice/select";
 // armed, outlines the element under the cursor and POSTs a description of the
 // clicked element back to the preview server. Mirrors the Lovable/Genesis
 // click-to-edit picker, adapted to run fully inside the previewed page.
+// Lovable-grade picker: overlay boxes drawn in the page (no source mutation),
+// HOVER highlight (cyan) + persistent SELECTION (purple) with a labeled badge,
+// a clickable ancestor BREADCRUMB to retarget the selection up/down the tree,
+// and MULTI-SELECT (Cmd/Ctrl-click). "Edit" sends the selection(s) to the agent.
 const SELECT_SCRIPT = `<script data-solstice-select>
 (function () {
   if (window.__solsticeSelect) return;
   window.__solsticeSelect = true;
   var ENDPOINT = ${JSON.stringify(SELECT_ENDPOINT)};
-  var active = false, hovered = null, prevOutline = "";
+  var active = false, selected = [], selBoxes = [];
+  var Z = 2147483600;
 
-  var btn = document.createElement("button");
+  function mk(css) { var d = document.createElement("div"); d.setAttribute("data-solstice-ui", "1"); d.style.cssText = css; return d; }
+  function isUI(el) { return !el || !el.closest || !!el.closest("[data-solstice-ui]"); }
+
+  var bar = mk("position:fixed;top:12px;right:12px;z-index:" + (Z + 47) + ";display:flex;gap:6px;font:600 12px/1 ui-sans-serif,system-ui,sans-serif;");
+  var btn = document.createElement("button"); btn.setAttribute("data-solstice-ui", "1");
   btn.textContent = "\u2715 Select";
-  btn.setAttribute("data-solstice-ui", "1");
-  btn.style.cssText = "position:fixed;top:12px;right:12px;z-index:2147483647;" +
-    "font:600 12px/1 ui-sans-serif,system-ui,sans-serif;padding:8px 12px;" +
-    "border-radius:999px;border:1px solid rgba(0,0,0,.15);cursor:pointer;" +
-    "background:#111;color:#fff;box-shadow:0 2px 8px rgba(0,0,0,.25);";
+  btn.style.cssText = "padding:8px 12px;border-radius:999px;border:1px solid rgba(0,0,0,.15);cursor:pointer;background:#111;color:#fff;box-shadow:0 2px 8px rgba(0,0,0,.25);font:inherit;";
+  var editBtn = document.createElement("button"); editBtn.setAttribute("data-solstice-ui", "1");
+  editBtn.textContent = "\u270f\ufe0f Edit";
+  editBtn.style.cssText = "padding:8px 12px;border-radius:999px;border:none;cursor:pointer;background:#a855f7;color:#fff;box-shadow:0 2px 8px rgba(0,0,0,.25);font:inherit;display:none;";
+  bar.appendChild(btn); bar.appendChild(editBtn);
 
-  var tip = document.createElement("div");
-  tip.setAttribute("data-solstice-ui", "1");
-  tip.style.cssText = "position:fixed;z-index:2147483646;pointer-events:none;" +
-    "font:500 11px/1.3 ui-monospace,monospace;padding:4px 7px;border-radius:6px;" +
-    "background:#34d399;color:#06231a;display:none;max-width:60vw;white-space:nowrap;" +
-    "overflow:hidden;text-overflow:ellipsis;box-shadow:0 1px 4px rgba(0,0,0,.3);";
-
-  function isUI(el) { return !el || (el.getAttribute && el.getAttribute("data-solstice-ui")); }
+  var hoverBox = mk("position:fixed;pointer-events:none;z-index:" + (Z + 40) + ";border:2px solid #38bdf8;border-radius:4px;display:none;box-shadow:0 0 0 1px rgba(255,255,255,.35) inset;");
+  var crumb = mk("position:fixed;left:12px;bottom:12px;z-index:" + (Z + 46) + ";display:none;flex-wrap:wrap;gap:4px;max-width:82vw;font:600 11px/1 ui-monospace,monospace;");
 
   function describe(el) {
     var classes = (typeof el.className === "string" ? el.className : "")
@@ -79,65 +82,91 @@ const SELECT_SCRIPT = `<script data-solstice-select>
       src: el.getAttribute ? (el.getAttribute("src") || "") : "",
     };
   }
+  function rectOf(el) { var r = el.getBoundingClientRect(); return { l: r.left, t: r.top, w: r.width, h: r.height }; }
+  function nameOf(d) { return d.tag + (d.id ? "#" + d.id : "") + (d.classes ? "." + d.classes.split(/\\s+/)[0] : ""); }
 
-  function clearHover() {
-    if (hovered) { try { hovered.style.outline = prevOutline; } catch (e) {} }
-    hovered = null; tip.style.display = "none";
+  function drawSel() {
+    selBoxes.forEach(function (b) { b.remove(); }); selBoxes = [];
+    selected.forEach(function (el) {
+      var r = rectOf(el), d = describe(el);
+      var box = mk("position:fixed;pointer-events:none;z-index:" + (Z + 41) + ";border:2px solid #a855f7;border-radius:4px;");
+      box.style.left = r.l + "px"; box.style.top = r.t + "px"; box.style.width = r.w + "px"; box.style.height = r.h + "px";
+      var badge = mk("position:absolute;left:-2px;top:-22px;background:#a855f7;color:#fff;padding:3px 7px;border-radius:5px 5px 5px 0;font:600 11px/1 ui-monospace,monospace;white-space:nowrap;");
+      badge.textContent = nameOf(d); box.appendChild(badge);
+      document.body.appendChild(box); selBoxes.push(box);
+    });
+    editBtn.style.display = selected.length ? "block" : "none";
+    editBtn.textContent = "\u270f\ufe0f Edit" + (selected.length > 1 ? " (" + selected.length + ")" : "");
+    drawCrumb();
   }
+  function drawCrumb() {
+    crumb.innerHTML = "";
+    var el = selected[selected.length - 1];
+    if (!el) { crumb.style.display = "none"; return; }
+    var chain = [], n = el, hops = 0;
+    while (n && n.tagName && hops < 6) { chain.unshift(n); n = n.parentElement; hops++; }
+    chain.forEach(function (node, i) {
+      var c = document.createElement("button"); c.setAttribute("data-solstice-ui", "1");
+      c.textContent = nameOf(describe(node));
+      c.style.cssText = "pointer-events:auto;cursor:pointer;border:none;color:#fff;padding:4px 7px;border-radius:5px;font:inherit;background:" + (node === el ? "#a855f7" : "rgba(20,20,30,.85)") + ";";
+      c.addEventListener("click", function (ev) { ev.preventDefault(); ev.stopPropagation(); selected = [node]; drawSel(); });
+      crumb.appendChild(c);
+      if (i < chain.length - 1) { var s = mk("color:#9aa;align-self:center;"); s.textContent = "\u203a"; crumb.appendChild(s); }
+    });
+    crumb.style.display = "flex";
+  }
+  function clearSel() { selBoxes.forEach(function (b) { b.remove(); }); selBoxes = []; selected = []; crumb.style.display = "none"; editBtn.style.display = "none"; }
+  function reposition() { if (selected.length) drawSel(); }
 
   function onMove(e) {
     if (!active) return;
     var el = e.target;
-    if (isUI(el)) { clearHover(); return; }
-    if (el === hovered) return;
-    clearHover();
-    hovered = el; prevOutline = el.style.outline;
-    el.style.outline = "2px solid #34d399";
-    el.style.outlineOffset = "-1px";
-    var d = describe(el);
-    tip.textContent = d.tag + (d.id ? "#" + d.id : "") + (d.classes ? " ." + d.classes.split(" ")[0] : "");
-    tip.style.left = Math.min(e.clientX + 12, window.innerWidth - 200) + "px";
-    tip.style.top = (e.clientY + 16) + "px";
-    tip.style.display = "block";
+    if (isUI(el)) { hoverBox.style.display = "none"; return; }
+    var r = rectOf(el);
+    hoverBox.style.left = r.l + "px"; hoverBox.style.top = r.t + "px"; hoverBox.style.width = r.w + "px"; hoverBox.style.height = r.h + "px"; hoverBox.style.display = "block";
   }
-
   function onClick(e) {
     if (!active) return;
     if (isUI(e.target)) return;
     e.preventDefault(); e.stopPropagation();
-    var pick = describe(e.target);
-    try {
-      fetch(ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(pick),
-      });
-    } catch (err) {}
-    disarm();
+    var el = e.target;
+    if (e.metaKey || e.ctrlKey) { if (selected.indexOf(el) < 0) selected.push(el); }
+    else selected = [el];
+    drawSel();
+  }
+  function sendEdit() {
+    if (!selected.length) return;
+    var picks = selected.map(describe);
+    var primary = picks[picks.length - 1];
+    primary.picks = picks;
+    try { fetch(ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(primary) }); } catch (err) {}
+    clearSel(); disarm();
   }
 
   function arm() {
     active = true;
     btn.textContent = "\u2713 Picking\u2026 (Esc)";
-    btn.style.background = "#34d399"; btn.style.color = "#06231a";
+    btn.style.background = "#38bdf8"; btn.style.color = "#06231a";
     document.addEventListener("mousemove", onMove, true);
     document.addEventListener("click", onClick, true);
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition, true);
   }
   function disarm() {
-    active = false; clearHover();
+    active = false; hoverBox.style.display = "none";
     btn.textContent = "\u2715 Select";
     btn.style.background = "#111"; btn.style.color = "#fff";
     document.removeEventListener("mousemove", onMove, true);
     document.removeEventListener("click", onClick, true);
+    window.removeEventListener("scroll", reposition, true);
+    window.removeEventListener("resize", reposition, true);
   }
 
-  btn.addEventListener("click", function (e) {
-    e.preventDefault(); e.stopPropagation();
-    if (active) disarm(); else arm();
-  });
-  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && active) disarm(); });
+  btn.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); if (active) disarm(); else arm(); });
+  editBtn.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); sendEdit(); });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && active) { clearSel(); disarm(); } });
 
-  function mount() { document.body.appendChild(btn); document.body.appendChild(tip); }
+  function mount() { document.body.appendChild(bar); document.body.appendChild(hoverBox); document.body.appendChild(crumb); }
   if (document.body) mount();
   else document.addEventListener("DOMContentLoaded", mount);
 })();
