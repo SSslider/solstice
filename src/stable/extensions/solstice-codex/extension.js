@@ -1206,6 +1206,80 @@ self.addEventListener("fetch", (e) => {
 		return plan;
 	}
 
+	// Pull a plan and/or a site-analysis out of the assistant's chat message and
+	// route them to the SAME surfaces a plan tool / RESEARCH.md would — so the
+	// CENTER window shows them even when Felix only narrates in the chat panel.
+	captureChatArtifacts(text, tid) {
+		if (!text || typeof text !== "string") return;
+		const thId = tid || this.threadId;
+		const th = thId ? this.threads.get(thId) : null;
+		// 1) PLAN → center timeline + inline card. Only synthesize when no real
+		//    plan-tool plan exists (codex/claude set th.plan; grok/composer don't).
+		if (th && (!Array.isArray(th.plan) || !th.plan.length)) {
+			const plan = this.extractPlanFromText(text);
+			if (plan.length) this.onNotification("turn/plan/updated", { threadId: thId, plan });
+		}
+		// 2) ANALYSIS → center research dashboard, only on turns that actually did
+		//    web research and only if the agent hasn't authored its own doc.
+		if (this.turnDidResearch) this.maybeWriteResearchFromChat(text);
+	}
+
+	// Plan extraction from prose. First try the strict checklist parser; if the
+	// model wrote a plain numbered/bulleted list under a "plan/steps/תוכנית" lead,
+	// treat those items as pending steps so the timeline still renders.
+	extractPlanFromText(text) {
+		const rich = this.parseRichPlan(text);
+		if (rich.length >= 2) return rich;
+		const LEAD = /\b(plan|steps|roadmap|build plan)\b|תוכנית|תכנית|שלבים/i;
+		const HEAD = /^\s*#{1,4}\s+(.+?)\s*#*$/;
+		const ITEM = /^\s*(?:\d+[.)]|[-*•])\s+(.+\S)\s*$/;
+		const steps = [];
+		let collecting = false, group = "";
+		for (const raw of String(text).split("\n")) {
+			const h = raw.match(HEAD);
+			if (h) {
+				if (LEAD.test(h[1])) { collecting = true; group = ""; }
+				else if (collecting) group = h[1].replace(/`/g, "").trim();
+				continue;
+			}
+			if (!collecting) {
+				if (LEAD.test(raw) && /:\s*$/.test(raw)) collecting = true; // "Plan:" lead-in line
+				continue;
+			}
+			const m = raw.match(ITEM);
+			if (m) {
+				const step = m[1].replace(/`/g, "").replace(/^\[[ xX~]\]\s*/, "").trim();
+				if (step) { const it = { status: "pending", step }; if (group) it.group = group; steps.push(it); }
+				continue;
+			}
+			if (/^\s*[_>]/.test(raw)) continue;   // detail/quote line — keep going
+			if (steps.length && /\S/.test(raw)) break; // prose resumed after the list ends the block
+		}
+		return steps.length >= 2 ? steps : [];
+	}
+
+	// Mirror a chat-delivered site/design analysis into RESEARCH.md so the center
+	// research dashboard opens. The agent's own RESEARCH/DECONSTRUCT/ANALYSIS doc
+	// always wins — we never overwrite a file the agent authored.
+	maybeWriteResearchFromChat(text) {
+		const root = workspaceCwd();
+		if (!root || !text) return;
+		for (const n of ["RESEARCH.md", "DECONSTRUCT.md", "ANALYSIS.md"]) {
+			try { if (fs.existsSync(path.join(root, n)) && this.lastResearchFile !== path.join(root, n)) return; } catch { }
+		}
+		const headings = (text.match(/^\s*#{1,4}\s+/gm) || []).length;
+		const hasHex = /#[0-9a-fA-F]{3,8}\b/.test(text);
+		const hasKw = /typograph|טיפוגרפיה|colou?r|צבע|layout|פריסה|section|מקטע|ניתוח|פירוק|font|grid|spacing|מרווח|hero|animation|אנימצי/i.test(text);
+		if (!(headings >= 2 && (hasHex || hasKw))) return;
+		const out = `# Research / Analysis\n\n_Captured live from Felix while researching — the agent can refine this file directly._\n\n${text.trim()}\n`;
+		if (out === this.lastResearchText) return;
+		this.lastResearchText = out;
+		const file = path.join(root, "RESEARCH.md");
+		this.lastResearchFile = file;
+		try { fs.writeFileSync(file, out); } catch { return; }
+		try { this.showResearch(vscode.Uri.file(file)); } catch { }
+	}
+
 	flushGrokChanges() {
 		const changed = this.grokChanged ? [...this.grokChanged] : [];
 		this.grokChanged = new Set();
@@ -1245,8 +1319,8 @@ self.addEventListener("fetch", (e) => {
 			'  codex exec --skip-git-repo-check --full-auto "Use your image generation tool to create: <detailed description>. Then copy the EXACT file you just generated (by its precise filename from ~/.codex/generated_images/ — never the most recent file, other jobs may write there concurrently) into <workspace>/public/images/<descriptive-name>.png"',
 			"  Verify the file exists in the workspace afterwards, and view it with codex vision to confirm it shows the right subject before using it.",
 			"- MANDATORY — real imagery, never placeholders: every page you build MUST use real images. NEVER ship gray boxes, solid-color rectangles, `placeholder.com` / `via.placeholder` / `dummyimage` / `picsum.photos` / `unsplash.com/random` URLs, empty `<img>`, or `TODO image` comments. For EVERY image the design calls for (hero, gallery, product shots, avatars, backgrounds), GENERATE a real one with the image command above and save it under public/images/ BEFORE you finish — a build that still contains placeholders is NOT done. If generation fails, retry; only as a last resort use a tasteful CSS gradient/photographic texture styled to look intentional, never a raw placeholder service.",
-			"- For multi-step builds, write a structured plan to .solstice/PLAN.md and keep it updated live — the IDE renders it as a visual timeline. Use this shape: group steps under `## Phase name` headings; each step is `1. [ ] Step title`; add an optional one-line `_short detail_` under a step; nest concrete sub-tasks as indented `   - [ ] sub-task`. Mark progress as you go: `[x]` done, `[~]` current, `[ ]` pending. Keep titles short and outcome-oriented.",
-			"- When deconstructing / analyzing / researching a design, website, or app: maintain DECONSTRUCT.md (or RESEARCH.md) in the workspace root and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end. The IDE renders this file live to the user as a research dashboard. Include as you go: what you examined so far, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, techniques you detected (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed the frames/screenshots you examine as images with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
+			"- ALWAYS externalize your plan to a FILE — the user watches the plan in the CENTER window, not the chat. The MOMENT you start a multi-step build, WRITE the plan to `.solstice/PLAN.md` (create the .solstice folder) BEFORE doing anything else, and re-write the file after each step so the live timeline updates. Don't only describe the plan in chat. Shape: group steps under `## Phase name` headings; each step `1. [ ] Step title`; optional one-line `_short detail_`; nested `   - [ ] sub-task`. Progress marks: `[x]` done, `[~]` current, `[ ]` pending. Short, outcome-oriented titles.",
+			"- ALWAYS externalize your design/site analysis to a FILE — the user reads the analysis in the CENTER window as a research dashboard, not the chat. When deconstructing / analyzing / researching a design, website or app, the FIRST thing you do is create `RESEARCH.md` (or `DECONSTRUCT.md`) in the workspace root, and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end, and never only in chat. Include as you go: what you examined, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, detected techniques (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed frames/screenshots with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
 			this.agentBehavior(),
 			this.appModeGuidance(),
@@ -1418,6 +1492,7 @@ self.addEventListener("fetch", (e) => {
 			th.status = "active";
 			th.updatedAt = Date.now() / 1000;
 			this.planFileOpened = false;
+			this.turnDidResearch = false;
 			if (tid === this.threadId) { this.markBusy("_builder", true); this.notePulse("_builder", "state"); this.postPreview({ type: "building", on: true }); this.fleetFlow("building"); this.injectMercuryClient().catch(() => { }); }
 			this.pushThreads();
 		} else if (method === "turn/completed" && tid) {
@@ -1442,6 +1517,19 @@ self.addEventListener("fetch", (e) => {
 		}
 		if (method === "item/completed" && params.item && params.item.type === "fileChange") {
 			this.onFilesChanged(params.item);
+		}
+		// flag turns that actually did web research (browse read/crawl/search/scrollshot)
+		// so we only surface a research dashboard for genuine analysis/clone work.
+		if ((method === "item/started" || method === "item/completed") && params.item && params.item.type === "commandExecution") {
+			const cmd = String(params.item.command || params.item.title || "");
+			if (/browse\.js["']?\s+(read|crawl|search|scrollshot|videoframes|describe|dom)\b/i.test(cmd)) this.turnDidResearch = true;
+		}
+		// Composer/grok narrate the plan and the site analysis as CHAT TEXT instead of
+		// writing .solstice/PLAN.md / RESEARCH.md or calling a plan tool — so the center
+		// timeline and research dashboard never populate. Mine them from the message.
+		if (method === "item/completed" && params.item && params.item.type === "agentMessage" &&
+			(!tid || tid === this.threadId)) {
+			this.captureChatArtifacts(params.item.text, tid);
 		}
 		const isImageItem = method === "item/completed" && params.item &&
 			(params.item.type === "imageGeneration" || params.item.type === "imageView") &&
@@ -3268,6 +3356,72 @@ async function downloadProjectToPC(controller, project) {
 	);
 }
 
+// Extract a .zip to a destination dir using the host OS unzip (no extra deps):
+// PowerShell Expand-Archive on Windows, `unzip` elsewhere. Resolves false on failure.
+function extractZip(zipPath, destDir) {
+	const cp = require("child_process");
+	return new Promise((resolve) => {
+		try { fs.mkdirSync(destDir, { recursive: true }); } catch { }
+		const done = (err) => resolve(!err);
+		if (process.platform === "win32") {
+			cp.execFile("powershell.exe",
+				["-NoProfile", "-NonInteractive", "-Command",
+					`Expand-Archive -LiteralPath ${JSON.stringify(zipPath)} -DestinationPath ${JSON.stringify(destDir)} -Force`],
+				{ windowsHide: true }, done);
+		} else {
+			cp.execFile("unzip", ["-o", zipPath, "-d", destDir], (err) => {
+				if (!err) return done(null);
+				cp.execFile("ditto", ["-x", "-k", zipPath, destDir], done); // macOS fallback
+			});
+		}
+	});
+}
+
+// "Continue working" on a server-built project: pull the zip down, extract it to
+// a folder on the PC, and open that folder in a NEW Solstice window so the user
+// can keep editing it locally. Falls back to saving the raw zip if unzip fails.
+async function continueWorkingOnRemote(controller, project) {
+	if (!project || !project.remote) {
+		if (project && project.dir) controller.openProjectFolder(project.dir, true);
+		return;
+	}
+	if (!project.zipUrl) { vscode.window.showErrorMessage("אין קישור הורדה לפרויקט המרוחק."); return; }
+	const slug = String(project.slug || project.name || "project").replace(/[^\w.-]+/g, "-");
+	const baseDir = path.join(os.homedir(), "Solstice Projects");
+	let dest = path.join(baseDir, slug);
+	try { let i = 2; while (fs.existsSync(dest)) { dest = path.join(baseDir, `${slug}-${i++}`); } } catch { }
+	await vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Notification, title: "מוריד את " + slug + " ל-PC…" },
+		async () => {
+			let zipPath;
+			try {
+				const { buf } = await httpGet(project.zipUrl, { binary: true, timeout: 120000 });
+				zipPath = path.join(os.tmpdir(), slug + "-" + Date.now() + ".zip");
+				fs.writeFileSync(zipPath, buf);
+			} catch (e) {
+				vscode.window.showErrorMessage("הורדה נכשלה: " + String(e && e.message || e));
+				return;
+			}
+			const ok = await extractZip(zipPath, dest);
+			try { fs.unlinkSync(zipPath); } catch { }
+			if (!ok) {
+				const keep = path.join(baseDir, slug + ".zip");
+				try { fs.mkdirSync(baseDir, { recursive: true }); fs.copyFileSync(zipPath, keep); } catch { }
+				vscode.window.showWarningMessage("חילוץ ה-zip נכשל — נסה לפתוח אותו ידנית: " + keep);
+				return;
+			}
+			// some zips wrap everything in a single top folder — open that if so
+			let openDir = dest;
+			try {
+				const entries = fs.readdirSync(dest).filter((n) => !n.startsWith("."));
+				if (entries.length === 1 && fs.statSync(path.join(dest, entries[0])).isDirectory())
+					openDir = path.join(dest, entries[0]);
+			} catch { }
+			controller.openProjectFolder(openDir, true);
+		}
+	);
+}
+
 function openGallery(controller, extensionUri) {
 	if (galleryPanel) { galleryPanel.reveal(vscode.ViewColumn.One); return; }
 	const roots = controller.galleryRoots().map((d) => vscode.Uri.file(d));
@@ -3309,6 +3463,15 @@ function openGallery(controller, extensionUri) {
 				if (msg.url) vscode.commands.executeCommand("simpleBrowser.api.open", vscode.Uri.parse(msg.url),
 					{ viewColumn: vscode.ViewColumn.Two }).then(undefined, () => vscode.commands.executeCommand("simpleBrowser.show", msg.url));
 				break;
+			// open the actual website in the user's real desktop browser (not embedded)
+			case "openSiteExternal":
+				if (msg.url) vscode.env.openExternal(vscode.Uri.parse(msg.url)).then(undefined, () =>
+					vscode.commands.executeCommand("simpleBrowser.show", msg.url));
+				else vscode.window.showWarningMessage("אין כתובת אתר חי לפרויקט הזה — בנה/פרוס אותו קודם.");
+				break;
+			// bring a server-built project down to the PC and open it in a fresh
+			// Solstice window so the user can keep working on it locally.
+			case "continueWorking": continueWorkingOnRemote(controller, msg.project); break;
 			case "newProject": vscode.commands.executeCommand("solstice.agentPanel.focus").then(undefined, () => { }); break;
 			case "openConnectors": openConnectors(controller, extensionUri); break;
 			case "assignAgent":
@@ -3536,7 +3699,7 @@ function activate(context) {
 	// (no brace glob — filter by basename; grok writes from outside the editor)
 	const researchWatcher = vscode.workspace.createFileSystemWatcher("**/*.md");
 	const onResearchFile = (u) => {
-		if (/^(DECONSTRUCT|RESEARCH)\.md$/.test(path.basename(u.fsPath))) controller.showResearch(u);
+		if (/^(DECONSTRUCT|RESEARCH|ANALYSIS)\.md$/.test(path.basename(u.fsPath))) controller.showResearch(u);
 	};
 	researchWatcher.onDidCreate(onResearchFile);
 	researchWatcher.onDidChange(onResearchFile);

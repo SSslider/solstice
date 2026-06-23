@@ -79,7 +79,7 @@
 			thumb.appendChild(el("div", "pInitial", (p.name || "?").trim().charAt(0).toUpperCase()));
 		}
 		const hint = el("div", "openHint");
-		hint.appendChild(el("span", "", p.remote ? "Open live site" : "Open in Solstice"));
+		hint.appendChild(el("span", "", p.remote ? "פתח אתר" : "פתח ב-Solstice"));
 		thumb.appendChild(hint);
 		c.appendChild(thumb);
 
@@ -90,14 +90,43 @@
 		for (const t of (p.tags || []).slice(0, 3)) meta.appendChild(el("span", "chip", t));
 		meta.appendChild(el("span", "ptime", relTime(p.updatedAt)));
 		body.appendChild(meta);
+		body.appendChild(actionRow(p));
 		body.appendChild(ownerRow(p));
 		c.appendChild(body);
 
+		// Whole-card click = the most-expected action: remote → see the live site;
+		// local → open it in this IDE (Cmd/Ctrl-click = new window).
 		c.addEventListener("click", (e) => {
-			if (p.remote) vscode.postMessage({ type: "openRemote", url: p.openUrl });
+			if (p.remote) vscode.postMessage({ type: "openSiteExternal", url: p.openUrl, name: p.name });
 			else vscode.postMessage({ type: "openProject", dir: p.dir, newWindow: e.metaKey || e.ctrlKey });
 		});
 		return c;
+	}
+
+	// Primary actions per project: open it to keep working on it (a real IDE
+	// window) and open the actual website — so a project is never a dead tile.
+	function actionRow(p) {
+		const row = el("div", "pactions");
+		const stop = (e) => e.stopPropagation();
+		const btn = (cls, html, title, send) => {
+			const b = el("button", "pAct " + cls, "");
+			b.innerHTML = html; b.title = title;
+			b.addEventListener("click", (e) => { stop(e); vscode.postMessage(send); });
+			return b;
+		};
+		if (p.remote) {
+			row.appendChild(btn("pAct--primary", "↗ המשך עבודה",
+				"הורד את הפרויקט מהשרת ל-PC ופתח אותו בחלון Solstice חדש להמשך עבודה",
+				{ type: "continueWorking", project: { name: p.name, slug: p.slug, dir: p.dir, remote: true, zipUrl: p.zipUrl, openUrl: p.openUrl } }));
+			row.appendChild(btn("", "🌐 פתח אתר", "פתח את האתר החי בדפדפן של המחשב",
+				{ type: "openSiteExternal", url: p.openUrl, name: p.name }));
+		} else {
+			row.appendChild(btn("pAct--primary", "✎ פתח ב-Solstice",
+				"פתח את הפרויקט ב-IDE להמשך עבודה", { type: "openProject", dir: p.dir, newWindow: false }));
+			row.appendChild(btn("", "↗ חלון חדש", "פתח בחלון Solstice נפרד",
+				{ type: "openProject", dir: p.dir, newWindow: true }));
+		}
+		return row;
 	}
 
 	// Project ↔ agent ownership row: who owns it + assign + open-in-Fleet.

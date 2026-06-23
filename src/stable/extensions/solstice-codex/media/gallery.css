@@ -138,6 +138,18 @@ html, body {
   color: color-mix(in srgb, var(--accent, #34d399) 92%, #fff); }
 .ownerDownload:hover { background: color-mix(in srgb, var(--accent, #34d399) 26%, transparent); }
 
+/* ---------- primary project actions (open / continue working) ---------- */
+.pactions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.pAct { flex: 1 1 auto; cursor: pointer; font-family: inherit; font-size: 12px; font-weight: 640;
+  padding: 7px 12px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface-2);
+  color: var(--vscode-foreground); transition: background .12s, border-color .12s, transform .06s; white-space: nowrap; }
+.pAct:hover { border-color: color-mix(in srgb, var(--amber) 40%, var(--line)); background: var(--surface); }
+.pAct:active { transform: translateY(1px); }
+.pAct--primary { border-color: transparent;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--amber) 92%, #fff), var(--amber));
+  color: #1a1207; }
+.pAct--primary:hover { filter: brightness(1.05); border-color: transparent; }
+
 /* ---------- empty ---------- */
 .empty { text-align: center; padding: 90px 24px; color: var(--vscode-descriptionForeground); }
 .empty .big { font-size: 40px; margin-bottom: 10px; opacity: .55; }
