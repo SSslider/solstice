@@ -722,7 +722,13 @@ self.addEventListener("fetch", (e) => {
 			const abs = path.isAbsolute(p) ? p : path.join(root || "", p);
 			let stat;
 			try { stat = fs.statSync(abs); } catch { continue; }
-			if (!stat.isFile() || stat.size > 1500000) continue;
+			if (!stat.isFile()) continue;
+			// Images the agent generates/saves arrive as plain FILE WRITES (it uses a
+			// shell image tool), NOT imageGeneration items — so the panel never renders
+			// them. Open them in the center editor as image previews so the user
+			// actually sees generated imagery. (Thomas: "I don't see the images.")
+			if (/\.(png|jpe?g|webp|gif|avif|svg)$/i.test(p)) { this.openImage(abs); continue; }
+			if (stat.size > 1500000) continue;
 			vscode.window.showTextDocument(vscode.Uri.file(abs), {
 				viewColumn: vscode.ViewColumn.One, preview: true, preserveFocus: true,
 			}).then(undefined, () => { });
