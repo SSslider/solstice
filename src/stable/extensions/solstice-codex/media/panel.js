@@ -335,10 +335,31 @@
 	let verbIdx = 0;
 	let explicitActivity = null;
 	let actionCount = 0;
+	// Felix roams the IDE panel while Felix is building (a living creature exploring),
+	// and rests back in the header when idle. (Thomas: "move like a living animal while building".)
+	let felixRoamTimer = null;
+	function felixHop() {
+		if (!felixMark) return;
+		const x = 24 + Math.random() * Math.max(40, window.innerWidth - 104);
+		const y = 72 + Math.random() * Math.max(60, window.innerHeight - 220);
+		felixMark.style.left = Math.round(x) + "px";
+		felixMark.style.top = Math.round(y) + "px";
+	}
+	function startFelixRoam() {
+		if (!felixMark || felixRoamTimer) return;
+		felixMark.classList.add("roaming");
+		felixHop();
+		felixRoamTimer = setInterval(felixHop, 2600);
+	}
+	function stopFelixRoam() {
+		if (felixRoamTimer) { clearInterval(felixRoamTimer); felixRoamTimer = null; }
+		if (felixMark) { felixMark.classList.remove("roaming"); felixMark.style.left = ""; felixMark.style.top = ""; }
+	}
+
 	function setBusy(b) {
 		busy = b;
 		dotEl.className = "dot " + (b ? "busy" : "idle");
-		if (felixMark) felixMark.classList.toggle("working", b); // Felix mascot animates only while working
+		if (felixMark) { felixMark.classList.toggle("working", b); if (b) startFelixRoam(); else stopFelixRoam(); } // animate + roam while building, rest when idle
 
 		sendBtn.disabled = false;        // stays usable while busy so the user can steer
 		sendBtn.textContent = b ? "Steer" : "Send";

@@ -1447,7 +1447,8 @@ self.addEventListener("fetch", (e) => {
 			(params.item.type === "imageGeneration" || params.item.type === "imageView") &&
 			params.item.status !== "failed";
 		if (isImageItem) this.openImage(this.imageAbsPath(params.item));
-		if (method === "item/completed" && params.item) this.maybePushBrowser(params.item); // #3: live Agent Browser
+		// #3: live Agent Browser — open the moment browsing starts, refresh on completion (screenshot)
+		if ((method === "item/started" || method === "item/completed") && params.item) this.maybePushBrowser(params.item);
 		if (method === "error" && params && params.error &&
 			/usage limit|rate limit|quota/i.test(params.error.message || "") &&
 			this.failoverChain().includes(this.providerKey())) {
@@ -1827,14 +1828,27 @@ self.addEventListener("fetch", (e) => {
 	// every page the agent visits — its URL + the screenshot it captured — LIVE in
 	// a browser-style panel, so the user watches the research/analysis happen.
 	maybePushBrowser(item) {
-		if (!item || item.type !== "commandExecution") return;
-		const cmd = String(item.command || (item.changes && item.changes[0] && item.changes[0].command) || "");
-		if (!/browse\.js/.test(cmd)) return;
-		const m = cmd.match(/browse\.js"?\s+(shot|read|crawl|search)\s+"?([^"\s]+)"?(?:\s+"?([^"\s]+\.png)"?)?/i);
-		if (!m) return;
-		const action = m[1].toLowerCase();
-		const arg = m[2];
-		const out = m[3];
+		if (!item) return;
+		let action = null, url = null, out = null;
+		// (a) model-native web tools (Claude WebSearch/WebFetch, composer/grok native) → webSearch item
+		if (item.type === "webSearch") {
+			if (item.query) { action = "search"; url = "חיפוש: " + item.query; }
+			else if (item.action && (item.action.url || item.action.query)) {
+				action = item.action.type === "openPage" ? "read" : "search";
+				url = item.action.url || ("חיפוש: " + item.action.query);
+			} else if (item.url) { action = "read"; url = item.url; }
+			else return;
+		}
+		// (b) codex/grok run the bundled web tools as a shell command → commandExecution
+		else if (item.type === "commandExecution") {
+			const cmd = String(item.command || (item.changes && item.changes[0] && item.changes[0].command) || "");
+			if (!/browse\.js/.test(cmd)) return;
+			const m = cmd.match(/browse\.js["']?\s+(shot|read|crawl|search|dom|videoframes)\s+["']?([^"'\s]+)["']?(?:\s+["']?([^"'\s]+\.png)["']?)?/i);
+			if (!m) return;
+			action = m[1].toLowerCase();
+			out = m[3];
+			url = action === "search" ? ("חיפוש: " + m[2]) : m[2];
+		} else return;
 		this.openBrowserPanel();
 		if (!this.browserPanel) return;
 		let shot = null;
@@ -1842,11 +1856,7 @@ self.addEventListener("fetch", (e) => {
 			const abs = path.isAbsolute(out) ? out : path.join(workspaceCwd() || "", out);
 			try { if (fs.statSync(abs).isFile()) shot = this.browserPanel.webview.asWebviewUri(vscode.Uri.file(abs)).toString(); } catch { }
 		}
-		this.browserPanel.webview.postMessage({
-			type: "page", action,
-			url: action === "search" ? ("חיפוש: " + arg) : arg,
-			shot, time: Date.now(),
-		});
+		this.browserPanel.webview.postMessage({ type: "page", action, url, shot, time: Date.now() });
 		this.browserPanel.reveal(vscode.ViewColumn.One, true);
 	}
 	openBrowserPanel() {
