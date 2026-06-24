@@ -565,6 +565,6 @@ details.diffFile[open] > .diffSum::before { content: "▾"; }
 /* Felix roaming — while building, the creature detaches from the header and
    wanders across the agent panel like a living animal; returns to rest when idle. */
 .brandMark.roaming {
-	position: fixed; z-index: 9000; pointer-events: none;
+	position: fixed; z-index: 2147483000; pointer-events: none; filter: drop-shadow(0 4px 14px rgba(0,0,0,.5));
 	transition: left 2.3s cubic-bezier(.45,.05,.3,1), top 2.3s cubic-bezier(.45,.05,.3,1);
 }

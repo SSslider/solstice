@@ -307,9 +307,14 @@ class AgentController {
 	// If a site is being served, open the preview if it was closed, else reload it
 	// so the user always sees the latest build per prompt. (Thomas #1, 22/06.)
 	refreshPreview() {
-		if (!this.previewUrl) return;
+		// No URL yet (or it got cleared) → re-detect/serve the preview from the current
+		// workspace, so subsequent prompts re-open it instead of staying blank. (Thomas:
+		// "preview only shows on the first build.")
+		if (!this.previewUrl) { this.openPreview("").catch(() => { }); return; }
+		// Panel was closed → re-open it. Otherwise just (re)load — queue the load even if
+		// the webview isn't "ready" yet; its ready handler re-loads previewUrl anyway.
 		if (!this.previewPanel) { this.openPreviewPanel(this.previewUrl, this.defaultDevice()); return; }
-		if (this.previewReady) this.postPreview({ type: "load", url: this.previewUrl, device: this.defaultDevice() });
+		this.postPreview({ type: "load", url: this.previewUrl, device: this.defaultDevice() });
 	}
 
 	// Extra guidance appended to the build preamble when the user is in App mode,
@@ -727,7 +732,7 @@ self.addEventListener("fetch", (e) => {
 			// shell image tool), NOT imageGeneration items — so the panel never renders
 			// them. Open them in the center editor as image previews so the user
 			// actually sees generated imagery. (Thomas: "I don't see the images.")
-			if (/\.(png|jpe?g|webp|gif|avif|svg)$/i.test(p)) { this.openImage(abs); continue; }
+			if (/\.(png|jpe?g|webp|gif|avif|svg)$/i.test(p)) { this.openImage(abs); this.showImageInPanel(abs); continue; }
 			if (stat.size > 1500000) continue;
 			vscode.window.showTextDocument(vscode.Uri.file(abs), {
 				viewColumn: vscode.ViewColumn.One, preview: true, preserveFocus: true,
@@ -740,6 +745,17 @@ self.addEventListener("fetch", (e) => {
 			return;
 		}
 		this.refreshPreview();
+	}
+
+	// Render an agent-written image INLINE in the right agent panel. Composer/grok
+	// don't emit imageGeneration items, so a generated image would otherwise never
+	// show in the panel — we synthesize an imageView item from the file write.
+	showImageInPanel(abs) {
+		try {
+			if (!this.webview) return;
+			const item = this.withImageUri({ id: "img_" + Date.now(), type: "imageView", path: abs, status: "completed" }, this.webview);
+			this.post({ type: "notification", method: "item/completed", params: { item } });
+		} catch (e) { /* ignore */ }
 	}
 
 	// resolve an image item's saved location to an absolute path on disk

@@ -338,26 +338,32 @@
 	// Felix roams the IDE panel while Felix is building (a living creature exploring),
 	// and rests back in the header when idle. (Thomas: "move like a living animal while building".)
 	let felixRoamTimer = null;
+	const felixHome = felixMark ? felixMark.parentElement : null; // #brand — where Felix rests
 	function felixHop() {
 		if (!felixMark) return;
-		// roam the MESSAGES area only — never over the composer/input (so it never
-		// blocks where the user types). Bottom bound = top of the composer. (Thomas bug.)
-		const comp = document.getElementById("composer");
-		const maxY = (comp ? comp.getBoundingClientRect().top : window.innerHeight - 180) - 60;
-		const x = 24 + Math.random() * Math.max(40, window.innerWidth - 104);
-		const y = 70 + Math.random() * Math.max(40, maxY - 70);
+		// roam the whole panel (anywhere is fine — incl. near the bottom). pointer-events
+		// is none so it never blocks typing; it just needs to stay VISIBLE. (Thomas)
+		const x = 18 + Math.random() * Math.max(40, window.innerWidth - 92);
+		const y = 64 + Math.random() * Math.max(60, window.innerHeight - 150);
 		felixMark.style.left = Math.round(x) + "px";
 		felixMark.style.top = Math.round(y) + "px";
 	}
 	function startFelixRoam() {
 		if (!felixMark || felixRoamTimer) return;
+		// move Felix to <body> so position:fixed escapes the header's stacking context
+		// (that's why he was DISAPPEARING — he was painted behind the messages/composer).
+		try { document.body.appendChild(felixMark); } catch (e) {}
 		felixMark.classList.add("roaming");
 		felixHop();
 		felixRoamTimer = setInterval(felixHop, 2600);
 	}
 	function stopFelixRoam() {
 		if (felixRoamTimer) { clearInterval(felixRoamTimer); felixRoamTimer = null; }
-		if (felixMark) { felixMark.classList.remove("roaming"); felixMark.style.left = ""; felixMark.style.top = ""; }
+		if (felixMark) {
+			felixMark.classList.remove("roaming");
+			felixMark.style.left = ""; felixMark.style.top = "";
+			if (felixHome) { try { felixHome.insertBefore(felixMark, felixHome.firstChild); } catch (e) {} } // rest back in the header
+		}
 	}
 
 	function setBusy(b) {
