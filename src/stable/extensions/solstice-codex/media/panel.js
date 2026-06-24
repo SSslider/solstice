@@ -340,8 +340,12 @@
 	let felixRoamTimer = null;
 	function felixHop() {
 		if (!felixMark) return;
+		// roam the MESSAGES area only — never over the composer/input (so it never
+		// blocks where the user types). Bottom bound = top of the composer. (Thomas bug.)
+		const comp = document.getElementById("composer");
+		const maxY = (comp ? comp.getBoundingClientRect().top : window.innerHeight - 180) - 60;
 		const x = 24 + Math.random() * Math.max(40, window.innerWidth - 104);
-		const y = 72 + Math.random() * Math.max(60, window.innerHeight - 220);
+		const y = 70 + Math.random() * Math.max(40, maxY - 70);
 		felixMark.style.left = Math.round(x) + "px";
 		felixMark.style.top = Math.round(y) + "px";
 	}
