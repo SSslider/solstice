@@ -117,6 +117,11 @@
         "title": "How Solstice Works",
         "category": "Solstice",
         "icon": "$(circuit-board)"
+      },
+      {
+        "command": "solstice.agent.openCompanion",
+        "title": "Solstice: Open Phone Companion",
+        "category": "Solstice"
       }
     ],
     "menus": {
@@ -287,8 +292,14 @@
         },
         "solstice.codex.failoverChain": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": [ "gpt-5.5", "composer-2.5", "grok-build" ],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "gpt-5.5",
+            "composer-2.5",
+            "grok-build"
+          ],
           "description": "Ordered model chain for automatic failover when a model hits its usage/rate limit. The agent transparently advances to the next model and re-runs the prompt. Claude is NEVER auto-failed-over to (it is manual-only via solstice.codex.allowClaude) and is filtered out even if listed here. Config-driven so newer/stronger models can be slotted in without a code change."
         },
         "solstice.codex.selfVerify": {
@@ -348,15 +359,34 @@
           "items": {
             "type": "object",
             "properties": {
-              "id": { "type": "string" },
-              "name": { "type": "string" },
-              "role": { "type": "string" },
-              "glyph": { "type": "string" },
-              "model": { "type": "string" },
-              "wsUrl": { "type": "string", "description": "ws:// or wss:// URL of the agent's bridge" },
-              "token": { "type": "string", "description": "Per-agent token override; falls back to solstice.fleet.token" }
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "glyph": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "wsUrl": {
+                "type": "string",
+                "description": "ws:// or wss:// URL of the agent's bridge"
+              },
+              "token": {
+                "type": "string",
+                "description": "Per-agent token override; falls back to solstice.fleet.token"
+              }
             },
-            "required": ["id", "wsUrl"]
+            "required": [
+              "id",
+              "wsUrl"
+            ]
           }
         },
         "solstice.liveness.enabled": {
@@ -388,7 +418,9 @@
           "type": "array",
           "default": [],
           "description": "Agent ids hidden from the Fleet roster. Built-in agents (orion/jasper/asher) removed via the Fleet panel's × button are recorded here; add an id back to the roster by removing it from this list.",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         }
       }
     }

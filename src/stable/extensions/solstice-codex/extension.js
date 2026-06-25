@@ -317,6 +317,52 @@ class AgentController {
 		this.postPreview({ type: "load", url: this.previewUrl, device: this.defaultDevice() });
 	}
 
+	// ---- Phone Companion (PWA): drive Felix + watch the build live from a phone ----
+	_companion() { return (this.companionState = this.companionState || { messages: [], plan: [], files: [], previewUrl: "", building: false, model: "", ts: 0 }); }
+	captureCompanionState(method, params) {
+		const s = this._companion();
+		try { s.model = (this.cfg().get("provider") || "composer-2.5"); } catch (e) {}
+		if (this.previewUrl) s.previewUrl = this.previewUrl;
+		if (method === "turn/started") s.building = true;
+		else if (method === "turn/completed") s.building = false;
+		else if (method === "item/completed" && params && params.item) {
+			const it = params.item;
+			if (it.type === "agentMessage" && it.text) s.messages.push({ role: "agent", text: String(it.text).slice(0, 4000) });
+			else if (it.type === "fileChange" && Array.isArray(it.changes)) for (const c of it.changes) if (c && c.path) s.files.unshift({ path: c.path, t: Date.now() });
+		} else if (method === "turn/plan/updated" && params && params.plan) s.plan = params.plan;
+		s.messages = s.messages.slice(-40);
+		s.files = s.files.slice(0, 24);
+		s.ts = Date.now();
+	}
+	companionUserMessage(text) { const s = this._companion(); s.messages.push({ role: "user", text: String(text).slice(0, 2000) }); s.ts = Date.now(); }
+	async startCompanion() {
+		if (this._companionServer) { vscode.window.showInformationMessage(`Solstice Companion רץ על http://127.0.0.1:${this._companionPort} — חבר tunnel כדי לגשת מהפלאפון.`); return this._companionPort; }
+		const http = require("http");
+		const port = 8794;
+		const srv = http.createServer((req, res) => {
+			const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type" };
+			if (req.method === "OPTIONS") { res.writeHead(204, cors); res.end(); return; }
+			const u = (req.url || "/").split("?")[0];
+			if (u === "/" || u === "/index.html") { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...cors }); res.end(companionHtml()); return; }
+			if (u === "/state") { res.writeHead(200, { "Content-Type": "application/json", ...cors }); res.end(JSON.stringify(this.companionState || {})); return; }
+			if (u === "/prompt" && req.method === "POST") {
+				let body = ""; req.on("data", (d) => { body += d; if (body.length > 100000) req.destroy(); });
+				req.on("end", () => {
+					try {
+						const t = (JSON.parse(body || "{}").text || "").trim();
+						if (t) { this.companionUserMessage(t); if (this.companionState && this.companionState.building && this.threadId) this.steer(this.threadId, t).catch(() => {}); else this.send(t).catch(() => {}); }
+					} catch (e) {}
+					res.writeHead(200, { "Content-Type": "application/json", ...cors }); res.end('{"ok":true}');
+				});
+				return;
+			}
+			res.writeHead(404, cors); res.end("not found");
+		});
+		srv.on("error", (e) => { try { this.output.append("companion server: " + e.message + "\n"); } catch (x) {} });
+		try { srv.listen(port, "127.0.0.1"); this._companionServer = srv; this._companionPort = port; vscode.window.showInformationMessage(`📱 Solstice Companion חי על http://127.0.0.1:${port}. הרץ tunnel (cloudflared) לכתובת הזו כדי לפתוח מהפלאפון.`); } catch (e) {}
+		return port;
+	}
+
 	// Extra guidance appended to the build preamble when the user is in App mode,
 	// so a "build an app" request yields a real mobile-first installable app
 	// (screens + navigation + manifest) rather than a marketing website.
@@ -1559,6 +1605,7 @@ self.addEventListener("fetch", (e) => {
 		if (isImageItem) this.openImage(this.imageAbsPath(params.item));
 		// #3: live Agent Browser — open the moment browsing starts, refresh on completion (screenshot)
 		if ((method === "item/started" || method === "item/completed") && params.item) this.maybePushBrowser(params.item);
+		try { this.captureCompanionState(method, params); } catch (e) { /* companion best-effort */ }
 		if (method === "error" && params && params.error &&
 			/usage limit|rate limit|quota/i.test(params.error.message || "") &&
 			this.failoverChain().includes(this.providerKey())) {
@@ -3530,6 +3577,53 @@ let connectorsPanel = null;
 // into a secure input, and it lands in the OS-keychain vault (context.secrets) —
 // never in config, globalState, or the model's context. Add a provider by
 // appending one row here; no hard-wiring of any single service.
+// The phone Companion PWA — served by the in-extension companion server. A mobile
+// app to drive Felix and watch the build live: chat, status, plan, live files.
+function companionHtml() {
+	return [
+		'<!doctype html><html dir="rtl" lang="he"><head><meta charset="utf-8">',
+		'<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">',
+		'<title>Felix · Solstice</title><style>',
+		'*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}',
+		'body{margin:0;font-family:Heebo,system-ui,sans-serif;background:#08090d;color:#e6e6ea;display:flex;flex-direction:column;height:100vh}',
+		'#hd{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid #161b22}',
+		'.fx{width:34px;height:34px;border-radius:50%;background:radial-gradient(circle at 40% 35%,#c9a7ff,#7c4dff 60%,#4a2a9e);box-shadow:0 0 16px rgba(124,77,255,.55);flex:0 0 auto}',
+		'.nm{font-weight:800;font-size:15px}.sub{font-size:10px;display:flex;align-items:center;gap:5px;margin-top:2px}',
+		'.dot{width:7px;height:7px;border-radius:50%}.dot.busy{background:#f59e0b;animation:pl 1.2s infinite}.dot.idle{background:#3fb950}',
+		'@keyframes pl{50%{opacity:.4}}',
+		'#preview{display:none;width:100%;height:160px;border:0;border-bottom:1px solid #161b22;background:#0d0f14}',
+		'#chat{flex:1;overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:9px}',
+		'.msg{display:flex}.msg.user{justify-content:flex-end}.b{max-width:82%;padding:8px 11px;border-radius:14px;font-size:14px;line-height:1.45;white-space:pre-wrap;word-break:break-word}',
+		'.msg.user .b{background:linear-gradient(135deg,#0ea5e9,#22d3ee);color:#06121a;border-bottom-left-radius:4px}',
+		'.msg.agent .b{background:#12151c;border:1px solid #1d2330;border-bottom-right-radius:4px}',
+		'#files{padding:0 14px 6px;font:11px ui-monospace,monospace;color:#7a8696}.f{padding:2px 0}',
+		'#cmp{display:flex;gap:8px;padding:10px 14px;border-top:1px solid #161b22}',
+		'#inp{flex:1;background:#0d0f14;border:1px solid #1c212b;border-radius:14px;padding:10px 12px;color:#e6e6ea;font-size:14px;outline:none}',
+		'#snd{border:0;border-radius:14px;padding:0 16px;font-weight:800;background:linear-gradient(135deg,#0ea5e9,#22d3ee);color:#06121a}',
+		'</style></head><body>',
+		'<div id="hd"><div class="fx"></div><div><div class="nm">Felix <span style="color:#5b6573;font-size:11px">· Solstice</span></div>',
+		'<div class="sub"><span id="statusdot" class="dot idle"></span><span id="status">מוכן</span><span style="color:#5b6573">· <span id="model"></span></span></div></div></div>',
+		'<iframe id="preview"></iframe>',
+		'<div id="chat"></div><div id="files"></div>',
+		'<div id="cmp"><input id="inp" placeholder="שלח ל-Felix משימה או שינוי…" enterkeyhint="send"><button id="snd">שלח</button></div>',
+		'<script>',
+		'function esc(s){return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;")}',
+		'function render(s){',
+		'document.getElementById("model").textContent=s.model||"";',
+		'document.getElementById("status").textContent=s.building?"פליקס בונה…":"מוכן";',
+		'document.getElementById("statusdot").className="dot "+(s.building?"busy":"idle");',
+		'var p=document.getElementById("preview");if(s.previewUrl){p.style.display="block";var b=(s.previewUrl);if((p.dataset.u||"")!==b){p.dataset.u=b;p.src=b}}',
+		'var c=document.getElementById("chat");c.innerHTML=(s.messages||[]).map(function(m){return "<div class=\\"msg "+m.role+"\\"><div class=\\"b\\">"+esc(m.text)+"</div></div>"}).join("");c.scrollTop=c.scrollHeight;',
+		'document.getElementById("files").innerHTML=(s.files||[]).slice(0,8).map(function(f){return "<div class=\\"f\\">+ "+esc(f.path)+"</div>"}).join("");',
+		'}',
+		'function poll(){fetch("/state").then(function(r){return r.json()}).then(render).catch(function(){})}',
+		'setInterval(poll,1500);poll();',
+		'function send(){var i=document.getElementById("inp");var t=i.value.trim();if(!t)return;i.value="";fetch("/prompt",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:t})}).then(poll)}',
+		'document.getElementById("snd").onclick=send;document.getElementById("inp").addEventListener("keydown",function(e){if(e.key==="Enter"){e.preventDefault();send()}});',
+		'</script></body></html>',
+	].join("");
+}
+
 const CONNECTOR_CATALOG = [
 	{ id: "vercel", name: "Vercel", glyph: "▲", blurb: "פריסת אתרים ואפליקציות בלחיצה", tokenKey: "VERCEL_TOKEN", authUrl: "https://vercel.com/account/tokens", howto: "צור Token חדש (Scope: Full Account) והדבק כאן." },
 	{ id: "github", name: "GitHub", glyph: "❮❯", blurb: "דחיפת קוד הפרויקט לריפו", tokenKey: "GITHUB_TOKEN", authUrl: "https://github.com/settings/tokens/new?scopes=repo&description=Solstice", howto: "צור Personal Access Token עם הרשאת repo והדבק כאן." },
@@ -3697,6 +3791,7 @@ function activate(context) {
 		vscode.commands.registerCommand("solstice.agent.toggleDesignElevation", () => controller.toggleDesignElevation()),
 		vscode.commands.registerCommand("solstice.agent.openTerminal", () => controller.openTerminal()),
 		vscode.commands.registerCommand("solstice.agent.openGallery", () => openGallery(controller, context.extensionUri)),
+		vscode.commands.registerCommand("solstice.agent.openCompanion", () => controller.startCompanion()),
 		vscode.commands.registerCommand("solstice.agent.openConnectors", () => openConnectors(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.openWorkflow", () => openWorkflow(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.openFleet", () => openFleet(controller, context.extensionUri))
