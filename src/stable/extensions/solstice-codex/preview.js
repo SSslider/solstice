@@ -492,6 +492,7 @@ class DevServer {
 		this.proc = spawn(npm, ["run", script], {
 			cwd: this.root,
 			shell: process.platform === "win32",
+			windowsHide: true,
 			env: { ...process.env, BROWSER: "none", FORCE_COLOR: "0" },
 		});
 		this.proc.stdout.on("data", (d) => this.log(String(d)));
@@ -513,7 +514,7 @@ class DevServer {
 	_run(label, args, timeoutMs) {
 		return new Promise((resolve) => {
 			const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-			const p = spawn(npm, args, { cwd: this.root, shell: process.platform === "win32", env: process.env });
+			const p = spawn(npm, args, { cwd: this.root, shell: process.platform === "win32", windowsHide: true, env: process.env });
 			const t = setTimeout(() => { try { p.kill(); } catch { } resolve(false); }, timeoutMs);
 			p.stdout.on("data", (d) => this.log(String(d)));
 			p.stderr.on("data", (d) => this.log(String(d)));
