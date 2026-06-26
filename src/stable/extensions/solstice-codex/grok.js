@@ -10,7 +10,17 @@ const { resolveWinSpawn } = require("./winspawn");
 // detached:true at spawn makes the child a group leader so process.kill(-pid)
 // reaches the entire subtree. Falls back to a plain kill if the group is gone.
 function killTree(child, signal = "SIGTERM") {
-	if (!child || child.killed) return;
+	if (!child || child.killed || !child.pid) return;
+	// Windows has NO POSIX process groups: process.kill(-pid) throws a bare
+	// `EPERM` (this is the "EPERM on model switch" Thomas hit — switching tears
+	// down the previous model's detached child, and the group-kill blew up on
+	// Windows while it was a no-op cost on Linux/mac). Use taskkill /T to kill
+	// the whole tree the detached child leads; fall back to a plain kill.
+	if (process.platform === "win32") {
+		try { require("child_process").execFile("taskkill", ["/PID", String(child.pid), "/T", "/F"]); }
+		catch { try { child.kill(); } catch { } }
+		return;
+	}
 	try { process.kill(-child.pid, signal); }
 	catch { try { child.kill(signal); } catch { } }
 }

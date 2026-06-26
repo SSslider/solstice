@@ -30,6 +30,18 @@ class CodexClient {
 		const rl = readline.createInterface({ input: this.child.stdout });
 		rl.on("line", (line) => this._onLine(line));
 		this.child.stderr.on("data", (d) => this.opts.log && this.opts.log(String(d)));
+		// Without this handler a spawn failure (e.g. Windows `EPERM`) is emitted as
+		// an unhandled 'error' event and surfaces to the user as a bare "EPERM"
+		// with no context. Mirror the grok provider: log it, reject pending work
+		// with a clear message, and let onExit drive failover instead of crashing.
+		this.child.on("error", (e) => {
+			const msg = `codex app-server failed to start (${this.opts.binPath || "codex"}): ${e && e.message || e}`;
+			this.opts.log && this.opts.log(msg + "\n");
+			for (const p of this.pending.values()) p.reject(new Error(msg));
+			this.pending.clear();
+			this.child = null;
+			if (this.opts.onExit) this.opts.onExit(-1);
+		});
 		this.child.on("exit", (code) => {
 			for (const p of this.pending.values()) p.reject(new Error("codex app-server exited"));
 			this.pending.clear();

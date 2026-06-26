@@ -1078,6 +1078,15 @@ self.addEventListener("fetch", (e) => {
 	resetAgentSession() {
 		try { if (this.grok && typeof this.grok.dispose === "function") this.grok.dispose(); } catch { }
 		try { if (this.grok && typeof this.grok.stop === "function") this.grok.stop(); } catch { }
+		// Also tear down the codex (GPT-5.5) and claude sessions — NOT just grok.
+		// Switching FROM GPT-5.5 left this.client (the codex app-server) running;
+		// its half-killed detached child was the "EPERM on switch" trigger. Stop
+		// every provider so the next prompt re-spawns the selected one cleanly.
+		try { if (this.client && typeof this.client.stop === "function") this.client.stop(); } catch { }
+		this.client = null;
+		try { if (this.claude && typeof this.claude.stop === "function") this.claude.stop(); } catch { }
+		try { if (this.claude && typeof this.claude.dispose === "function") this.claude.dispose(); } catch { }
+		this.claude = null;
 		this.grok = null;
 		this.threadId = null;
 		this._failoverTried = null;
