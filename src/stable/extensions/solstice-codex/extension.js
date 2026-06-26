@@ -1100,6 +1100,15 @@ self.addEventListener("fetch", (e) => {
 			this.applyProviderToWebviews();
 			return;
 		}
+		// Don't switch to a model whose CLI isn't installed on THIS machine — building
+		// on it would spawn-EPERM (the npm shim doesn't exist). Tell the user how to
+		// enable it instead of crashing. (Thomas: "spawn EPERM" switching to Grok/Composer.)
+		if (!this.runnerAvailable(runnerFor(key))) {
+			const label = (this.modelChoices().find((it) => it.key === key) || {}).label || key;
+			vscode.window.showWarningMessage(`Solstice: ${label} isn't available on this machine — its CLI isn't installed, so it can't run here (that's the "spawn EPERM"). Install its CLI and sign in once, or stay on the current model.`);
+			this.applyProviderToWebviews(); // snap the picker back to the real provider
+			return;
+		}
 		await this.cfg().update("provider", key, this.cfgTarget());
 		this.resetAgentSession();
 		this.applyProviderToWebviews();
@@ -1615,7 +1624,7 @@ self.addEventListener("fetch", (e) => {
 		// binary vanished/was uninstalled mid-session. Fail over to an installed
 		// model rather than leaving the build stuck on a missing engine.
 		else if (method === "error" && params && params.error &&
-			/could not start|enoent|not found|no such file/i.test(params.error.message || "")) {
+			/could not start|enoent|not found|no such file|eperm/i.test(params.error.message || "")) {
 			this.autoFailover("missing CLI");
 		}
 		if (SIDEBAR_FORWARDED.has(method) && (!tid || tid === this.threadId)) {
