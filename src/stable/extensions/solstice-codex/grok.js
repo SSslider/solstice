@@ -407,9 +407,24 @@ class GrokProvider {
 				clearTimeout(budgetTimer);
 				tailer.stop();
 				cleanupFile();
+				// EPERM diagnostic — on Windows a bare `spawn <name> EPERM` means the
+				// resolver handed CreateProcess a .cmd/.bat shim it can't launch. Log
+				// the EXACT command we tried so this is never a guessing game again:
+				// which bin, which resolved cmd, whether winspawn cracked the shim.
+				if (e && (e.code === "EPERM" || /EPERM/i.test(e.message || ""))) {
+					this.log(
+						`\n[EPERM] grok spawn failed.\n` +
+						`  configured bin : ${this.bin}\n` +
+						`  resolved cmd   : ${sp.cmd}\n` +
+						`  resolved arg0  : ${(sp.args && sp.args[0]) || "(none)"}\n` +
+						`  shim cracked   : ${sp.cmd !== this.bin ? "yes (rewrote to node/exe)" : "NO — bare name, this is the bug"}\n` +
+						`  platform/PATH  : ${process.platform}; node on PATH: ${require("./winspawn").whichFull("node") || "NOT FOUND"}\n` +
+						`  grok on PATH   : ${require("./winspawn").whichFull(this.bin) || "NOT FOUND"}\n`
+					);
+				}
 				this.notify("error", {
 					threadId: tid,
-					error: { message: `Could not start the grok CLI (${this.bin}): ${e.message}. Install it and sign in once, then retry.` },
+					error: { message: `Could not start the grok CLI (${this.bin}): ${e.message}. Open View → Output → "Felix" for the [EPERM] diagnostic. If grok is installed, this is a launcher bug — send me that log line.` },
 				});
 				this.notify("turn/completed", { threadId: tid, turn: { id: turnId } });
 				resolve();
