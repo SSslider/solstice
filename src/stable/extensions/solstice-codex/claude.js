@@ -325,7 +325,7 @@ class ClaudeProvider {
 		return new Promise((resolve) => {
 			// Windows npm-shim EPERM guard (see winspawn.js) — no-op on Linux/macOS.
 			const sp = resolveWinSpawn(this.bin, args);
-			const child = spawn(sp.cmd, sp.args, { cwd: this.cwd, env: sp.env ? { ...env, ...sp.env } : env, detached: true });
+			const child = spawn(sp.cmd, sp.args, { cwd: this.cwd, env: sp.env ? { ...env, ...sp.env } : env, detached: true, windowsHide: true });
 			this.child = child;
 			child.stdin.write(prompt);
 			child.stdin.end();

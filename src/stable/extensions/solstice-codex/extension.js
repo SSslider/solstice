@@ -2598,7 +2598,7 @@ self.addEventListener("fetch", (e) => {
 			const out = path.join(outDir, `verify-${taskId || "build"}.png`);
 			const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
 			let child;
-			try { child = require("child_process").spawn(process.execPath, [browseJs, "shot", url, out, "1440x2200"], { env, detached: true, stdio: "ignore" }); }
+			try { child = require("child_process").spawn(process.execPath, [browseJs, "shot", url, out, "1440x2200"], { env, detached: true, stdio: "ignore", windowsHide: true }); }
 			catch (e) { this.output.append("[self-verify] spawn failed: " + (e && e.message || e) + "\n"); return resolve(null); }
 			const timer = setTimeout(() => { try { process.kill(-child.pid, "SIGTERM"); } catch { } resolve(null); }, 90000);
 			child.on("close", (code) => { clearTimeout(timer); resolve(code === 0 && fs.existsSync(out) ? out : null); });

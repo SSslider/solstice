@@ -26,7 +26,11 @@ class CodexClient {
 		// Same Windows npm-shim EPERM guard as the grok provider: a bare codex
 		// resolves to codex.cmd, which CreateProcess refuses to run. No-op on *nix.
 		const sp = resolveWinSpawn(this.opts.binPath, ["app-server"]);
-		this.child = spawn(sp.cmd, sp.args, { stdio: ["pipe", "pipe", "pipe"], env: sp.env ? { ...env, ...sp.env } : env, detached: true });
+		// windowsHide: the app-server is spawned detached (its own console on
+		// Windows) — without this it pops a visible terminal window, and so do the
+		// shell commands it runs. This is the GPT-5.5 "lots of Command Prompt /
+		// PowerShell windows" Thomas hit. No-op on Linux/macOS.
+		this.child = spawn(sp.cmd, sp.args, { stdio: ["pipe", "pipe", "pipe"], env: sp.env ? { ...env, ...sp.env } : env, detached: true, windowsHide: true });
 		const rl = readline.createInterface({ input: this.child.stdout });
 		rl.on("line", (line) => this._onLine(line));
 		this.child.stderr.on("data", (d) => this.opts.log && this.opts.log(String(d)));

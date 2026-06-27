@@ -525,7 +525,7 @@ class DevServer {
 
 	dispose() {
 		if (this.proc) {
-			try { process.platform === "win32" ? spawn("taskkill", ["/pid", String(this.proc.pid), "/T", "/F"]) : this.proc.kill("SIGTERM"); } catch { }
+			try { process.platform === "win32" ? spawn("taskkill", ["/pid", String(this.proc.pid), "/T", "/F"], { windowsHide: true }) : this.proc.kill("SIGTERM"); } catch { }
 			this.proc = null;
 		}
 		this.url = null;

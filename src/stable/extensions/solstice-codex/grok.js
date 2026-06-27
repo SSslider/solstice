@@ -17,7 +17,7 @@ function killTree(child, signal = "SIGTERM") {
 	// Windows while it was a no-op cost on Linux/mac). Use taskkill /T to kill
 	// the whole tree the detached child leads; fall back to a plain kill.
 	if (process.platform === "win32") {
-		try { require("child_process").execFile("taskkill", ["/PID", String(child.pid), "/T", "/F"]); }
+		try { require("child_process").execFile("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true }); }
 		catch { try { child.kill(); } catch { } }
 		return;
 	}
@@ -376,7 +376,7 @@ class GrokProvider {
 			// a direct `node <cli.js>` invocation, preserving the newline-bearing
 			// --system-prompt-override arg. No-op on Linux/macOS.
 			const sp = resolveWinSpawn(this.bin, args);
-			const child = spawn(sp.cmd, sp.args, { cwd: this.cwd, env: sp.env ? { ...env, ...sp.env } : env, detached: true });
+			const child = spawn(sp.cmd, sp.args, { cwd: this.cwd, env: sp.env ? { ...env, ...sp.env } : env, detached: true, windowsHide: true });
 			this.child = child;
 			let buf = "";
 			const cleanupFile = () => { try { fs.unlinkSync(promptFile); } catch { } };
