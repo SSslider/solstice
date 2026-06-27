@@ -87,6 +87,12 @@ jobs:
       - name: Bundle codex binary (win32)
         run: bash scripts/bundle-codex-binary.sh win32
 
+      # Signed Node runtime so the grok/Composer engine launches without the
+      # Defender `spawn EPERM` block (winspawn prefers bin/node.exe over the
+      # unsigned Solstice.exe self-relaunch). win32-only; no-op elsewhere.
+      - name: Bundle node runtime (win32)
+        run: bash scripts/bundle-node-binary.sh win32
+
       - name: Build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
