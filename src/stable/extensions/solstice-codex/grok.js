@@ -43,13 +43,24 @@ function ensureBundledGrok(extensionPath) {
 // Resolution order: explicit setting → bundled engine → PATH. Mirrors
 // resolveCodexBinary so Composer/Grok behave like GPT-5.5 (always runnable).
 function resolveGrokBinary(extensionPath, configuredPath) {
-	if (configuredPath && fs.existsSync(configuredPath)) return configuredPath;
-	// Prefer a grok already on PATH — a user-installed CLI is Defender-trusted and
-	// is the EXACT path that worked for a week of Composer use. Only fall back to
-	// the bundled engine when the user has NO grok installed: spawning a freshly
-	// written, UNSIGNED bundled grok.exe ahead of the trusted one is what Defender
-	// blocks, surfacing as `spawn EPERM` + a Defender alert (regression from d671cde).
-	try { if (whichFull("grok")) return "grok"; } catch { /* ignore */ }
+	// Ignore a configuredPath that points back at our OWN bundled bin dir. An
+	// earlier broken build may have persisted that path into the user's settings —
+	// and it's the UNSIGNED binary Defender blocks. Honor only a real, external
+	// user-set path. (Prime regression suspect: the bundled engine, and any setting
+	// pointing at it, did NOT exist in the build that worked for a week.)
+	const bundledDir = path.join(extensionPath, "bin");
+	const pointsAtOurBundle = (p) => {
+		try { return path.resolve(p).toLowerCase().startsWith(path.resolve(bundledDir).toLowerCase()); }
+		catch { return false; }
+	};
+	if (configuredPath && fs.existsSync(configuredPath) && !pointsAtOurBundle(configuredPath)) return configuredPath;
+	// Prefer the user's INSTALLED grok — Defender-trusted, and the EXACT path that
+	// worked for a week of Composer use (run the npm-global grok.cmd via the user's
+	// node). whichFull now also searches the npm/node install dirs a GUI PATH omits.
+	try { const g = whichFull("grok"); if (g) return g; } catch { /* ignore */ }
+	// Only when the user has NO grok at all: the bundled engine. It is UNSIGNED, so
+	// spawning it ahead of an installed grok is exactly what Defender blocks →
+	// `spawn EPERM` + a Defender alert. Last resort, never the default.
 	const bundled = ensureBundledGrok(extensionPath);
 	if (bundled) return bundled;
 	return "grok";
