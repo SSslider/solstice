@@ -14,8 +14,34 @@
 const fs = require("fs");
 const path = require("path");
 
+// Dirs a Windows GUI process (Electron launched from the Start Menu / desktop)
+// commonly MISSES from PATH, but where npm/node actually install. THE recurring
+// Composer EPERM lived here: grok is an npm global, so its shim is `%APPDATA%\npm\
+// grok.cmd`; node is in `Program Files\nodejs`. A GUI child process often inherits
+// a stripped PATH WITHOUT these dirs — so whichFull("grok")/whichFull("node")
+// returned null INSIDE Solstice even though both run fine in the user's terminal.
+// The resolver then fell back to the freshly-written, UNSIGNED bundled engine,
+// which Windows Defender blocks → bare `spawn EPERM` + Defender alert. Searching
+// these known locations makes Solstice find the user's REAL, Defender-trusted
+// grok/node, so the bundled binary is never spawned on a machine that has them.
+function extraWinDirs() {
+	if (process.platform !== "win32") return [];
+	const env = process.env;
+	const candidates = [
+		env.APPDATA && path.join(env.APPDATA, "npm"),                       // npm global bin → grok.cmd
+		env.USERPROFILE && path.join(env.USERPROFILE, "AppData", "Roaming", "npm"),
+		env.ProgramFiles && path.join(env.ProgramFiles, "nodejs"),
+		env["ProgramFiles(x86)"] && path.join(env["ProgramFiles(x86)"], "nodejs"),
+		env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "Programs", "nodejs"),
+		env.USERPROFILE && path.join(env.USERPROFILE, "scoop", "shims"),    // scoop installs
+	].filter(Boolean);
+	// De-dup while preserving order.
+	return [...new Set(candidates)];
+}
+
 // Search PATH (+ PATHEXT on Windows) for a bare command name. Returns the full
-// path of the first match, or null. Mirrors how the OS resolves the command.
+// path of the first match, or null. On Windows also searches the known npm/node
+// install dirs that a GUI process's PATH frequently omits (see extraWinDirs).
 function whichFull(bin) {
 	if (!bin) return null;
 	if (bin.includes("/") || bin.includes("\\")) {
@@ -26,6 +52,7 @@ function whichFull(bin) {
 		? ["", ...(process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";")]
 		: [""];
 	const dirs = (process.env.PATH || "").split(isWin ? ";" : ":").filter(Boolean);
+	if (isWin) dirs.push(...extraWinDirs());
 	for (const dir of dirs) {
 		for (const ext of exts) {
 			const p = path.join(dir, bin + ext);
@@ -67,22 +94,27 @@ function resolveWinSpawn(bin, args) {
 	// A batch/PowerShell/bash npm shim — run the JS it wraps with Node, verbatim.
 	const js = jsEntryFromShim(full);
 	if (js) {
-		// 1) Prefer a node the USER already has on PATH. This is the path that
-		//    worked for a week of Composer use — a user-installed node is
-		//    Defender-trusted and launches with no EPERM. (Regression: a build
+		// Pass a PATH that includes the npm/node dirs a GUI process omits, so the
+		// grok child (and anything it spawns) can find node/its tools too — same
+		// root cause as the resolver miss above.
+		const augPath = [process.env.PATH || "", ...extraWinDirs()].filter(Boolean).join(";");
+		const augEnv = { ...process.env, PATH: augPath };
+		// 1) Prefer a node the USER already has (now also found in the npm/node
+		//    install dirs, not just the stripped GUI PATH). A user-installed node
+		//    is Defender-trusted and launches with no EPERM. (Regression: a build
 		//    that preferred a freshly written BUNDLED node.exe ahead of this one
 		//    re-introduced `spawn EPERM` + the Defender alert, because the
 		//    unsigned bundled binary is exactly what Defender blocks.)
 		const node = whichFull("node");
 		if (node && path.extname(node).toLowerCase() === ".exe") {
-			return { cmd: node, args: [js, ...args], env: null };
+			return { cmd: node, args: [js, ...args], env: augEnv };
 		}
-		// 2) No user node on PATH — fall back to the bundled node.exe if present.
+		// 2) No user node anywhere — fall back to the bundled node.exe if present.
 		const bundledNode = path.join(__dirname, "bin", "node.exe");
-		try { if (fs.existsSync(bundledNode)) return { cmd: bundledNode, args: [js, ...args], env: null }; } catch { /* ignore */ }
+		try { if (fs.existsSync(bundledNode)) return { cmd: bundledNode, args: [js, ...args], env: augEnv }; } catch { /* ignore */ }
 		// 3) Last resort — drive Electron's own binary as Node. May be blocked by
 		//    Defender on an unsigned build.
-		return { cmd: process.execPath, args: [js, ...args], env: { ELECTRON_RUN_AS_NODE: "1" } };
+		return { cmd: process.execPath, args: [js, ...args], env: { ...augEnv, ELECTRON_RUN_AS_NODE: "1" } };
 	}
 
 	// Couldn't crack the shim — last resort through cmd.exe (may mangle newline
