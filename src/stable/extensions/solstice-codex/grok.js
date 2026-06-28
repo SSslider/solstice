@@ -3,7 +3,51 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const zlib = require("zlib");
 const { resolveWinSpawn } = require("./winspawn");
+
+// ── Bundled grok engine ────────────────────────────────────────────────────
+// Composer 2.5 / Grok run on the @xai-official/grok engine — a native per-
+// platform binary. It was NEVER bundled (only codex was), so on a clean install
+// switching GPT-5.5 → Composer had NO engine to spawn: bare `spawn grok EPERM`,
+// or the "isn't installed" snap-back. THAT — not switch order — is why Composer
+// kept failing. We now bundle the engine like codex.exe so every model is
+// runnable out of the box, in any order. The payload ships brotli-compressed
+// (bin/grok[.exe].br, ~31MB) and is decompressed to bin/grok[.exe] (~107MB) on
+// first use — the same scheme @xai-official/grok's own trampoline uses.
+function grokBinName() {
+	return process.platform === "win32" ? "grok.exe" : "grok";
+}
+// Cheap presence check (NO decompression) — used for availability before send.
+function grokBundlePresent(extensionPath) {
+	const out = path.join(extensionPath, "bin", grokBinName());
+	try { return fs.existsSync(out) || fs.existsSync(out + ".br"); } catch { return false; }
+}
+// Ensure the bundled engine is decompressed and return its path, or null when
+// no bundled payload is present. Decompress is atomic (tmp + rename) and only
+// happens once (first Composer/Grok run after install).
+function ensureBundledGrok(extensionPath) {
+	const out = path.join(extensionPath, "bin", grokBinName());
+	try {
+		if (fs.existsSync(out)) return out;
+		const br = out + ".br";
+		if (!fs.existsSync(br)) return null;
+		const data = zlib.brotliDecompressSync(fs.readFileSync(br));
+		const tmp = out + ".tmp." + process.pid;
+		fs.writeFileSync(tmp, data);
+		if (process.platform !== "win32") fs.chmodSync(tmp, 0o755);
+		fs.renameSync(tmp, out);
+		return out;
+	} catch { return null; }
+}
+// Resolution order: explicit setting → bundled engine → PATH. Mirrors
+// resolveCodexBinary so Composer/Grok behave like GPT-5.5 (always runnable).
+function resolveGrokBinary(extensionPath, configuredPath) {
+	if (configuredPath && fs.existsSync(configuredPath)) return configuredPath;
+	const bundled = ensureBundledGrok(extensionPath);
+	if (bundled) return bundled;
+	return "grok";
+}
 
 // SIGTERM the whole process group, not just the CLI parent. The grok/claude
 // CLIs spawn their own model subprocess; killing only the parent orphans it.
@@ -455,4 +499,4 @@ class GrokProvider {
 	}
 }
 
-module.exports = { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, unifiedDiff, killTree };
+module.exports = { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, unifiedDiff, killTree, resolveGrokBinary, grokBundlePresent };

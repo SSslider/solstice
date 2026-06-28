@@ -6,7 +6,7 @@ const path = require("path");
 const os = require("os");
 const { CodexClient, resolveCodexBinary } = require("./codexClient");
 const { PreviewServer, DevServer, detectDevServerUrl, hasFramework } = require("./preview");
-const { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor } = require("./grok");
+const { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, resolveGrokBinary, grokBundlePresent } = require("./grok");
 const { ClaudeProvider, CLAUDE_LABEL } = require("./claude");
 const { FleetBridge } = require("./fleetBridge");
 const { FelixSkills } = require("./felixSkills");
@@ -965,10 +965,19 @@ self.addEventListener("fetch", (e) => {
 	runnerBin(runner) {
 		if (runner === "codex") return resolveCodexBinary(this.context.extensionPath, this.cfg().get("path"));
 		if (runner === "claude") return this.cfg().get("claudePath") || "claude";
-		return this.cfg().get("grokPath") || "grok"; // grok runner (grok-build / composer-2.5)
+		// grok runner (grok-build / composer-2.5): explicit setting → bundled engine → PATH.
+		return resolveGrokBinary(this.context.extensionPath, this.cfg().get("grokPath"));
 	}
 
 	runnerAvailable(runner) {
+		// grok ships its engine bundled (brotli payload) — count it as available
+		// WITHOUT forcing a decompression on every availability probe.
+		if (runner === "grok") {
+			const p = this.cfg().get("grokPath");
+			if (p && fs.existsSync(p)) return true;
+			if (grokBundlePresent(this.context.extensionPath)) return true;
+			return binOnPath("grok");
+		}
 		return binOnPath(this.runnerBin(runner));
 	}
 
@@ -1479,6 +1488,7 @@ self.addEventListener("fetch", (e) => {
 		if (!this.grok) {
 			this.grok = new GrokProvider({
 				cwd,
+				bin: resolveGrokBinary(this.context.extensionPath, this.cfg().get("grokPath")),
 				log: (s) => this.output.append(s),
 				notify: (m, p) => this.onNotification(m, p),
 			});

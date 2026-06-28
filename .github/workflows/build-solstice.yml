@@ -87,6 +87,12 @@ jobs:
       - name: Bundle codex binary (win32)
         run: bash scripts/bundle-codex-binary.sh win32
 
+      # Grok/Composer engine — bundled like codex so Composer 2.5 is runnable on
+      # a clean install in ANY order (the real fix for the recurring "switch to
+      # Composer → spawn EPERM / not installed"). Ships brotli-compressed.
+      - name: Bundle grok binary (win32)
+        run: bash scripts/bundle-grok-binary.sh win32
+
       # Signed Node runtime so the grok/Composer engine launches without the
       # Defender `spawn EPERM` block (winspawn prefers bin/node.exe over the
       # unsigned Solstice.exe self-relaunch). win32-only; no-op elsewhere.
@@ -150,6 +156,9 @@ jobs:
 
       - name: Bundle codex binary (darwin)
         run: bash scripts/bundle-codex-binary.sh darwin
+
+      - name: Bundle grok binary (darwin)
+        run: bash scripts/bundle-grok-binary.sh darwin
 
       - name: Build
         env:
@@ -216,6 +225,9 @@ jobs:
 
       - name: Bundle codex binary (linux)
         run: bash scripts/bundle-codex-binary.sh linux
+
+      - name: Bundle grok binary (linux)
+        run: bash scripts/bundle-grok-binary.sh linux
 
       - name: Build
         env:
