@@ -2608,9 +2608,20 @@ self.addEventListener("fetch", (e) => {
 			const out = path.join(outDir, `verify-${taskId || "build"}.png`);
 			const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
 			let child;
-			try { child = require("child_process").spawn(process.execPath, [browseJs, "shot", url, out, "1440x2200"], { env, detached: true, stdio: "ignore", windowsHide: true }); }
+			// detached only on *nix (Windows DETACHED_PROCESS pops console windows + we
+			// can't POSIX-group-kill it anyway — see the engine spawns).
+			const detached = process.platform !== "win32";
+			try { child = require("child_process").spawn(process.execPath, [browseJs, "shot", url, out, "1440x2200"], { env, detached, stdio: "ignore", windowsHide: true }); }
 			catch (e) { this.output.append("[self-verify] spawn failed: " + (e && e.message || e) + "\n"); return resolve(null); }
-			const timer = setTimeout(() => { try { process.kill(-child.pid, "SIGTERM"); } catch { } resolve(null); }, 90000);
+			const timer = setTimeout(() => {
+				// Windows has no POSIX process groups: process.kill(-pid) throws EPERM and
+				// orphans the tree. Use taskkill /T; POSIX path unchanged.
+				try {
+					if (process.platform === "win32") require("child_process").execFile("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
+					else process.kill(-child.pid, "SIGTERM");
+				} catch { }
+				resolve(null);
+			}, 90000);
 			child.on("close", (code) => { clearTimeout(timer); resolve(code === 0 && fs.existsSync(out) ? out : null); });
 			child.on("error", () => { clearTimeout(timer); resolve(null); });
 		});
