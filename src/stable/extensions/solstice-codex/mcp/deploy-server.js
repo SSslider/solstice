@@ -29,8 +29,9 @@ function ensureServer() {
 		if (pid > 0) { process.kill(pid, 0); return; } // alive
 	} catch { /* not running */ }
 	const child = spawn(process.execPath, [path.join(__dirname, "static-server.js")], {
-		detached: true,
+		detached: true, // intentional: deploy server must outlive the IDE (child.unref below)
 		stdio: "ignore",
+		windowsHide: true, // no console window on Windows
 		env: { ...process.env, SOLSTICE_DEPLOY_ROOT: DEPLOY_ROOT, SOLSTICE_DEPLOY_PORT: String(PORT) },
 	});
 	child.unref();

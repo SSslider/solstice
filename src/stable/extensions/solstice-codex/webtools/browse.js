@@ -69,7 +69,7 @@ async function scrollshot(bin, url, outPrefix, nStops, dims) {
 		"--hide-scrollbars", "--no-first-run", "--disable-extensions",
 		`--user-data-dir=${tmpProfile}`, `--window-size=${w},${h}`,
 		"--remote-debugging-port=0", "about:blank",
-	], { stdio: "ignore" });
+	], { stdio: "ignore", windowsHide: true });
 	const portFile = path.join(tmpProfile, "DevToolsActivePort");
 	try {
 		let port = 0;
@@ -137,7 +137,7 @@ async function videoframes(bin, url, outPrefix, nFrames, referrer) {
 		"--autoplay-policy=no-user-gesture-required",
 		`--user-data-dir=${tmpProfile}`, "--window-size=1440,810",
 		"--remote-debugging-port=0", "about:blank",
-	], { stdio: "ignore" });
+	], { stdio: "ignore", windowsHide: true });
 	const portFile = path.join(tmpProfile, "DevToolsActivePort");
 	try {
 		let port = 0;
@@ -212,7 +212,7 @@ async function withChrome(bin, fn) {
 		"--enable-unsafe-swiftshader", "--hide-scrollbars", "--no-first-run", "--disable-extensions",
 		`--user-data-dir=${tmpProfile}`, "--window-size=1440,900",
 		"--remote-debugging-port=0", "about:blank",
-	], { stdio: "ignore" });
+	], { stdio: "ignore", windowsHide: true });
 	const portFile = path.join(tmpProfile, "DevToolsActivePort");
 	try {
 		let port = 0;

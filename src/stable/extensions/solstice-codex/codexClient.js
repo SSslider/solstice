@@ -26,11 +26,19 @@ class CodexClient {
 		// Same Windows npm-shim EPERM guard as the grok provider: a bare codex
 		// resolves to codex.cmd, which CreateProcess refuses to run. No-op on *nix.
 		const sp = resolveWinSpawn(this.opts.binPath, ["app-server"]);
-		// windowsHide: the app-server is spawned detached (its own console on
-		// Windows) — without this it pops a visible terminal window, and so do the
-		// shell commands it runs. This is the GPT-5.5 "lots of Command Prompt /
-		// PowerShell windows" Thomas hit. No-op on Linux/macOS.
-		this.child = spawn(sp.cmd, sp.args, { stdio: ["pipe", "pipe", "pipe"], env: sp.env ? { ...env, ...sp.env } : env, detached: true, windowsHide: true });
+		// THE GPT-5.5 "Command Prompt / PowerShell window storm" fix. `detached:true`
+		// on Windows maps to the DETACHED_PROCESS creation flag, which DETACHES the
+		// child from any console and makes every console grandchild (codex.exe runs
+		// shell commands while building) ALLOCATE ITS OWN VISIBLE console — directly
+		// overriding the CREATE_NO_WINDOW that `windowsHide:true` sets. So detached +
+		// windowsHide CONTRADICT each other and detached wins → the popups. We don't
+		// need detached on Windows anyway: killTree() tears the tree down with
+		// `taskkill /T /F` (PID-tree), not a POSIX process-group kill. So: detached
+		// ONLY on *nix (where killTree uses process.kill(-pid) and needs the group);
+		// on Windows detached:false lets windowsHide's hidden console take effect and
+		// every shell grandchild inherits it → no windows. No behavior change on *nix.
+		const detached = process.platform !== "win32";
+		this.child = spawn(sp.cmd, sp.args, { stdio: ["pipe", "pipe", "pipe"], env: sp.env ? { ...env, ...sp.env } : env, detached, windowsHide: true });
 		const rl = readline.createInterface({ input: this.child.stdout });
 		rl.on("line", (line) => this._onLine(line));
 		this.child.stderr.on("data", (d) => this.opts.log && this.opts.log(String(d)));
