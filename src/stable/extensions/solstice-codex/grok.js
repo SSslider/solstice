@@ -4,7 +4,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
-const { resolveWinSpawn } = require("./winspawn");
+const { resolveWinSpawn, whichFull } = require("./winspawn");
 
 // ── Bundled grok engine ────────────────────────────────────────────────────
 // Composer 2.5 / Grok run on the @xai-official/grok engine — a native per-
@@ -44,6 +44,12 @@ function ensureBundledGrok(extensionPath) {
 // resolveCodexBinary so Composer/Grok behave like GPT-5.5 (always runnable).
 function resolveGrokBinary(extensionPath, configuredPath) {
 	if (configuredPath && fs.existsSync(configuredPath)) return configuredPath;
+	// Prefer a grok already on PATH — a user-installed CLI is Defender-trusted and
+	// is the EXACT path that worked for a week of Composer use. Only fall back to
+	// the bundled engine when the user has NO grok installed: spawning a freshly
+	// written, UNSIGNED bundled grok.exe ahead of the trusted one is what Defender
+	// blocks, surfacing as `spawn EPERM` + a Defender alert (regression from d671cde).
+	try { if (whichFull("grok")) return "grok"; } catch { /* ignore */ }
 	const bundled = ensureBundledGrok(extensionPath);
 	if (bundled) return bundled;
 	return "grok";

@@ -67,21 +67,21 @@ function resolveWinSpawn(bin, args) {
 	// A batch/PowerShell/bash npm shim — run the JS it wraps with Node, verbatim.
 	const js = jsEntryFromShim(full);
 	if (js) {
-		// 1) Prefer the SIGNED node.exe bundled with the extension (bin/node.exe,
-		//    same dir as codex.exe). This is the fix for the Composer/Grok
-		//    `spawn EPERM` + Windows Defender alert: the old fallback (step 3)
-		//    re-launched the UNSIGNED Solstice.exe as a HIDDEN node process, which
-		//    Defender blocks as malware-like behaviour. A signed Node binary is
-		//    trusted and launches cleanly — no Defender exclusion needed.
-		const bundledNode = path.join(__dirname, "bin", "node.exe");
-		try { if (fs.existsSync(bundledNode)) return { cmd: bundledNode, args: [js, ...args], env: null }; } catch { /* ignore */ }
-		// 2) A standalone node on PATH, if the user happens to have one.
+		// 1) Prefer a node the USER already has on PATH. This is the path that
+		//    worked for a week of Composer use — a user-installed node is
+		//    Defender-trusted and launches with no EPERM. (Regression: a build
+		//    that preferred a freshly written BUNDLED node.exe ahead of this one
+		//    re-introduced `spawn EPERM` + the Defender alert, because the
+		//    unsigned bundled binary is exactly what Defender blocks.)
 		const node = whichFull("node");
 		if (node && path.extname(node).toLowerCase() === ".exe") {
 			return { cmd: node, args: [js, ...args], env: null };
 		}
+		// 2) No user node on PATH — fall back to the bundled node.exe if present.
+		const bundledNode = path.join(__dirname, "bin", "node.exe");
+		try { if (fs.existsSync(bundledNode)) return { cmd: bundledNode, args: [js, ...args], env: null }; } catch { /* ignore */ }
 		// 3) Last resort — drive Electron's own binary as Node. May be blocked by
-		//    Defender on an unsigned build (the EPERM the bundled node above fixes).
+		//    Defender on an unsigned build.
 		return { cmd: process.execPath, args: [js, ...args], env: { ELECTRON_RUN_AS_NODE: "1" } };
 	}
 
