@@ -222,6 +222,7 @@ class GrokProvider {
 	constructor(opts) {
 		this.cwd = opts.cwd;
 		this.bin = opts.bin || "grok";
+		this.extensionPath = opts.extensionPath || "";
 		this.log = opts.log || (() => { });
 		this.notify = opts.notify;
 		this.threadId = "grok-" + Date.now().toString(36);
@@ -475,20 +476,25 @@ class GrokProvider {
 				// resolver handed CreateProcess a .cmd/.bat shim it can't launch. Log
 				// the EXACT command we tried so this is never a guessing game again:
 				// which bin, which resolved cmd, whether winspawn cracked the shim.
+				let epermDiag = "";
 				if (e && (e.code === "EPERM" || /EPERM/i.test(e.message || ""))) {
-					this.log(
-						`\n[EPERM] grok spawn failed.\n` +
-						`  configured bin : ${this.bin}\n` +
-						`  resolved cmd   : ${sp.cmd}\n` +
-						`  resolved arg0  : ${(sp.args && sp.args[0]) || "(none)"}\n` +
-						`  shim cracked   : ${sp.cmd !== this.bin ? "yes (rewrote to node/exe)" : "NO — bare name, this is the bug"}\n` +
-						`  platform/PATH  : ${process.platform}; node on PATH: ${require("./winspawn").whichFull("node") || "NOT FOUND"}\n` +
-						`  grok on PATH   : ${require("./winspawn").whichFull(this.bin) || "NOT FOUND"}\n`
-					);
+					const grokOnPath = require("./winspawn").whichFull(this.bin);
+					const nodeOnPath = require("./winspawn").whichFull("node");
+					const bundledDir = path.join(this.extensionPath || "", "bin");
+					const usingBundled = sp.cmd && bundledDir && path.resolve(sp.cmd).toLowerCase().startsWith(path.resolve(bundledDir).toLowerCase());
+					epermDiag =
+						`\n\n[EPERM] grok spawn failed — exact cause:\n` +
+						`• tried to launch : ${sp.cmd}\n` +
+						`• that file is    : ${usingBundled ? "the UNSIGNED bundled engine (Defender blocks this)" : "your installed grok"}\n` +
+						`• your installed grok : ${grokOnPath || "NOT FOUND on PATH"}\n` +
+						`• node : ${nodeOnPath || "NOT FOUND on PATH"}`;
+					this.log(epermDiag + "\n");
 				}
 				this.notify("error", {
 					threadId: tid,
-					error: { message: `Could not start the grok CLI (${this.bin}): ${e.message}. Open View → Output → "Felix" for the [EPERM] diagnostic. If grok is installed, this is a launcher bug — send me that log line.` },
+					// Surface the FULL diagnostic INLINE in the chat — never make the user
+					// dig through View → Output. The next failure explains itself here.
+					error: { message: `Could not start Composer/grok (${this.bin}): ${e.message}.${epermDiag}` },
 				});
 				this.notify("turn/completed", { threadId: tid, turn: { id: turnId } });
 				resolve();

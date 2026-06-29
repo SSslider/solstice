@@ -1489,6 +1489,7 @@ self.addEventListener("fetch", (e) => {
 			this.grok = new GrokProvider({
 				cwd,
 				bin: resolveGrokBinary(this.context.extensionPath, this.cfg().get("grokPath")),
+				extensionPath: this.context.extensionPath,
 				log: (s) => this.output.append(s),
 				notify: (m, p) => this.onNotification(m, p),
 			});
