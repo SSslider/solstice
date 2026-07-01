@@ -34,6 +34,17 @@ function extraWinDirs() {
 		env["ProgramFiles(x86)"] && path.join(env["ProgramFiles(x86)"], "nodejs"),
 		env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "Programs", "nodejs"),
 		env.USERPROFILE && path.join(env.USERPROFILE, "scoop", "shims"),    // scoop installs
+		// Node version managers — each puts the ACTIVE node + npm globals in its
+		// own dir that a GUI PATH misses just like %APPDATA%\npm:
+		env.NVM_SYMLINK,                                                    // nvm-windows active version
+		env.NVM_HOME,
+		env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "nvm"),
+		env.VOLTA_HOME && path.join(env.VOLTA_HOME, "bin"),                 // volta
+		env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "Volta", "bin"),
+		env.FNM_MULTISHELL_PATH,                                            // fnm active shell
+		env.PNPM_HOME,                                                      // pnpm global bin
+		env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "pnpm"),
+		env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "Yarn", "bin"),     // yarn global
 	].filter(Boolean);
 	// De-dup while preserving order.
 	return [...new Set(candidates)];
@@ -48,8 +59,11 @@ function whichFull(bin) {
 		try { return fs.existsSync(bin) ? bin : null; } catch { return null; }
 	}
 	const isWin = process.platform === "win32";
+	// PATHEXT can arrive stripped/mangled in a GUI-launched process — without .CMD
+	// in the list grok.cmd is invisible and we EPERM on the bare name. Always
+	// search the standard extensions IN ADDITION to whatever the env carries.
 	const exts = isWin
-		? ["", ...(process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";")]
+		? [...new Set(["", ...(process.env.PATHEXT || "").split(";"), ".COM", ".EXE", ".BAT", ".CMD"])]
 		: [""];
 	const dirs = (process.env.PATH || "").split(isWin ? ";" : ":").filter(Boolean);
 	if (isWin) dirs.push(...extraWinDirs());
@@ -78,6 +92,38 @@ function jsEntryFromShim(shimPath) {
 	try { return fs.existsSync(full) ? full : null; } catch { return null; }
 }
 
+// Fallback when the shim text doesn't match the regex (npm changes its shim
+// format across versions): the npm-global layout is deterministic — the shim
+// lives NEXT TO node_modules, and the wrapped package declares the bin in its
+// package.json `bin` field. Walk node_modules (incl. @scoped) and resolve the
+// entry for `binName` directly from package.json.
+function jsEntryFromNodeModules(shimPath, binName) {
+	const nm = path.join(path.dirname(shimPath), "node_modules");
+	let top;
+	try { top = fs.readdirSync(nm); } catch { return null; }
+	const pkgDirs = [];
+	for (const name of top) {
+		if (name.startsWith(".")) continue;
+		const d = path.join(nm, name);
+		if (name.startsWith("@")) {
+			try { for (const sub of fs.readdirSync(d)) pkgDirs.push(path.join(d, sub)); } catch { /* ignore */ }
+		} else {
+			pkgDirs.push(d);
+		}
+	}
+	for (const d of pkgDirs) {
+		let pkg;
+		try { pkg = JSON.parse(fs.readFileSync(path.join(d, "package.json"), "utf8")); } catch { continue; }
+		let entry = null;
+		if (typeof pkg.bin === "string" && (pkg.name === binName || path.basename(d) === binName)) entry = pkg.bin;
+		else if (pkg.bin && typeof pkg.bin === "object" && pkg.bin[binName]) entry = pkg.bin[binName];
+		if (!entry) continue;
+		const full = path.join(d, entry.split(/[\\/]/).join(path.sep));
+		try { if (fs.existsSync(full)) return full; } catch { /* ignore */ }
+	}
+	return null;
+}
+
 // Given (bin, args) decide what to actually spawn. No-op everywhere except
 // Windows, so Linux/macOS (server + fleet) behaviour is byte-identical to before.
 // Returns { cmd, args, env } — env is null when nothing extra is needed.
@@ -92,7 +138,8 @@ function resolveWinSpawn(bin, args) {
 	if (ext === ".exe" || ext === ".com") return { cmd: full, args: args.slice(), env: null };
 
 	// A batch/PowerShell/bash npm shim — run the JS it wraps with Node, verbatim.
-	const js = jsEntryFromShim(full);
+	const binName = path.basename(bin, path.extname(bin));
+	const js = jsEntryFromShim(full) || jsEntryFromNodeModules(full, binName);
 	if (js) {
 		// Pass a PATH that includes the npm/node dirs a GUI process omits, so the
 		// grok child (and anything it spawns) can find node/its tools too — same
@@ -125,4 +172,4 @@ function resolveWinSpawn(bin, args) {
 	return { cmd: full, args: args.slice(), env: null };
 }
 
-module.exports = { resolveWinSpawn, whichFull, jsEntryFromShim };
+module.exports = { resolveWinSpawn, whichFull, jsEntryFromShim, jsEntryFromNodeModules, extraWinDirs };

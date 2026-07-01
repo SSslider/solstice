@@ -438,10 +438,9 @@ class GrokProvider {
 			// a direct `node <cli.js>` invocation, preserving the newline-bearing
 			// --system-prompt-override arg. No-op on Linux/macOS.
 			const sp = resolveWinSpawn(this.bin, args);
-			// detached ONLY on *nix — on Windows DETACHED_PROCESS makes console
-			// grandchildren pop visible windows, defeating windowsHide (see codexClient.js).
-			const detached = process.platform !== "win32";
-			const child = spawn(sp.cmd, sp.args, { cwd: this.cwd, env: sp.env ? { ...env, ...sp.env } : env, detached, windowsHide: true });
+			// detached:true everywhere — the 04075-proven flag set (see the EMPIRICAL
+			// note in codexClient.js:start; same reasoning, same field evidence).
+			const child = spawn(sp.cmd, sp.args, { cwd: this.cwd, env: sp.env ? { ...env, ...sp.env } : env, detached: true, windowsHide: true });
 			this.child = child;
 			let buf = "";
 			const cleanupFile = () => { try { fs.unlinkSync(promptFile); } catch { } };

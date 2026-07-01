@@ -26,19 +26,15 @@ class CodexClient {
 		// Same Windows npm-shim EPERM guard as the grok provider: a bare codex
 		// resolves to codex.cmd, which CreateProcess refuses to run. No-op on *nix.
 		const sp = resolveWinSpawn(this.opts.binPath, ["app-server"]);
-		// THE GPT-5.5 "Command Prompt / PowerShell window storm" fix. `detached:true`
-		// on Windows maps to the DETACHED_PROCESS creation flag, which DETACHES the
-		// child from any console and makes every console grandchild (codex.exe runs
-		// shell commands while building) ALLOCATE ITS OWN VISIBLE console — directly
-		// overriding the CREATE_NO_WINDOW that `windowsHide:true` sets. So detached +
-		// windowsHide CONTRADICT each other and detached wins → the popups. We don't
-		// need detached on Windows anyway: killTree() tears the tree down with
-		// `taskkill /T /F` (PID-tree), not a POSIX process-group kill. So: detached
-		// ONLY on *nix (where killTree uses process.kill(-pid) and needs the group);
-		// on Windows detached:false lets windowsHide's hidden console take effect and
-		// every shell grandchild inherits it → no windows. No behavior change on *nix.
-		const detached = process.platform !== "win32";
-		this.child = spawn(sp.cmd, sp.args, { stdio: ["pipe", "pipe", "pipe"], env: sp.env ? { ...env, ...sp.env } : env, detached, windowsHide: true });
+		// EMPIRICAL (02/07): 04075 shipped `detached:true` and is the only build
+		// VERIFIED working for codex app-server on Thomas's Windows PC; the
+		// detached:false+windowsHide builds (04080-04083) broke it in the field
+		// (`codex exited(1)` / spawn EPERM). The Win32 mechanism is unproven, so we
+		// ship the proven flags instead of a theory. Known tradeoff: DETACHED_PROCESS
+		// can let console grandchildren pop visible windows (the 56075af "storm") —
+		// a model that CONNECTS beats cosmetic popups. Revisit only with on-machine
+		// evidence from the [EPERM]/engines diagnostics.
+		this.child = spawn(sp.cmd, sp.args, { stdio: ["pipe", "pipe", "pipe"], env: sp.env ? { ...env, ...sp.env } : env, detached: true, windowsHide: true });
 		const rl = readline.createInterface({ input: this.child.stdout });
 		rl.on("line", (line) => this._onLine(line));
 		this.child.stderr.on("data", (d) => this.opts.log && this.opts.log(String(d)));

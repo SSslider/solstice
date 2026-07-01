@@ -122,6 +122,11 @@
         "command": "solstice.agent.openCompanion",
         "title": "Solstice: Open Phone Companion",
         "category": "Solstice"
+      },
+      {
+        "command": "solstice.agent.checkEngines",
+        "title": "Check Model Engines (codex / grok / claude)",
+        "category": "Solstice"
       }
     ],
     "menus": {

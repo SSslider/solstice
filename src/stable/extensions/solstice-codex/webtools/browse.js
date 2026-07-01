@@ -198,21 +198,33 @@ async function videoframes(bin, url, outPrefix, nFrames, referrer) {
 	}
 }
 
-// ---- shared headless-Chrome + CDP session (search / read / crawl) ----
+// ---- shared Chrome + CDP session (search / read / crawl / live) ----
 // Mirrors the scrollshot/videoframes setup but exposes a tiny {send, evalJs, goto}
 // API so the text-oriented modes don't each re-implement the boilerplate.
-async function withChrome(bin, fn) {
+// opts.headed=true opens a REAL VISIBLE browser window (the "watch Felix browse"
+// mode) instead of headless; opts.keepOpen leaves that window open when done.
+async function withChrome(bin, fn, opts = {}) {
 	if (typeof WebSocket !== "function") {
 		console.error("This mode needs Node >= 22 (global WebSocket).");
 		process.exit(4);
 	}
+	const headed = !!opts.headed;
+	const keepOpen = !!opts.keepOpen;
 	const tmpProfile = fs.mkdtempSync(path.join(os.tmpdir(), "solstice-browse-"));
-	const chrome = spawn(bin, [
-		"--headless=new", "--disable-gpu", "--no-sandbox", "--mute-audio",
-		"--enable-unsafe-swiftshader", "--hide-scrollbars", "--no-first-run", "--disable-extensions",
-		`--user-data-dir=${tmpProfile}`, "--window-size=1440,900",
-		"--remote-debugging-port=0", "about:blank",
-	], { stdio: "ignore", windowsHide: true });
+	const args = headed
+		? [
+			// visible window, front and center — the user is meant to WATCH this
+			"--no-first-run", "--disable-extensions", "--mute-audio", "--no-default-browser-check",
+			`--user-data-dir=${tmpProfile}`, `--window-size=${opts.size || "1600,1000"}`, "--window-position=80,40",
+			"--remote-debugging-port=0", "about:blank",
+		]
+		: [
+			"--headless=new", "--disable-gpu", "--no-sandbox", "--mute-audio",
+			"--enable-unsafe-swiftshader", "--hide-scrollbars", "--no-first-run", "--disable-extensions",
+			`--user-data-dir=${tmpProfile}`, "--window-size=1440,900",
+			"--remote-debugging-port=0", "about:blank",
+		];
+	const chrome = spawn(bin, args, { stdio: "ignore", windowsHide: !headed });
 	const portFile = path.join(tmpProfile, "DevToolsActivePort");
 	try {
 		let port = 0;
@@ -245,9 +257,61 @@ async function withChrome(bin, fn) {
 		};
 		return await fn({ send, evalJs, goto });
 	} finally {
-		try { chrome.kill(); } catch { }
-		try { fs.rmSync(tmpProfile, { recursive: true, force: true }); } catch { }
+		if (keepOpen) {
+			// leave the visible window for the user; the temp profile stays until
+			// the OS cleans the tmp dir — a fair price for "keep browsing yourself"
+			try { chrome.unref(); } catch { }
+		} else {
+			try { chrome.kill(); } catch { }
+			try { fs.rmSync(tmpProfile, { recursive: true, force: true }); } catch { }
+		}
 	}
+}
+
+// LIVE ANALYSIS — the Antigravity-style "watch the agent browse" mode. Opens a
+// REAL, VISIBLE Chrome window on the user's screen and tours a site page by page
+// with a slow cinematic scroll, while printing the same readable-content
+// extraction as `crawl` to stdout for the agent. The user literally watches the
+// analysis happen; the agent gets the text. `keep` leaves the window open at the
+// end so the user can continue browsing where the tour stopped.
+async function live(bin, startUrl, maxPages, perPageSec, keepOpen) {
+	await withChrome(bin, async ({ evalJs, goto }) => {
+		const origin = new URL(startUrl).origin;
+		const seen = new Set();
+		const queue = [startUrl.split("#")[0]];
+		let count = 0;
+		while (queue.length && count < maxPages) {
+			const u = queue.shift();
+			if (seen.has(u)) continue;
+			seen.add(u);
+			try { await goto(u, 1500); } catch { continue; }
+			count++;
+			console.log(`\n===== [live ${count}/${maxPages}] ${u} =====`);
+			// cinematic top-to-bottom scroll the human can follow (also fires the
+			// site's reveal animations so the extraction sees everything)
+			const steps = Math.max(6, Math.min(28, Math.round(perPageSec * 2)));
+			for (let i = 1; i <= steps; i++) {
+				await evalJs(`window.scrollTo({ top: Math.floor(Math.max(0, (Math.max(document.body.scrollHeight, document.documentElement.scrollHeight) - innerHeight)) * ${i / steps}), behavior: 'smooth' }); ''`);
+				await sleep((perPageSec * 1000) / steps);
+			}
+			await evalJs("window.scrollTo({ top: 0, behavior: 'smooth' }); ''");
+			await sleep(700);
+			const data = (await evalJs(EXTRACT_JS)) || {};
+			console.log(`title: ${data.title || ""}`);
+			if (data.headings && data.headings.length) console.log(data.headings.slice(0, 12).join("\n"));
+			console.log((data.text || "").slice(0, 1600));
+			for (const l of data.links || []) {
+				try {
+					const lu = new URL(l.u);
+					const clean = (lu.origin + lu.pathname).split("#")[0];
+					if (lu.origin === origin && !seen.has(clean) && !/\.(png|jpe?g|gif|svg|css|js|pdf|zip|mp4|webp|ico|woff2?|ttf)(\?|$)/i.test(lu.pathname)) {
+						queue.push(clean);
+					}
+				} catch { }
+			}
+		}
+		console.log(`\n[live] toured ${count} page(s) under ${origin} in a VISIBLE browser window${keepOpen ? " (left open for you)" : ""}.`);
+	}, { headed: true, keepOpen });
 }
 
 // In-page readable-content extractor: strips chrome/boilerplate and returns
@@ -381,7 +445,7 @@ function main() {
 		return;
 	}
 	if (!mode || !url || ((mode === "shot" || mode === "scrollshot" || mode === "videoframes") && !out)) {
-		console.error("usage:\n  browse.js search <query> [count]            web search → ranked title/url/snippet list (no API key)\n  browse.js read <url>                        page main content as clean readable text/markdown\n  browse.js crawl <url> [depth] [maxPages]    same-site crawl → text of each page\n  browse.js shot <url> <out.png> [WxH]        screenshot\n  browse.js scrollshot <url> <outPrefix> [stops]\n  browse.js videoframes <url> <outPrefix> [frames] [referrer]\n  browse.js dom <url>                         raw rendered HTML");
+		console.error("usage:\n  browse.js search <query> [count]            web search → ranked title/url/snippet list (no API key)\n  browse.js read <url>                        page main content as clean readable text/markdown\n  browse.js crawl <url> [depth] [maxPages]    same-site crawl → text of each page\n  browse.js live <url> [maxPages] [secPerPage] [keep]   VISIBLE browser tour the user watches (analysis text to stdout)\n  browse.js shot <url> <out.png> [WxH]        screenshot\n  browse.js scrollshot <url> <outPrefix> [stops]\n  browse.js videoframes <url> <outPrefix> [frames] [referrer]\n  browse.js dom <url>                         raw rendered HTML");
 		process.exit(2);
 	}
 	const bin = findBrowser();
@@ -418,6 +482,13 @@ function main() {
 		const depth = /^\d+$/.test(out || "") ? Math.min(3, Math.max(0, parseInt(out, 10))) : 1;
 		const maxPages = /^\d+$/.test(size || "") ? Math.min(40, Math.max(1, parseInt(size, 10))) : 10;
 		crawl(bin, url, depth, maxPages).catch((err) => { console.error(`crawl failed: ${err.message}`); process.exit(1); });
+		return;
+	}
+	if (mode === "live") {
+		const maxPages = /^\d+$/.test(out || "") ? Math.min(12, Math.max(1, parseInt(out, 10))) : 4;
+		const perPageSec = /^\d+$/.test(size || "") ? Math.min(60, Math.max(4, parseInt(size, 10))) : 12;
+		const keepOpen = (extra || "") === "keep";
+		live(bin, url, maxPages, perPageSec, keepOpen).catch((err) => { console.error(`live failed: ${err.message}`); process.exit(1); });
 		return;
 	}
 	const dims = /^\d+x\d+$/.test(size || "") ? size.replace("x", ",") : "1440,2200";

@@ -969,6 +969,32 @@ self.addEventListener("fetch", (e) => {
 		return resolveGrokBinary(this.context.extensionPath, this.cfg().get("grokPath"));
 	}
 
+	// "Why won't Composer/Grok start?" — one command that answers it BEFORE a
+	// failed build: for every model, the exact binary that will be spawned, how
+	// it was found (or that it wasn't), and the node used to crack npm shims.
+	async checkEngines() {
+		const { whichFull, resolveWinSpawn } = require("./winspawn");
+		const lines = [];
+		for (const meta of Object.values(MODEL_REGISTRY)) {
+			const runner = meta.runner;
+			let bin = "";
+			try { bin = this.runnerBin(runner) || "<none>"; } catch (e) { bin = `<resolve failed: ${e.message}>`; }
+			const found = whichFull(bin);
+			let spawnPlan = "";
+			try {
+				const sp = resolveWinSpawn(bin, ["--version"]);
+				spawnPlan = sp.cmd === bin ? "direct" : `via ${sp.cmd}`;
+			} catch (e) { spawnPlan = `<plan failed: ${e.message}>`; }
+			lines.push(`${meta.label} [${runner}]`, `  bin   : ${bin}`, `  found : ${found || "NOT FOUND"}`, `  spawn : ${spawnPlan}`);
+		}
+		const node = whichFull("node");
+		lines.push(`node    : ${node || "NOT FOUND (npm-shim CLIs like grok need it)"}`);
+		const report = lines.join("\n");
+		try { this.output.appendLine(`[engines]\n${report}`); } catch { /* output channel optional */ }
+		vscode.window.showInformationMessage("Solstice — Model Engines", { modal: true, detail: report });
+		return report;
+	}
+
 	runnerAvailable(runner) {
 		// grok ships its engine bundled (brotli payload) — count it as available
 		// WITHOUT forcing a decompression on every availability probe.
@@ -1404,6 +1430,7 @@ self.addEventListener("fetch", (e) => {
 			`- Search the web — discover URLs for any topic / design references (Awwwards, Behance, Dribbble): ${shot.replace(" shot <url> <out.png>", ' search "<query>" [count]')}`,
 			`- Read any web page as clean readable text/markdown (use this to actually research a page — much better than raw HTML): ${shot.replace(" shot <url> <out.png>", ' read <url>')}`,
 			`- Crawl a site — walk same-domain pages and read each (e.g. browse an Awwwards/Behance gallery): ${shot.replace(" shot <url> <out.png>", ' crawl <url> [depth] [maxPages]')}`,
+			`- LIVE ANALYSIS THE USER WATCHES — when the user asks to analyze a site live / "so I can see" / wants to watch you browse, open a REAL VISIBLE browser window on their screen that tours the site page-by-page with slow cinematic scrolling while the readable text streams back to you: ${shot.replace(" shot <url> <out.png>", ' live <url> [maxPages] [secPerPage] [keep]')}. Append 'keep' to leave the window open for them afterwards. Run it FIRST so they watch from the start, and STILL write DECONSTRUCT.md incrementally while the tour runs.`,
 			`- Screenshot any website: ${shot}`,
 			`- Dump a website's raw rendered HTML (prefer 'read' above unless you need exact markup): ${dom}`,
 			`- Sample frames from a video on any page (case-study scroll videos, domain-locked Vimeo embeds): ${shot.replace(" shot <url> <out.png>", ' videoframes <url> <outPrefix> [frames] [referrer]')}`,
@@ -1440,6 +1467,7 @@ self.addEventListener("fetch", (e) => {
 			`- Search the web — discover URLs for any topic / design references (Awwwards, Behance, Dribbble): ${shot.replace(" shot <url> <out.png>", ' search "<query>" [count]')}`,
 			`- Read any web page as clean readable text/markdown (use this to actually research a page — much better than raw HTML): ${shot.replace(" shot <url> <out.png>", ' read <url>')}`,
 			`- Crawl a site — walk same-domain pages and read each (e.g. browse an Awwwards/Behance gallery): ${shot.replace(" shot <url> <out.png>", ' crawl <url> [depth] [maxPages]')}`,
+			`- LIVE ANALYSIS THE USER WATCHES — when the user asks to analyze a site live / "so I can see" / wants to watch you browse, open a REAL VISIBLE browser window on their screen that tours the site page-by-page with slow cinematic scrolling while the readable text streams back to you: ${shot.replace(" shot <url> <out.png>", ' live <url> [maxPages] [secPerPage] [keep]')}. Append 'keep' to leave the window open for them afterwards. Run it FIRST so they watch from the start, and STILL write DECONSTRUCT.md incrementally while the tour runs.`,
 			`- Screenshot any website: ${shot}`,
 			`- Dump a website's raw rendered HTML (prefer 'read' above unless you need exact markup): ${dom}`,
 			`- Sample frames from a video on any page (case-study scroll videos, domain-locked Vimeo embeds): ${shot.replace(" shot <url> <out.png>", ' videoframes <url> <outPrefix> [frames] [referrer]')}`,
@@ -1759,7 +1787,7 @@ self.addEventListener("fetch", (e) => {
 		return [
 			"You are the Solstice IDE agent. Capabilities beyond your normal tools:",
 			`- Web browsing & research: ${run}`,
-			"  Replace mode 'shot' with: 'search \"<query>\" [count]' to discover URLs for any topic / design references (Awwwards, Behance, Dribbble); 'read <url>' to get a page's main content as clean readable text (best for research); 'crawl <url> [depth] [maxPages]' to walk same-domain pages (e.g. an Awwwards gallery); 'dom <url>' for raw HTML; 'videoframes <url> <outPrefix> [frames] [referrer]' to sample frames from a video on the page.",
+			"  Replace mode 'shot' with: 'search \"<query>\" [count]' to discover URLs for any topic / design references (Awwwards, Behance, Dribbble); 'read <url>' to get a page's main content as clean readable text (best for research); 'crawl <url> [depth] [maxPages]' to walk same-domain pages (e.g. an Awwwards gallery); 'live <url> [maxPages] [secPerPage] [keep]' to open a REAL VISIBLE browser window the user WATCHES while you tour+analyze a site (use when they ask to see the analysis live; 'keep' leaves it open); 'dom <url>' for raw HTML; 'videoframes <url> <outPrefix> [frames] [referrer]' to sample frames from a video on the page.",
 			"  Research workflow: when asked to imitate/take inspiration from a site or find references, SEARCH, then READ or CRAWL the top results, and screenshot the best before designing — don't guess from memory.",
 			"  After taking a screenshot, ALWAYS open it with your view_image tool to study layout, colors, typography and content. Use this whenever the user asks to inspect, analyze or imitate a website or design (e.g. Behance/Dribbble references).",
 			"  Capture designs TOP-TO-BOTTOM in DESKTOP and MOBILE: desktop full-page via 'scrollshot <url> <outPrefix> [stops]', mobile full-page via 'shot <url> <out.png> 390x3000'; open each with view_image to study both viewports.",
@@ -3835,7 +3863,8 @@ function activate(context) {
 		vscode.commands.registerCommand("solstice.agent.openCompanion", () => controller.startCompanion()),
 		vscode.commands.registerCommand("solstice.agent.openConnectors", () => openConnectors(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.openWorkflow", () => openWorkflow(controller, context.extensionUri)),
-		vscode.commands.registerCommand("solstice.agent.openFleet", () => openFleet(controller, context.extensionUri))
+		vscode.commands.registerCommand("solstice.agent.openFleet", () => openFleet(controller, context.extensionUri)),
+		vscode.commands.registerCommand("solstice.agent.checkEngines", () => controller.checkEngines())
 	);
 	// Always-visible Solstice version badge (bottom status bar) → opens Fleet on click.
 	try {
