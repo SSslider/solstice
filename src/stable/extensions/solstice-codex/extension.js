@@ -1431,6 +1431,7 @@ self.addEventListener("fetch", (e) => {
 			`- Read any web page as clean readable text/markdown (use this to actually research a page — much better than raw HTML): ${shot.replace(" shot <url> <out.png>", ' read <url>')}`,
 			`- Crawl a site — walk same-domain pages and read each (e.g. browse an Awwwards/Behance gallery): ${shot.replace(" shot <url> <out.png>", ' crawl <url> [depth] [maxPages]')}`,
 			`- LIVE ANALYSIS THE USER WATCHES — when the user asks to analyze a site live / "so I can see" / wants to watch you browse, open a REAL VISIBLE browser window on their screen that tours the site page-by-page with slow cinematic scrolling while the readable text streams back to you: ${shot.replace(" shot <url> <out.png>", ' live <url> [maxPages] [secPerPage] [keep]')}. Append 'keep' to leave the window open for them afterwards. Run it FIRST so they watch from the start, and STILL write DECONSTRUCT.md incrementally while the tour runs.`,
+			`- LIVE INTERACTION — operate a site while the user WATCHES (click menus, fill forms, walk a checkout): write an actions JSON file [{"goto":"…"},{"click":"text:תפריט"},{"type":["#q","חיפוש"]},{"scroll":900},{"shot":"out.png"},{"keep":true}] then run: ${shot.replace(" shot <url> <out.png>", ' act <actions.json>')}. Every step prints the page state back to you.`,
 			`- Screenshot any website: ${shot}`,
 			`- Dump a website's raw rendered HTML (prefer 'read' above unless you need exact markup): ${dom}`,
 			`- Sample frames from a video on any page (case-study scroll videos, domain-locked Vimeo embeds): ${shot.replace(" shot <url> <out.png>", ' videoframes <url> <outPrefix> [frames] [referrer]')}`,
@@ -1442,9 +1443,10 @@ self.addEventListener("fetch", (e) => {
 			'  codex exec --skip-git-repo-check --full-auto "Use your image generation tool to create: <detailed description>. Then copy the EXACT file you just generated (by its precise filename from ~/.codex/generated_images/ — never the most recent file, other jobs may write there concurrently) into <workspace>/public/images/<descriptive-name>.png"',
 			"  Verify the file exists in the workspace afterwards, and view it with codex vision to confirm it shows the right subject before using it.",
 			"- MANDATORY — real imagery, never placeholders: every page you build MUST use real images. NEVER ship gray boxes, solid-color rectangles, `placeholder.com` / `via.placeholder` / `dummyimage` / `picsum.photos` / `unsplash.com/random` URLs, empty `<img>`, or `TODO image` comments. For EVERY image the design calls for (hero, gallery, product shots, avatars, backgrounds), GENERATE a real one with the image command above and save it under public/images/ BEFORE you finish — a build that still contains placeholders is NOT done. If generation fails, retry; only as a last resort use a tasteful CSS gradient/photographic texture styled to look intentional, never a raw placeholder service.",
-			"- ALWAYS externalize your plan to a FILE — the user watches the plan in the CENTER window, not the chat. The MOMENT you start a multi-step build, WRITE the plan to `.solstice/PLAN.md` (create the .solstice folder) BEFORE doing anything else, and re-write the file after each step so the live timeline updates. Don't only describe the plan in chat. Shape: group steps under `## Phase name` headings; each step `1. [ ] Step title`; optional one-line `_short detail_`; nested `   - [ ] sub-task`. Progress marks: `[x]` done, `[~]` current, `[ ]` pending. Short, outcome-oriented titles.",
+			"- ALWAYS externalize your plan to a FILE — the user watches the plan in the CENTER window, not the chat. The MOMENT you start a multi-step build, WRITE the plan to `.solstice/PLAN.md` (create the .solstice folder) BEFORE doing anything else, and re-write the file after each step so the live timeline updates. Don't only describe the plan in chat. Shape: group steps under `## Phase name` headings; each step `1. [ ] Step title`; optional one-line `_short detail_`; nested `   - [ ] sub-task`. Progress marks: `[x]` done, `[~]` current, `[ ]` pending. Short, outcome-oriented titles. FOLLOW-UP PROMPTS CONTINUE THE SAME PLAN: when the user sends another request after a build, DO NOT overwrite or restart the plan — APPEND a new `## Phase` for the new request to the existing .solstice/PLAN.md and keep all completed phases with their [x] marks, so the center timeline shows the whole project evolving across prompts.",
 			"- ALWAYS externalize your design/site analysis to a FILE — the user reads the analysis in the CENTER window as a research dashboard, not the chat. When deconstructing / analyzing / researching a design, website or app, the FIRST thing you do is create `RESEARCH.md` (or `DECONSTRUCT.md`) in the workspace root, and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end, and never only in chat. Include as you go: what you examined, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, detected techniques (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed frames/screenshots with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
+			`- PREMIUM COMPONENT LIBRARY — your fastest path to an Awwwards-bar page. BEFORE building any common section (navbar, hero, features, gallery, stats, testimonials, pricing, CTA, footer) from scratch, read ${path.join(this.context.extensionPath, "prompts", "components", "library.html")} (sections are delimited by '═══ COMPONENT: <id> ═══' markers; ids+tags in manifest.json next to it). Copy the closest component, then ADAPT it to the client: retheme the --c-* tokens to the brand palette, replace ALL copy with sector-true Hebrew, swap in real/generated imagery, rename fx- prefixes on collision. NEVER ship a component verbatim — it is a high starting bar, not a final design.`,
 			this.agentBehavior(),
 			this.appModeGuidance(),
 			playbook ? "\n" + playbook : "",
@@ -1468,6 +1470,7 @@ self.addEventListener("fetch", (e) => {
 			`- Read any web page as clean readable text/markdown (use this to actually research a page — much better than raw HTML): ${shot.replace(" shot <url> <out.png>", ' read <url>')}`,
 			`- Crawl a site — walk same-domain pages and read each (e.g. browse an Awwwards/Behance gallery): ${shot.replace(" shot <url> <out.png>", ' crawl <url> [depth] [maxPages]')}`,
 			`- LIVE ANALYSIS THE USER WATCHES — when the user asks to analyze a site live / "so I can see" / wants to watch you browse, open a REAL VISIBLE browser window on their screen that tours the site page-by-page with slow cinematic scrolling while the readable text streams back to you: ${shot.replace(" shot <url> <out.png>", ' live <url> [maxPages] [secPerPage] [keep]')}. Append 'keep' to leave the window open for them afterwards. Run it FIRST so they watch from the start, and STILL write DECONSTRUCT.md incrementally while the tour runs.`,
+			`- LIVE INTERACTION — operate a site while the user WATCHES (click menus, fill forms, walk a checkout): write an actions JSON file [{"goto":"…"},{"click":"text:תפריט"},{"type":["#q","חיפוש"]},{"scroll":900},{"shot":"out.png"},{"keep":true}] then run: ${shot.replace(" shot <url> <out.png>", ' act <actions.json>')}. Every step prints the page state back to you.`,
 			`- Screenshot any website: ${shot}`,
 			`- Dump a website's raw rendered HTML (prefer 'read' above unless you need exact markup): ${dom}`,
 			`- Sample frames from a video on any page (case-study scroll videos, domain-locked Vimeo embeds): ${shot.replace(" shot <url> <out.png>", ' videoframes <url> <outPrefix> [frames] [referrer]')}`,
@@ -1480,7 +1483,9 @@ self.addEventListener("fetch", (e) => {
 			"- MANDATORY — real imagery, never placeholders: every page you build MUST use real images. NEVER ship gray boxes, solid-color rectangles, `placeholder.com` / `via.placeholder` / `dummyimage` / `picsum.photos` / `unsplash.com/random` URLs, empty `<img>`, or `TODO image` comments. Generate a real image (via the codex image command above) for EVERY slot the design needs and save it under public/images/ before finishing — placeholders mean the build is NOT done.",
 			"- For multi-step builds, use your todo/plan tool and keep step statuses updated as you work — the IDE renders it as a live checklist.",
 			"- When deconstructing / analyzing / researching a design, website, or app: maintain DECONSTRUCT.md (or RESEARCH.md) in the workspace root and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end. The IDE renders this file live to the user as a research dashboard. Include as you go: what you examined so far, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, techniques you detected (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed the frames/screenshots you examine as images with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
+			"- FOLLOW-UP PROMPTS CONTINUE THE SAME PLAN: append a new `## Phase` to the existing .solstice/PLAN.md for each new user request — never restart the plan file; completed phases keep their [x].",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
+			`- PREMIUM COMPONENT LIBRARY — your fastest path to an Awwwards-bar page. BEFORE building any common section (navbar, hero, features, gallery, stats, testimonials, pricing, CTA, footer) from scratch, read ${path.join(this.context.extensionPath, "prompts", "components", "library.html")} (sections are delimited by '═══ COMPONENT: <id> ═══' markers; ids+tags in manifest.json next to it). Copy the closest component, then ADAPT it to the client: retheme the --c-* tokens to the brand palette, replace ALL copy with sector-true Hebrew, swap in real/generated imagery, rename fx- prefixes on collision. NEVER ship a component verbatim — it is a high starting bar, not a final design.`,
 			this.agentBehavior(),
 			this.appModeGuidance(),
 			playbook ? "\n" + playbook : "",
@@ -1796,6 +1801,8 @@ self.addEventListener("fetch", (e) => {
 			"- For any multi-step build task, first create a plan with your plan tool and keep step statuses updated as you work.",
 			"- When deconstructing / analyzing / researching a design, website, or app: maintain DECONSTRUCT.md (or RESEARCH.md) in the workspace root and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end. The IDE renders this file live to the user as a research dashboard. Include as you go: what you examined so far, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, techniques you detected (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed the frames/screenshots you examine as images with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
+			`- PREMIUM COMPONENT LIBRARY — your fastest path to an Awwwards-bar page. BEFORE building any common section (navbar, hero, features, gallery, stats, testimonials, pricing, CTA, footer) from scratch, read ${path.join(this.context.extensionPath, "prompts", "components", "library.html")} (sections are delimited by '═══ COMPONENT: <id> ═══' markers; ids+tags in manifest.json next to it). Copy the closest component, then ADAPT it to the client: retheme the --c-* tokens to the brand palette, replace ALL copy with sector-true Hebrew, swap in real/generated imagery, rename fx- prefixes on collision. NEVER ship a component verbatim — it is a high starting bar, not a final design.`,
+			"- FOLLOW-UP PROMPTS CONTINUE THE SAME PLAN: when the user sends another request after a build, keep ONE evolving plan for the project — append a new phase for the new request; never restart from scratch; completed steps stay marked done.",
 			this.agentBehavior(),
 			this.appModeGuidance(),
 			playbook ? "\n" + playbook : "",
@@ -2617,12 +2624,51 @@ self.addEventListener("fetch", (e) => {
 		];
 		if (shot) lines.push(`צילמתי screenshot של התוצאה: ${shot}`, "למד את הצילום לעומק (אותו תהליך כמו בבדיקת reference: codex exec -i עבור grok, או פתח אותו ישירות אם אתה codex).");
 		else lines.push(`לא הצלחתי לצלם אוטומטית — צלם בעצמך את ${url} עם כלי ה-screenshot ולמד את הצילום.`);
-		lines.push(
-			`האם התוצאה תואמת למשימה: "${task.slice(0, 240)}"?`,
-			"אם משהו שבור / חסר / לא מיושר / לא יפה — תקן עכשיו ואז עצור.",
-			"אם הכל תקין — אל תיגע בקוד, רק כתוב במשפט אחד שהבדיקה עברה."
-		);
+		// FIDELITY LOOP: when reference material exists on disk (reference shot /
+		// deconstruction frames), verification is not yes/no — it's an
+		// iterate-until-convergence loop the agent runs INSIDE this turn:
+		// screenshot → vision-compare vs reference → fix → re-screenshot, ≤3 rounds.
+		const refs = this.fidelityReferences();
+		if (refs.length) {
+			lines.push(
+				"",
+				"🎯 לולאת נאמנות (חובה — יש reference לפרויקט הזה):",
+				`חומרי הרפרנס: ${refs.slice(0, 6).join(", ")}`,
+				"1. צלם את מה שבנית לכל אורכו (scrollshot של ה-preview, לא רק את החלק העליון).",
+				"2. השווה חזותית מול הרפרנס (describe על שניהם אם אתה text-only) וכתוב ל-.solstice/FIDELITY.md טבלת פערים קונקרטית: layout, צבעים (hex מול hex), טיפוגרפיה, ריווח, תנועה.",
+				"3. תקן את כל הפערים בקוד. 4. צלם שוב והשווה שוב.",
+				"חזור על 1-4 עד שאין פער מהותי — מקסימום 3 סבבים. עדכן את FIDELITY.md בכל סבב (Round N: מה נסגר, מה נשאר).",
+				"רק כשאין פערים מהותיים כתוב שהבדיקה עברה — לא אחרי סבב ראשון עם פערים פתוחים."
+			);
+		} else {
+			lines.push(
+				`האם התוצאה תואמת למשימה: "${task.slice(0, 240)}"?`,
+				"אם משהו שבור / חסר / לא מיושר / לא יפה — תקן עכשיו ואז עצור.",
+				"אם הכל תקין — אל תיגע בקוד, רק כתוב במשפט אחד שהבדיקה עברה."
+			);
+		}
 		this.post({ type: "injectPrompt", text: lines.join("\n") });
+	}
+	// Reference material the fidelity loop converges against: explicit reference
+	// image, deconstruction frames, or scrollshots of the source site — whatever
+	// the analysis phase left in .solstice/.
+	fidelityReferences() {
+		const cwd = workspaceCwd();
+		if (!cwd) return [];
+		const out = [];
+		for (const name of ["reference.png", "reference.jpg", "ref.png"]) {
+			const p = path.join(cwd, ".solstice", name);
+			try { if (fs.existsSync(p)) out.push(p); } catch { }
+		}
+		for (const dir of ["frames", "refs"]) {
+			const d = path.join(cwd, ".solstice", dir);
+			try {
+				for (const f of fs.readdirSync(d).slice(0, 8)) {
+					if (/\.(png|jpe?g|webp)$/i.test(f)) out.push(path.join(d, f));
+				}
+			} catch { }
+		}
+		return out;
 	}
 	// Headless screenshot of the live preview into .solstice/verify-<taskId>.png.
 	// Spawns browse.js via the same ELECTRON_RUN_AS_NODE path the agent itself
@@ -2662,12 +2708,14 @@ self.addEventListener("fetch", (e) => {
 	async skillsHint(task) {
 		try {
 			if (!this.skills) return "";
-			const hits = await this.skills.retrieve(task, 3);
+			const hits = await this.skills.retrieve(task, 4);
 			if (!hits.length) return "";
+			this.skills.recordUse(hits); // proven skills float up over time
 			const blocks = hits.map((h) =>
-				"• " + (h.meta.name || "skill") + (h.meta.tags && h.meta.tags.length ? " [" + h.meta.tags.join(", ") + "]" : "") +
+				"• " + (h.meta.kind === "lesson" ? "⚠️ לקח: " : "") + (h.meta.name || "skill") +
+				(h.meta.tags && h.meta.tags.length ? " [" + h.meta.tags.join(", ") + "]" : "") +
 				"\n" + h.body.slice(0, 500).trim());
-			return "🧠 ידע נצבר רלוונטי (skills מבניות קודמות מאומתות — השתמש אם עוזר):\n" + blocks.join("\n\n") + "\n\n---\n\n";
+			return "🧠 ידע נצבר רלוונטי (skills מבניות מאומתות + לקחים מטעויות עבר — השתמש, ואל תחזור על לקח שסומן ⚠️):\n" + blocks.join("\n\n") + "\n\n---\n\n";
 		} catch { return ""; }
 	}
 
@@ -2715,6 +2763,21 @@ self.addEventListener("fetch", (e) => {
 				"",
 			].join("\n");
 			this.skills.learn({ name, tags, sector, body, provenance: b.taskId || "" });
+			// Post-incident learning: if the fidelity loop logged gaps, distill them
+			// into a LESSON so the same gaps are avoided in the NEXT build.
+			const cwd = workspaceCwd();
+			const fidelityFile = cwd ? path.join(cwd, ".solstice", "FIDELITY.md") : null;
+			if (fidelityFile && fs.existsSync(fidelityFile)) {
+				const gaps = fs.readFileSync(fidelityFile, "utf8").slice(0, 1500);
+				this.skills.rememberLesson({
+					name: "fidelity-" + (sector || "general"),
+					tags: [...tags, "fidelity", "gaps"],
+					sector,
+					body: "# פערי נאמנות שנמצאו ותוקנו בבנייה מאומתת\n\nבבנייה הבאה מאותו סוג — הימנע מהפערים האלה מראש:\n\n" + gaps,
+					provenance: b.taskId || "",
+					change_note: "distilled from FIDELITY.md of verified build",
+				});
+			}
 		} catch (e) { this.output.append("[skills] learn failed: " + (e && e.message || e) + "\n"); }
 	}
 

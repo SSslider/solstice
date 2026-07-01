@@ -268,6 +268,69 @@ async function withChrome(bin, fn, opts = {}) {
 	}
 }
 
+// LIVE INTERACTION — the step beyond `live`: a VISIBLE browser the agent OPERATES
+// while the user watches — clicking, typing, scrolling through real flows
+// (menus, forms, checkout…). Actions come as a JSON file:
+//   [{"goto":"https://…"}, {"click":"CSS-or-text"}, {"type":["CSS","text"]},
+//    {"scroll":900}, {"wait":1500}, {"shot":"out.png"}]
+// `click` accepts a CSS selector, or text: prefix to click by visible text.
+// After every action the page's readable state is printed so the agent can
+// reason about what happened. Ends keeping the window open with "keep": true
+// as the LAST array element.
+async function act(bin, actionsFile) {
+	let actions;
+	try { actions = JSON.parse(fs.readFileSync(actionsFile, "utf8")); } catch (e) {
+		console.error(`act: cannot read actions file: ${e.message}`); process.exit(2);
+	}
+	if (!Array.isArray(actions) || !actions.length) { console.error("act: actions must be a non-empty JSON array"); process.exit(2); }
+	const keepOpen = actions.length && actions[actions.length - 1] && actions[actions.length - 1].keep === true;
+	await withChrome(bin, async ({ send, evalJs, goto }) => {
+		const clickTarget = async (spec) => {
+			const byText = spec.startsWith("text:");
+			const finder = byText
+				? `(() => { const t=${JSON.stringify(spec.slice(5))}.trim().toLowerCase();
+					const els=[...document.querySelectorAll('a,button,[role=button],input[type=submit],label,summary')];
+					const el=els.find(e=>(e.innerText||e.value||'').trim().toLowerCase().includes(t));
+					if(!el) return null; el.scrollIntoView({block:'center',behavior:'smooth'});
+					const r=el.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`
+				: `(() => { const el=document.querySelector(${JSON.stringify(spec)});
+					if(!el) return null; el.scrollIntoView({block:'center',behavior:'smooth'});
+					const r=el.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`;
+			const pt = await evalJs(finder);
+			if (!pt) { console.log(`[act] click: NOT FOUND: ${spec}`); return false; }
+			await sleep(650); // let the smooth scroll land where the user can see it
+			for (const type of ["mousePressed", "mouseReleased"]) {
+				await send("Input.dispatchMouseEvent", { type, x: pt.x, y: pt.y, button: "left", clickCount: 1 });
+			}
+			console.log(`[act] clicked: ${spec}`);
+			return true;
+		};
+		for (const step of actions) {
+			if (step.keep !== undefined && Object.keys(step).length === 1) continue;
+			if (step.goto) { await goto(step.goto, 1200); console.log(`[act] goto: ${step.goto}`); }
+			else if (step.click) await clickTarget(String(step.click));
+			else if (step.type) {
+				const [sel, text] = step.type;
+				const ok = await evalJs(`(() => { const el=document.querySelector(${JSON.stringify(sel)}); if(!el) return false; el.focus(); return true; })()`);
+				if (ok) { await send("Input.insertText", { text: String(text) }); console.log(`[act] typed into ${sel}`); }
+				else console.log(`[act] type: NOT FOUND: ${sel}`);
+			}
+			else if (step.scroll !== undefined) { await evalJs(`window.scrollBy({ top: ${Number(step.scroll) || 0}, behavior: 'smooth' }); ''`); console.log(`[act] scrolled ${step.scroll}`); }
+			else if (step.wait) await sleep(Math.min(15000, Number(step.wait) || 0));
+			else if (step.shot) {
+				const s = await send("Page.captureScreenshot", { format: "png" });
+				const f = path.resolve(String(step.shot));
+				fs.writeFileSync(f, Buffer.from(s.data, "base64"));
+				console.log(`[act] shot: ${f}`);
+			}
+			await sleep(450); // human-followable pacing
+		}
+		const state = (await evalJs(EXTRACT_JS)) || {};
+		console.log(`\n[act] final page: ${state.title || ""}`);
+		console.log((state.text || "").slice(0, 1200));
+	}, { headed: true, keepOpen });
+}
+
 // LIVE ANALYSIS — the Antigravity-style "watch the agent browse" mode. Opens a
 // REAL, VISIBLE Chrome window on the user's screen and tours a site page by page
 // with a slow cinematic scroll, while printing the same readable-content
@@ -482,6 +545,10 @@ function main() {
 		const depth = /^\d+$/.test(out || "") ? Math.min(3, Math.max(0, parseInt(out, 10))) : 1;
 		const maxPages = /^\d+$/.test(size || "") ? Math.min(40, Math.max(1, parseInt(size, 10))) : 10;
 		crawl(bin, url, depth, maxPages).catch((err) => { console.error(`crawl failed: ${err.message}`); process.exit(1); });
+		return;
+	}
+	if (mode === "act") {
+		act(bin, url).catch((err) => { console.error(`act failed: ${err.message}`); process.exit(1); });
 		return;
 	}
 	if (mode === "live") {

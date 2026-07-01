@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<!--
+  FELIX PREMIUM COMPONENT LIBRARY v1 (02/07)
+  ═══════════════════════════════════════════
+  Awwwards-level, self-contained section templates. Each component is delimited
+  by  <!- - ═══ COMPONENT: <id> ═══ - ->  markers and carries its OWN scoped
+  <style> + <script> (vanilla JS only — no framework assumptions).
+
+  HOW TO USE (Felix):
+  1. Read this file, copy the component sections the design calls for.
+  2. ADAPT — never ship verbatim: retheme via the :root tokens (--c-*), swap
+     copy/imagery to the client's sector, rename fx-* class prefixes if they
+     collide. Components are a STARTING POINT at a high bar, not a final look.
+  3. All components are RTL-safe (logical properties) and responsive.
+  4. Replace picsum placeholder URLs with generated/real client imagery.
+-->
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Felix Component Library</title>
+<style>
+  :root{
+    --c-bg:#0a0a0f; --c-surface:#12121a; --c-ink:#f4f2ee; --c-muted:rgba(244,242,238,.6);
+    --c-accent:#8b5cf6; --c-accent-2:#22d3ee; --c-hair:rgba(255,255,255,.09);
+    --f-display:"Fraunces","Noto Serif Hebrew",ui-serif,Georgia,serif;
+    --f-body:"IBM Plex Sans Hebrew",ui-sans-serif,system-ui,sans-serif;
+  }
+  *{box-sizing:border-box} body{margin:0;background:var(--c-bg);color:var(--c-ink);font-family:var(--f-body)}
+  .lib-divider{padding:.6rem 1.4rem;font:700 .68rem/1 var(--f-body);letter-spacing:.28em;text-transform:uppercase;color:var(--c-accent);border-block:1px dashed var(--c-hair);background:#07070c}
+</style>
+</head>
+<body>
+
+<div class="lib-divider">component: nav-glass</div>
+<!-- ═══ COMPONENT: nav-glass ═══ tags: navbar, sticky, glass, shrink-on-scroll -->
+<header class="fxnav" id="fxnav">
+  <style>
+    .fxnav{position:sticky;top:0;z-index:50;display:flex;align-items:center;justify-content:space-between;
+      padding:1.1rem 2rem;transition:padding .35s ease,background .35s ease,box-shadow .35s ease;
+      background:transparent;border-bottom:1px solid transparent}
+    .fxnav.is-solid{padding:.6rem 2rem;background:color-mix(in srgb,var(--c-bg) 78%,transparent);
+      backdrop-filter:blur(18px) saturate(1.2);border-bottom-color:var(--c-hair);box-shadow:0 12px 40px rgba(0,0,0,.35)}
+    .fxnav-logo{font:600 1.15rem var(--f-display);letter-spacing:.02em}
+    .fxnav-logo b{color:var(--c-accent)}
+    .fxnav-links{display:flex;gap:1.6rem;font-size:.85rem}
+    .fxnav-links a{color:var(--c-muted);text-decoration:none;position:relative;transition:color .2s}
+    .fxnav-links a:hover{color:var(--c-ink)}
+    .fxnav-links a::after{content:"";position:absolute;inset-inline:0;bottom:-6px;height:1.5px;background:var(--c-accent);
+      transform:scaleX(0);transform-origin:center;transition:transform .25s ease}
+    .fxnav-links a:hover::after{transform:scaleX(1)}
+    .fxnav-cta{font:600 .82rem var(--f-body);color:var(--c-bg);background:var(--c-ink);border-radius:999px;
+      padding:.6rem 1.3rem;text-decoration:none;transition:transform .2s,box-shadow .25s}
+    .fxnav-cta:hover{transform:translateY(-2px);box-shadow:0 10px 30px rgba(139,92,246,.35)}
+    @media(max-width:720px){.fxnav-links{display:none}}
+  </style>
+  <span class="fxnav-logo">סטודיו<b>.</b></span>
+  <nav class="fxnav-links"><a href="#">עבודות</a><a href="#">שירותים</a><a href="#">אודות</a><a href="#">בלוג</a></nav>
+  <a class="fxnav-cta" href="#">בואו נדבר</a>
+  <script>
+    (()=>{const n=document.getElementById("fxnav");
+      addEventListener("scroll",()=>n.classList.toggle("is-solid",scrollY>24),{passive:true});})();
+  </script>
+</header>
+
+<div class="lib-divider">component: hero-aurora</div>
+<!-- ═══ COMPONENT: hero-aurora ═══ tags: hero, dark, aurora, display-type, magnetic-cta -->
+<section class="fxhero">
+  <style>
+    .fxhero{position:relative;min-height:92vh;display:grid;place-content:center;text-align:center;overflow:hidden;isolation:isolate}
+    .fxhero-blob{position:absolute;border-radius:50%;filter:blur(90px);opacity:.55;z-index:-1;animation:fxhero-drift 18s ease-in-out infinite alternate}
+    .fxhero-blob.b1{width:52vw;height:52vw;background:radial-gradient(circle,var(--c-accent),transparent 65%);top:-18vw;inset-inline-start:-10vw}
+    .fxhero-blob.b2{width:44vw;height:44vw;background:radial-gradient(circle,var(--c-accent-2),transparent 65%);bottom:-16vw;inset-inline-end:-8vw;animation-delay:-9s}
+    @keyframes fxhero-drift{to{transform:translate(6vw,4vh) scale(1.15)}}
+    .fxhero-kicker{font:700 .72rem var(--f-body);letter-spacing:.34em;text-transform:uppercase;color:var(--c-accent);margin-bottom:1.4rem;opacity:0;animation:fxhero-up .8s .1s cubic-bezier(.22,1,.36,1) forwards}
+    .fxhero-title{font:560 clamp(2.6rem,8vw,6rem)/1.04 var(--f-display);letter-spacing:-.015em;margin:0 0 1.4rem;max-width:16ch;opacity:0;animation:fxhero-up .9s .25s cubic-bezier(.22,1,.36,1) forwards}
+    .fxhero-title em{font-style:normal;background:linear-gradient(100deg,var(--c-accent),var(--c-accent-2));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+    .fxhero-sub{color:var(--c-muted);font-size:clamp(1rem,1.6vw,1.2rem);line-height:1.7;max-width:46ch;margin:0 auto 2.4rem;opacity:0;animation:fxhero-up .9s .4s cubic-bezier(.22,1,.36,1) forwards}
+    .fxhero-cta{display:inline-block;font:700 1rem var(--f-body);color:var(--c-bg);background:var(--c-ink);border-radius:999px;padding:1.05rem 2.6rem;text-decoration:none;transition:transform .18s ease,box-shadow .25s ease;opacity:0;animation:fxhero-up .9s .55s cubic-bezier(.22,1,.36,1) forwards;will-change:transform}
+    .fxhero-cta:hover{box-shadow:0 18px 50px rgba(139,92,246,.45)}
+    @keyframes fxhero-up{from{opacity:0;transform:translateY(28px)}to{opacity:1;transform:none}}
+    .fxhero-scroll{position:absolute;bottom:2rem;inset-inline:0;display:grid;place-items:center;color:var(--c-muted);font-size:.7rem;letter-spacing:.24em;text-transform:uppercase}
+    .fxhero-scroll::after{content:"";width:1px;height:34px;margin-top:.5rem;background:linear-gradient(var(--c-accent),transparent);animation:fxhero-pulse 1.6s ease-in-out infinite}
+    @keyframes fxhero-pulse{50%{opacity:.3}}
+  </style>
+  <span class="fxhero-blob b1"></span><span class="fxhero-blob b2"></span>
+  <span class="fxhero-kicker">סטודיו דיגיטל · תל אביב</span>
+  <h1 class="fxhero-title">אנחנו בונים חוויות <em>שאי אפשר לשכוח</em></h1>
+  <p class="fxhero-sub">מיתוג, אתרים וקמפיינים לעסקים שרוצים להיראות כמו המובילים בתחום — כי הרושם הראשוני קורה פעם אחת.</p>
+  <a class="fxhero-cta" href="#" data-magnetic>נתחיל פרויקט ←</a>
+  <span class="fxhero-scroll">גלול</span>
+  <script>
+    // magnetic CTA — the button leans toward the cursor
+    (()=>{document.querySelectorAll("[data-magnetic]").forEach(el=>{
+      el.addEventListener("mousemove",e=>{const r=el.getBoundingClientRect();
+        el.style.transform=`translate(${(e.clientX-r.x-r.width/2)*.25}px,${(e.clientY-r.y-r.height/2)*.35}px)`;});
+      el.addEventListener("mouseleave",()=>el.style.transform="");});})();
+  </script>
+</section>
+
+<div class="lib-divider">component: features-bento</div>
+<!-- ═══ COMPONENT: features-bento ═══ tags: features, bento-grid, hover-glow, reveal -->
+<section class="fxbento">
+  <style>
+    .fxbento{padding:6rem 2rem;max-width:72rem;margin:auto}
+    .fxbento-head{max-width:38rem;margin-bottom:3rem}
+    .fxbento-kicker{font:700 .7rem var(--f-body);letter-spacing:.3em;text-transform:uppercase;color:var(--c-accent)}
+    .fxbento-title{font:560 clamp(1.8rem,3.6vw,2.6rem)/1.15 var(--f-display);margin:.7rem 0 0}
+    .fxbento-grid{display:grid;gap:1rem;grid-template-columns:repeat(4,1fr);grid-auto-rows:11rem}
+    .fxbento-card{position:relative;border:1px solid var(--c-hair);border-radius:1.25rem;padding:1.5rem;overflow:hidden;
+      background:linear-gradient(165deg,color-mix(in srgb,var(--c-surface) 92%,var(--c-accent)),var(--c-surface));
+      transition:transform .3s cubic-bezier(.22,1,.36,1),border-color .3s;opacity:0;transform:translateY(26px)}
+    .fxbento-card.in{opacity:1;transform:none;transition:opacity .7s cubic-bezier(.22,1,.36,1),transform .7s cubic-bezier(.22,1,.36,1),border-color .3s}
+    .fxbento-card:hover{transform:translateY(-5px);border-color:color-mix(in srgb,var(--c-accent) 55%,transparent)}
+    .fxbento-card::before{content:"";position:absolute;inset:0;opacity:0;transition:opacity .35s;
+      background:radial-gradient(420px 200px at var(--mx,50%) var(--my,0%),color-mix(in srgb,var(--c-accent) 16%,transparent),transparent 70%)}
+    .fxbento-card:hover::before{opacity:1}
+    .fxbento-card.wide{grid-column:span 2}.fxbento-card.tall{grid-row:span 2}
+    .fxbento-ico{font-size:1.5rem;margin-bottom:.8rem;display:block}
+    .fxbento-card h3{font:640 1.06rem var(--f-body);margin:0 0 .4rem}
+    .fxbento-card p{font-size:.85rem;line-height:1.6;color:var(--c-muted);margin:0}
+    @media(max-width:900px){.fxbento-grid{grid-template-columns:repeat(2,1fr)}}
+    @media(max-width:560px){.fxbento-grid{grid-template-columns:1fr;grid-auto-rows:auto}}
+  </style>
+  <div class="fxbento-head">
+    <span class="fxbento-kicker">מה אנחנו עושים</span>
+    <h2 class="fxbento-title">כל מה שהמותג שלך צריך, במקום אחד</h2>
+  </div>
+  <div class="fxbento-grid">
+    <article class="fxbento-card wide tall"><span class="fxbento-ico">✦</span><h3>אתרים שמוכרים</h3><p>עיצוב ופיתוח אתרי תדמית ומסחר ברמת פרימיום — מהירים, נגישים, ומותאמים בדיוק לקהל שלך. כל פיקסל מנומק.</p></article>
+    <article class="fxbento-card"><span class="fxbento-ico">◈</span><h3>מיתוג</h3><p>זהות ויזואלית שמספרת סיפור.</p></article>
+    <article class="fxbento-card"><span class="fxbento-ico">▶</span><h3>וידאו וריל</h3><p>תוכן שעוצר את הגלילה.</p></article>
+    <article class="fxbento-card wide"><span class="fxbento-ico">📈</span><h3>קמפיינים</h3><p>מדיה ממומנת עם דאטה אמיתי — לא ניחושים.</p></article>
+    <article class="fxbento-card"><span class="fxbento-ico">🤖</span><h3>אוטומציה</h3><p>AI בשירות העסק.</p></article>
+  </div>
+  <script>
+    (()=>{const io=new IntersectionObserver(es=>es.forEach((e,)=>{if(e.isIntersecting){e.target.classList.add("in");io.unobserve(e.target)}}),{rootMargin:"-60px"});
+      document.querySelectorAll(".fxbento-card").forEach((c,i)=>{c.style.transitionDelay=(i*70)+"ms";io.observe(c);
+        c.addEventListener("mousemove",e=>{const r=c.getBoundingClientRect();c.style.setProperty("--mx",(e.clientX-r.x)+"px");c.style.setProperty("--my",(e.clientY-r.y)+"px")});});})();
+  </script>
+</section>
+
+<div class="lib-divider">component: gallery-hover</div>
+<!-- ═══ COMPONENT: gallery-hover ═══ tags: gallery, portfolio, hover-reveal, masonry -->
+<section class="fxgal">
+  <style>
+    .fxgal{padding:5rem 2rem;max-width:76rem;margin:auto}
+    .fxgal-head{display:flex;align-items:baseline;justify-content:space-between;gap:1rem;margin-bottom:2.4rem}
+    .fxgal-title{font:560 clamp(1.8rem,3.4vw,2.5rem) var(--f-display);margin:0}
+    .fxgal-all{font-size:.85rem;color:var(--c-accent);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--c-accent) 45%,transparent)}
+    .fxgal-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1.1rem}
+    .fxgal-item{position:relative;border-radius:1.1rem;overflow:hidden;aspect-ratio:4/5;display:block;text-decoration:none;color:inherit}
+    .fxgal-item:nth-child(2){transform:translateY(2rem)}
+    .fxgal-item img{width:100%;height:100%;object-fit:cover;transition:transform .7s cubic-bezier(.22,1,.36,1),filter .5s}
+    .fxgal-item:hover img{transform:scale(1.07);filter:brightness(.65)}
+    .fxgal-meta{position:absolute;inset-inline:1.2rem;bottom:1.1rem;opacity:0;transform:translateY(14px);transition:opacity .4s,transform .45s cubic-bezier(.22,1,.36,1)}
+    .fxgal-item:hover .fxgal-meta{opacity:1;transform:none}
+    .fxgal-meta b{font:640 1.1rem var(--f-body);display:block}
+    .fxgal-meta span{font-size:.78rem;color:rgba(255,255,255,.75)}
+    .fxgal-tag{position:absolute;top:1rem;inset-inline-start:1rem;font:700 .64rem var(--f-body);letter-spacing:.12em;text-transform:uppercase;
+      background:rgba(8,8,14,.55);backdrop-filter:blur(8px);padding:.32rem .7rem;border-radius:999px;opacity:0;transition:opacity .35s}
+    .fxgal-item:hover .fxgal-tag{opacity:1}
+    @media(max-width:760px){.fxgal-grid{grid-template-columns:1fr 1fr}.fxgal-item:nth-child(2){transform:none}}
+  </style>
+  <div class="fxgal-head"><h2 class="fxgal-title">עבודות נבחרות</h2><a class="fxgal-all" href="#">כל הפרויקטים ←</a></div>
+  <div class="fxgal-grid">
+    <a class="fxgal-item" href="#"><img src="https://picsum.photos/seed/fx1/640/800" alt=""><span class="fxgal-tag">מיתוג</span><span class="fxgal-meta"><b>מרפאת שיניים בוטיק</b><span>מיתוג מלא + אתר</span></span></a>
+    <a class="fxgal-item" href="#"><img src="https://picsum.photos/seed/fx2/640/800" alt=""><span class="fxgal-tag">אתר</span><span class="fxgal-meta"><b>סטודיו כושר</b><span>אתר + מערכת הזמנות</span></span></a>
+    <a class="fxgal-item" href="#"><img src="https://picsum.photos/seed/fx3/640/800" alt=""><span class="fxgal-tag">קמפיין</span><span class="fxgal-meta"><b>רשת מסעדות</b><span>קמפיין השקה</span></span></a>
+  </div>
+</section>
+
+<div class="lib-divider">component: stats-band</div>
+<!-- ═══ COMPONENT: stats-band ═══ tags: stats, counters, animated-numbers -->
+<section class="fxstats">
+  <style>
+    .fxstats{border-block:1px solid var(--c-hair);background:linear-gradient(180deg,color-mix(in srgb,var(--c-accent) 7%,var(--c-bg)),var(--c-bg));
+      padding:3.6rem 2rem;display:flex;justify-content:center;gap:clamp(2rem,7vw,6rem);flex-wrap:wrap;text-align:center}
+    .fxstats-item b{font:560 clamp(2.2rem,4.6vw,3.4rem)/1 var(--f-display);display:block;
+      background:linear-gradient(100deg,var(--c-ink),color-mix(in srgb,var(--c-accent) 70%,var(--c-ink)));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+    .fxstats-item span{font-size:.8rem;color:var(--c-muted);letter-spacing:.06em}
+  </style>
+  <div class="fxstats-item"><b data-count="140">0</b><span>פרויקטים שהושקו</span></div>
+  <div class="fxstats-item"><b data-count="98" data-suffix="%">0</b><span>לקוחות ממליצים</span></div>
+  <div class="fxstats-item"><b data-count="12">0</b><span>פרסים בינלאומיים</span></div>
+  <div class="fxstats-item"><b data-count="6" data-suffix="×">0</b><span>החזר השקעה ממוצע</span></div>
+  <script>
+    (()=>{const io=new IntersectionObserver(es=>es.forEach(e=>{if(!e.isIntersecting)return;io.unobserve(e.target);
+      const el=e.target,t=+el.dataset.count,sfx=el.dataset.suffix||"",t0=performance.now();
+      (function tick(now){const p=Math.min(1,(now-t0)/1400),ease=1-Math.pow(1-p,3);
+        el.textContent=Math.round(t*ease)+sfx;if(p<1)requestAnimationFrame(tick)})(t0);}),{threshold:.6});
+      document.querySelectorAll("[data-count]").forEach(el=>io.observe(el));})();
+  </script>
+</section>
+
+<div class="lib-divider">component: testimonials-marquee</div>
+<!-- ═══ COMPONENT: testimonials-marquee ═══ tags: testimonials, marquee, infinite-scroll -->
+<section class="fxquotes">
+  <style>
+    .fxquotes{padding:5.5rem 0;overflow:hidden}
+    .fxquotes-title{text-align:center;font:560 clamp(1.7rem,3.2vw,2.4rem) var(--f-display);margin:0 0 2.6rem}
+    .fxquotes-track{display:flex;gap:1.2rem;width:max-content;animation:fxq-roll 36s linear infinite}
+    .fxquotes:hover .fxquotes-track{animation-play-state:paused}
+    @keyframes fxq-roll{to{transform:translateX(50%)}} /* RTL: track flows right */
+    .fxq-card{width:22rem;flex:none;border:1px solid var(--c-hair);border-radius:1.2rem;padding:1.5rem;background:var(--c-surface)}
+    .fxq-stars{color:#f5c518;letter-spacing:.15em;font-size:.8rem}
+    .fxq-card p{font-size:.92rem;line-height:1.7;color:var(--c-ink);margin:.8rem 0 1rem}
+    .fxq-who{display:flex;align-items:center;gap:.7rem}
+    .fxq-who img{width:2.4rem;height:2.4rem;border-radius:50%;object-fit:cover}
+    .fxq-who b{font-size:.85rem;display:block}
+    .fxq-who span{font-size:.72rem;color:var(--c-muted)}
+  </style>
+  <h2 class="fxquotes-title">לקוחות מספרים</h2>
+  <div class="fxquotes-track" id="fxqTrack">
+    <article class="fxq-card"><span class="fxq-stars">★★★★★</span><p>"תוך חודש מהשקת האתר החדש — פי 3 פניות. הרמה פשוט אחרת."</p><div class="fxq-who"><img src="https://i.pravatar.cc/96?img=32" alt=""><span><b>ד"ר קובי לוי</b><span>מרפאת שיניים, ת"א</span></span></div></article>
+    <article class="fxq-card"><span class="fxq-stars">★★★★★</span><p>"הצוות הבין את המותג שלנו יותר טוב מאיתנו. התוצאה מדברת בעד עצמה."</p><div class="fxq-who"><img src="https://i.pravatar.cc/96?img=47" alt=""><span><b>טלי ברק</b><span>רשת סטודיו פילאטיס</span></span></div></article>
+    <article class="fxq-card"><span class="fxq-stars">★★★★★</span><p>"מקצוענים אמיתיים. עמדו בכל דדליין והתוצאה עלתה על הציפיות."</p><div class="fxq-who"><img src="https://i.pravatar.cc/96?img=12" alt=""><span><b>מושיקו אדרי</b><span>יבואן רכב</span></span></div></article>
+  </div>
+  <script>
+    // duplicate the cards once → seamless infinite loop
+    (()=>{const t=document.getElementById("fxqTrack");t.innerHTML+=t.innerHTML;})();
+  </script>
+</section>
+
+<div class="lib-divider">component: pricing-glass</div>
+<!-- ═══ COMPONENT: pricing-glass ═══ tags: pricing, tiers, glass, highlight -->
+<section class="fxprice">
+  <style>
+    .fxprice{padding:5.5rem 2rem;max-width:68rem;margin:auto;text-align:center}
+    .fxprice-title{font:560 clamp(1.8rem,3.4vw,2.5rem) var(--f-display);margin:0 0 .6rem}
+    .fxprice-sub{color:var(--c-muted);margin:0 0 3rem}
+    .fxprice-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1.2rem;align-items:stretch}
+    .fxp-card{position:relative;border:1px solid var(--c-hair);border-radius:1.4rem;padding:2rem 1.6rem;text-align:start;
+      background:linear-gradient(175deg,rgba(255,255,255,.045),rgba(255,255,255,.015));transition:transform .3s cubic-bezier(.22,1,.36,1),border-color .3s}
+    .fxp-card:hover{transform:translateY(-6px)}
+    .fxp-card.hot{border-color:color-mix(in srgb,var(--c-accent) 65%,transparent);
+      background:linear-gradient(175deg,color-mix(in srgb,var(--c-accent) 14%,var(--c-surface)),var(--c-surface));
+      box-shadow:0 30px 80px -30px color-mix(in srgb,var(--c-accent) 55%,transparent)}
+    .fxp-flag{position:absolute;top:-0.8rem;inset-inline-start:50%;transform:translateX(50%);font:700 .66rem var(--f-body);letter-spacing:.1em;
+      background:linear-gradient(100deg,var(--c-accent),var(--c-accent-2));color:#fff;border-radius:999px;padding:.35rem .9rem}
+    .fxp-name{font:640 1rem var(--f-body);margin:0 0 .4rem}
+    .fxp-price{font:560 2.6rem/1 var(--f-display);margin:0}
+    .fxp-price small{font:400 .8rem var(--f-body);color:var(--c-muted)}
+    .fxp-list{list-style:none;padding:0;margin:1.4rem 0 1.8rem;display:grid;gap:.55rem;font-size:.86rem;color:var(--c-muted)}
+    .fxp-list li::before{content:"✓";color:var(--c-accent);margin-inline-end:.55rem;font-weight:700}
+    .fxp-cta{display:block;text-align:center;font:700 .9rem var(--f-body);text-decoration:none;border-radius:999px;padding:.85rem;
+      color:var(--c-ink);border:1px solid var(--c-hair);transition:all .2s}
+    .fxp-card.hot .fxp-cta{background:var(--c-ink);color:var(--c-bg);border-color:transparent}
+    .fxp-cta:hover{border-color:var(--c-accent);transform:translateY(-2px)}
+    @media(max-width:820px){.fxprice-grid{grid-template-columns:1fr}}
+  </style>
+  <h2 class="fxprice-title">חבילות שירות</h2>
+  <p class="fxprice-sub">מחיר שקוף. בלי הפתעות. תמיד אפשר לשדרג.</p>
+  <div class="fxprice-grid">
+    <article class="fxp-card"><h3 class="fxp-name">בסיס</h3><p class="fxp-price">₪4,900<small> / פרויקט</small></p><ul class="fxp-list"><li>אתר תדמית עד 5 עמודים</li><li>עיצוב רספונסיבי מלא</li><li>SEO בסיסי</li><li>חודש ליווי</li></ul><a class="fxp-cta" href="#">בחירה</a></article>
+    <article class="fxp-card hot"><span class="fxp-flag">הכי פופולרי</span><h3 class="fxp-name">פרימיום</h3><p class="fxp-price">₪12,900<small> / פרויקט</small></p><ul class="fxp-list"><li>אתר עד 12 עמודים + בלוג</li><li>אנימציות ומיקרו-אינטראקציות</li><li>מיתוג + שפה ויזואלית</li><li>SEO מתקדם + אנליטיקס</li><li>3 חודשי ליווי</li></ul><a class="fxp-cta" href="#">בחירה</a></article>
+    <article class="fxp-card"><h3 class="fxp-name">חתום למעלה</h3><p class="fxp-price">₪29,900<small> +</small></p><ul class="fxp-list"><li>חוויה דיגיטלית מלאה</li><li>תלת-ממד / WebGL</li><li>מערכת ניהול מותאמת</li><li>ליווי שנתי</li></ul><a class="fxp-cta" href="#">דברו איתנו</a></article>
+  </div>
+</section>
+
+<div class="lib-divider">component: cta-band</div>
+<!-- ═══ COMPONENT: cta-band ═══ tags: cta, gradient-border, closing -->
+<section class="fxcta">
+  <style>
+    .fxcta{padding:5rem 2rem}
+    .fxcta-box{position:relative;max-width:60rem;margin:auto;text-align:center;padding:4rem 2rem;border-radius:1.8rem;overflow:hidden;
+      background:linear-gradient(120deg,color-mix(in srgb,var(--c-accent) 20%,var(--c-surface)),var(--c-surface) 55%,color-mix(in srgb,var(--c-accent-2) 12%,var(--c-surface)))}
+    .fxcta-box::before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1.5px;
+      background:linear-gradient(120deg,var(--c-accent),transparent 40%,var(--c-accent-2));
+      -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude}
+    .fxcta-box h2{font:560 clamp(1.9rem,4vw,3rem)/1.15 var(--f-display);margin:0 0 .8rem}
+    .fxcta-box p{color:var(--c-muted);margin:0 0 2rem}
+    .fxcta-btn{display:inline-block;font:700 1rem var(--f-body);color:var(--c-bg);background:var(--c-ink);border-radius:999px;
+      padding:1rem 2.6rem;text-decoration:none;transition:transform .18s,box-shadow .25s}
+    .fxcta-btn:hover{transform:translateY(-3px);box-shadow:0 18px 50px rgba(139,92,246,.4)}
+  </style>
+  <div class="fxcta-box">
+    <h2>מוכנים להיראות כמו המובילים בתחום?</h2>
+    <p>שיחת היכרות של 20 דקות — בלי התחייבות, עם המון ערך.</p>
+    <a class="fxcta-btn" href="#">קובעים שיחה ←</a>
+  </div>
+</section>
+
+<div class="lib-divider">component: footer-editorial</div>
+<!-- ═══ COMPONENT: footer-editorial ═══ tags: footer, columns, minimal -->
+<footer class="fxfoot">
+  <style>
+    .fxfoot{border-top:1px solid var(--c-hair);padding:3.6rem 2rem 2rem;max-width:76rem;margin:auto}
+    .fxfoot-grid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:2rem;margin-bottom:2.6rem}
+    .fxfoot-brand{font:600 1.3rem var(--f-display)}
+    .fxfoot-brand p{font:400 .84rem/1.65 var(--f-body);color:var(--c-muted);max-width:26ch;margin:.8rem 0 0}
+    .fxfoot h4{font:700 .7rem var(--f-body);letter-spacing:.22em;text-transform:uppercase;color:var(--c-muted);margin:0 0 .9rem}
+    .fxfoot ul{list-style:none;margin:0;padding:0;display:grid;gap:.5rem;font-size:.86rem}
+    .fxfoot a{color:var(--c-ink);text-decoration:none;opacity:.8;transition:opacity .2s,color .2s}
+    .fxfoot a:hover{opacity:1;color:var(--c-accent)}
+    .fxfoot-base{display:flex;justify-content:space-between;gap:1rem;border-top:1px solid var(--c-hair);padding-top:1.4rem;font-size:.74rem;color:var(--c-muted)}
+    @media(max-width:760px){.fxfoot-grid{grid-template-columns:1fr 1fr}}
+  </style>
+  <div class="fxfoot-grid">
+    <div class="fxfoot-brand">סטודיו.<p>חוויות דיגיטליות לעסקים שלוקחים את עצמם ברצינות.</p></div>
+    <div><h4>ניווט</h4><ul><li><a href="#">עבודות</a></li><li><a href="#">שירותים</a></li><li><a href="#">אודות</a></li></ul></div>
+    <div><h4>שירותים</h4><ul><li><a href="#">אתרים</a></li><li><a href="#">מיתוג</a></li><li><a href="#">קמפיינים</a></li></ul></div>
+    <div><h4>יצירת קשר</h4><ul><li><a href="#">hello@studio.co.il</a></li><li><a href="#">03-1234567</a></li></ul></div>
+  </div>
+  <div class="fxfoot-base"><span>© 2026 סטודיו. כל הזכויות שמורות.</span><span>עוצב ונבנה ע"י Felix ✦</span></div>
+</footer>
+
+</body>
+</html>

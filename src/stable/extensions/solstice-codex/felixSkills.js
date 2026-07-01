@@ -47,7 +47,7 @@ class FelixSkills {
 
 	_writeFile(file, meta, body) {
 		const fm = ["---"];
-		for (const k of ["name", "tags", "sector", "version", "provenance", "verified", "createdAt", "updatedAt", "change_note"]) {
+		for (const k of ["name", "tags", "sector", "version", "provenance", "verified", "uses", "createdAt", "updatedAt", "change_note"]) {
 			if (meta[k] === undefined) continue;
 			fm.push(k + ": " + (Array.isArray(meta[k]) ? meta[k].join(", ") : meta[k]));
 		}
@@ -80,10 +80,19 @@ class FelixSkills {
 		return files.map((f) => { try { return this._parse(path.join(this.skillsDir, f)); } catch { return null; } }).filter(Boolean);
 	}
 
-	// top-k skills relevant to a task. Embedder rank when configured, else
-	// keyword/tag overlap. Never throws — retrieval must not block a build.
+	// lessons learned from fidelity gaps / failures — the "never repeat a
+	// mistake" half of self-improvement (mirrors the fleet's memory/ pattern).
+	listLessons() {
+		let files = [];
+		try { files = fs.readdirSync(this.memoryDir).filter((f) => f.endsWith(".md")); } catch { }
+		return files.map((f) => { try { const p = this._parse(path.join(this.memoryDir, f)); p.meta.kind = "lesson"; return p; } catch { return null; } }).filter(Boolean);
+	}
+
+	// top-k skills+lessons relevant to a task. Embedder rank when configured,
+	// else keyword/tag overlap boosted by a use-count signal (skills that keep
+	// getting used and re-verified float up). Never throws.
 	async retrieve(queryText, k = 3) {
-		const skills = this.list();
+		const skills = [...this.list(), ...this.listLessons()];
 		if (!skills.length) return [];
 		if (this.embedderUrl) {
 			try { return await this._embedRank(queryText, skills, k); }
@@ -94,8 +103,42 @@ class FelixSkills {
 			const hay = tokenize((s.meta.name || "") + " " + ((s.meta.tags || []).join(" ")) + " " + (s.meta.sector || "") + " " + s.body.slice(0, 400));
 			let score = 0;
 			for (const t of hay) if (q.has(t)) score++;
+			score += Math.log1p(parseInt(s.meta.uses, 10) || 0); // proven skills rank higher
 			return { s, score };
 		}).filter((x) => x.score > 0).sort((a, b) => b.score - a.score).slice(0, k).map((x) => x.s);
+	}
+
+	// bump the use-counter of retrieved skills (called at dispatch, best-effort).
+	recordUse(items) {
+		for (const s of items || []) {
+			try {
+				if (!s.file || s.meta.kind === "lesson") continue;
+				const uses = (parseInt(s.meta.uses, 10) || 0) + 1;
+				const meta = { ...s.meta, uses, updatedAt: new Date().toISOString() };
+				this._writeFile(s.file, meta, s.body);
+			} catch { }
+		}
+	}
+
+	// write a LESSON (post-incident learning): fidelity gaps, failures, user
+	// corrections. Overwrite-by-name with version bump, like learn().
+	rememberLesson(rec) {
+		const name = rec.name || "lesson";
+		const file = path.join(this.memoryDir, slug(name) + ".md");
+		const now = new Date().toISOString();
+		let version = 1, createdAt = now;
+		if (fs.existsSync(file)) {
+			const prev = this._parse(file);
+			version = (parseInt(prev.meta.version, 10) || 1) + 1;
+			createdAt = prev.meta.createdAt || now;
+		}
+		this._writeFile(file, {
+			name, tags: rec.tags || [], sector: rec.sector || "", version,
+			provenance: rec.provenance || "", verified: true, createdAt, updatedAt: now,
+			change_note: rec.change_note || "lesson recorded",
+		}, rec.body || "");
+		this.log("[skills] lesson '" + name + "' v" + version);
+		return { file, version };
 	}
 
 	async _embedRank(queryText, skills, k) {

@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "file": "library.html",
+  "usage": "Copy the section between the '═══ COMPONENT: <id> ═══' markers, then ADAPT: retheme via --c-* tokens, swap copy+imagery to the client's sector, rename fx-prefixes on collision. Never ship verbatim.",
+  "components": [
+    { "id": "nav-glass",            "name": "Glass sticky navbar",        "tags": ["navbar", "sticky", "glass", "shrink"] },
+    { "id": "hero-aurora",          "name": "Aurora display hero",        "tags": ["hero", "dark", "gradient", "magnetic-cta", "entrance"] },
+    { "id": "features-bento",       "name": "Bento features grid",        "tags": ["features", "bento", "hover-glow", "scroll-reveal"] },
+    { "id": "gallery-hover",        "name": "Portfolio hover gallery",    "tags": ["gallery", "portfolio", "hover-reveal", "offset-grid"] },
+    { "id": "stats-band",           "name": "Animated stats band",        "tags": ["stats", "counters", "numbers"] },
+    { "id": "testimonials-marquee", "name": "Testimonials marquee",       "tags": ["testimonials", "marquee", "social-proof"] },
+    { "id": "pricing-glass",        "name": "Glass pricing tiers",        "tags": ["pricing", "tiers", "highlight"] },
+    { "id": "cta-band",             "name": "Gradient-border CTA band",   "tags": ["cta", "closing", "gradient-border"] },
+    { "id": "footer-editorial",     "name": "Editorial footer",           "tags": ["footer", "columns"] }
+  ]
+}
