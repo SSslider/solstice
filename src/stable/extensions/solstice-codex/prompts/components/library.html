@@ -305,5 +305,153 @@
   <div class="fxfoot-base"><span>© 2026 סטודיו. כל הזכויות שמורות.</span><span>עוצב ונבנה ע"י Felix ✦</span></div>
 </footer>
 
+
+<div class="lib-divider">component: hero-editorial-light</div>
+<!-- ═══ COMPONENT: hero-editorial-light ═══ tags: hero, light, editorial, serif, split -->
+<section class="fxhlite" style="background:#faf7f1;color:#191713">
+  <style>
+    .fxhlite{display:grid;grid-template-columns:1.1fr 1fr;min-height:86vh;align-items:center;gap:3rem;padding:4rem clamp(1.5rem,6vw,5rem)}
+    .fxhlite-kicker{font:700 .68rem var(--f-body);letter-spacing:.32em;text-transform:uppercase;color:#a2653c}
+    .fxhlite-title{font:520 clamp(2.4rem,5.6vw,4.4rem)/1.06 var(--f-display);letter-spacing:-.015em;margin:1rem 0 1.3rem;color:#191713}
+    .fxhlite-title em{font-style:italic;color:#a2653c}
+    .fxhlite-sub{font-size:1.05rem;line-height:1.75;color:#5d574c;max-width:44ch;margin:0 0 2rem}
+    .fxhlite-row{display:flex;align-items:center;gap:1.3rem}
+    .fxhlite-cta{font:700 .95rem var(--f-body);color:#faf7f1;background:#191713;border-radius:999px;padding:1rem 2.3rem;text-decoration:none;transition:transform .18s,box-shadow .2s}
+    .fxhlite-cta:hover{transform:translateY(-2px);box-shadow:0 14px 34px rgba(25,23,19,.25)}
+    .fxhlite-link{font:650 .85rem var(--f-body);color:#191713;text-decoration:none;border-bottom:1.5px solid #a2653c;padding-bottom:2px}
+    .fxhlite-visual{position:relative}
+    .fxhlite-visual img{width:100%;aspect-ratio:4/5;object-fit:cover;border-radius:2px;box-shadow:24px 24px 0 #ece5d8}
+    .fxhlite-badge{position:absolute;bottom:-1.2rem;inset-inline-start:-1.2rem;background:#faf7f1;border:1px solid #e5ddcf;padding:.9rem 1.2rem;font:600 .78rem var(--f-body);color:#5d574c;box-shadow:0 14px 34px rgba(25,23,19,.09)}
+    .fxhlite-badge b{display:block;font:600 1.3rem var(--f-display);color:#191713}
+    @media(max-width:860px){.fxhlite{grid-template-columns:1fr;min-height:auto}}
+  </style>
+  <div>
+    <span class="fxhlite-kicker">קליניקת אסתטיקה · תל אביב</span>
+    <h1 class="fxhlite-title">היופי שלך, <em>בגרסה הכי מדויקת</em> שלו</h1>
+    <p class="fxhlite-sub">טיפולים אסתטיים מתקדמים בהתאמה אישית מלאה — בלי להגזים, בלי לשנות אותך. רק להוציא את המיטב.</p>
+    <div class="fxhlite-row">
+      <a class="fxhlite-cta" href="#">לתיאום ייעוץ ←</a>
+      <a class="fxhlite-link" href="#">הטיפולים שלנו</a>
+    </div>
+  </div>
+  <div class="fxhlite-visual">
+    <img src="https://picsum.photos/seed/fxlite/720/900" alt="">
+    <span class="fxhlite-badge"><b>+2,400</b>מטופלות מרוצות</span>
+  </div>
+</section>
+
+<div class="lib-divider">component: features-split-light</div>
+<!-- ═══ COMPONENT: features-split-light ═══ tags: features, light, split, alternating, scroll-reveal -->
+<section class="fxsplit" style="background:#ffffff;color:#191713">
+  <style>
+    .fxsplit{padding:5.5rem clamp(1.5rem,6vw,5rem)}
+    .fxsplit-row{display:grid;grid-template-columns:1fr 1fr;gap:4rem;align-items:center;max-width:68rem;margin:0 auto 4.5rem}
+    .fxsplit-row:nth-child(even){direction:ltr}
+    .fxsplit-row:nth-child(even)>*{direction:rtl}
+    .fxsplit-num{font:520 .95rem var(--f-display);color:#a2653c}
+    .fxsplit-row h3{font:540 clamp(1.5rem,2.8vw,2.1rem)/1.2 var(--f-display);margin:.5rem 0 .9rem;color:#191713}
+    .fxsplit-row p{font-size:.98rem;line-height:1.75;color:#5d574c;margin:0}
+    .fxsplit-img{aspect-ratio:4/3;border-radius:4px;overflow:hidden}
+    .fxsplit-img img{width:100%;height:100%;object-fit:cover;transition:transform .8s cubic-bezier(.22,1,.36,1)}
+    .fxsplit-row:hover .fxsplit-img img{transform:scale(1.04)}
+    @media(max-width:820px){.fxsplit-row{grid-template-columns:1fr;gap:1.5rem;margin-bottom:3rem}}
+  </style>
+  <div class="fxsplit-row">
+    <div><span class="fxsplit-num">01</span><h3>אבחון מקצועי לפני הכל</h3><p>פגישת ייעוץ מעמיקה שממפה בדיוק מה נכון לך — ומה לא. התוכנית נבנית סביבך, לא סביב קטלוג.</p></div>
+    <div class="fxsplit-img"><img src="https://picsum.photos/seed/fxs1/800/600" alt=""></div>
+  </div>
+  <div class="fxsplit-row">
+    <div><span class="fxsplit-num">02</span><h3>טכנולוגיה שרואים בתוצאות</h3><p>המכשור המתקדם בתחום, בידיים שיודעות בדיוק מה הן עושות. כל טיפול מתועד ונמדד.</p></div>
+    <div class="fxsplit-img"><img src="https://picsum.photos/seed/fxs2/800/600" alt=""></div>
+  </div>
+</section>
+
+<div class="lib-divider">component: faq-minimal</div>
+<!-- ═══ COMPONENT: faq-minimal ═══ tags: faq, accordion, light -->
+<section class="fxfaq" style="background:#faf7f1;color:#191713">
+  <style>
+    .fxfaq{padding:5rem 1.5rem}
+    .fxfaq-inner{max-width:44rem;margin:auto}
+    .fxfaq h2{font:540 clamp(1.7rem,3.2vw,2.4rem) var(--f-display);margin:0 0 2rem;color:#191713}
+    .fxfaq details{border-top:1px solid #e5ddcf;padding:1.1rem 0}
+    .fxfaq details:last-child{border-bottom:1px solid #e5ddcf}
+    .fxfaq summary{font:640 1.02rem var(--f-body);cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center;color:#191713}
+    .fxfaq summary::after{content:"+";font:400 1.4rem var(--f-display);color:#a2653c;transition:transform .25s}
+    .fxfaq details[open] summary::after{transform:rotate(45deg)}
+    .fxfaq details p{font-size:.92rem;line-height:1.7;color:#5d574c;margin:.8rem 0 0;max-width:60ch}
+  </style>
+  <div class="fxfaq-inner">
+    <h2>שאלות שכולם שואלים</h2>
+    <details open><summary>כמה זמן לוקח לראות תוצאות?</summary><p>ברוב הטיפולים רואים שינוי ראשון כבר אחרי מפגש אחד; התוצאה המלאה מתייצבת אחרי 3-4 מפגשים, בהתאם לתוכנית האישית.</p></details>
+    <details><summary>האם הטיפולים כואבים?</summary><p>לא. אנחנו עובדים עם הדור החדש של המכשור, והרוב המוחלט של המטופלות מדווחות על תחושה נעימה בלבד.</p></details>
+    <details><summary>איך קובעים פגישת ייעוץ?</summary><p>משאירים פרטים בטופס או בוואטסאפ — ואנחנו חוזרים תוך שעות ספורות עם זמן שנוח לך.</p></details>
+  </div>
+</section>
+
+<div class="lib-divider">component: app-home-dashboard</div>
+<!-- ═══ COMPONENT: app-home-dashboard ═══ tags: app, dashboard, stat-cards, bottom-nav, mobile -->
+<section class="fxapp" style="background:#0e1013;padding:3rem 1rem;display:grid;place-items:center">
+  <style>
+    .fxapp-phone{width:min(380px,92vw);background:#14171c;border-radius:2rem;border:1px solid rgba(255,255,255,.08);overflow:hidden;box-shadow:0 40px 90px rgba(0,0,0,.5)}
+    .fxapp-head{padding:1.4rem 1.3rem .9rem;display:flex;justify-content:space-between;align-items:center}
+    .fxapp-hello{font:640 1.05rem var(--f-body);color:#f2f4f6}
+    .fxapp-hello span{display:block;font:400 .72rem var(--f-body);color:rgba(242,244,246,.5)}
+    .fxapp-avatar{width:2.3rem;height:2.3rem;border-radius:50%;background:linear-gradient(135deg,var(--c-accent),var(--c-accent-2))}
+    .fxapp-stats{display:grid;grid-template-columns:1fr 1fr;gap:.7rem;padding:0 1.3rem 1rem}
+    .fxapp-stat{border-radius:1rem;padding:.95rem 1rem;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.07)}
+    .fxapp-stat b{font:640 1.45rem var(--f-body);color:#f2f4f6;display:block}
+    .fxapp-stat span{font-size:.68rem;color:rgba(242,244,246,.55)}
+    .fxapp-stat.hot{background:linear-gradient(135deg,color-mix(in srgb,var(--c-accent) 30%,transparent),transparent);border-color:color-mix(in srgb,var(--c-accent) 45%,transparent)}
+    .fxapp-list{padding:0 1.3rem 1rem}
+    .fxapp-item{display:flex;align-items:center;gap:.8rem;padding:.75rem .2rem;border-bottom:1px solid rgba(255,255,255,.05)}
+    .fxapp-ico{width:2.1rem;height:2.1rem;border-radius:.7rem;display:grid;place-items:center;background:rgba(255,255,255,.06);font-size:.95rem}
+    .fxapp-item b{font:600 .85rem var(--f-body);color:#f2f4f6;display:block}
+    .fxapp-item span{font-size:.68rem;color:rgba(242,244,246,.5)}
+    .fxapp-item i{margin-inline-start:auto;font-style:normal;font:640 .8rem var(--f-body);color:var(--c-accent-2)}
+    .fxapp-nav{display:flex;justify-content:space-around;padding:.8rem 0 1rem;border-top:1px solid rgba(255,255,255,.07);background:rgba(255,255,255,.02)}
+    .fxapp-nav a{font-size:1.15rem;text-decoration:none;opacity:.45;transition:opacity .15s,transform .15s}
+    .fxapp-nav a.on{opacity:1;transform:translateY(-2px)}
+  </style>
+  <div class="fxapp-phone" dir="rtl">
+    <div class="fxapp-head"><div class="fxapp-hello">בוקר טוב, דנה <span>יום שלישי · 3 פגישות היום</span></div><div class="fxapp-avatar"></div></div>
+    <div class="fxapp-stats">
+      <div class="fxapp-stat hot"><b>₪8,420</b><span>הכנסות החודש</span></div>
+      <div class="fxapp-stat"><b>34</b><span>לקוחות פעילים</span></div>
+      <div class="fxapp-stat"><b>12</b><span>תורים השבוע</span></div>
+      <div class="fxapp-stat"><b>4.9★</b><span>דירוג ממוצע</span></div>
+    </div>
+    <div class="fxapp-list">
+      <div class="fxapp-item"><span class="fxapp-ico">📅</span><span><b>מיכל לוי</b><span>צבע + תספורת</span></span><i>10:30</i></div>
+      <div class="fxapp-item"><span class="fxapp-ico">📅</span><span><b>יעל כהן</b><span>החלקה</span></span><i>13:00</i></div>
+      <div class="fxapp-item"><span class="fxapp-ico">📅</span><span><b>נועה ברק</b><span>תסרוקת ערב</span></span><i>17:30</i></div>
+    </div>
+    <div class="fxapp-nav"><a class="on" href="#">🏠</a><a href="#">📅</a><a href="#">👥</a><a href="#">⚙️</a></div>
+  </div>
+</section>
+
+<div class="lib-divider">component: app-onboarding</div>
+<!-- ═══ COMPONENT: app-onboarding ═══ tags: app, onboarding, slides, mobile -->
+<section class="fxonb" style="background:#0e1013;padding:3rem 1rem;display:grid;place-items:center">
+  <style>
+    .fxonb-phone{width:min(380px,92vw);background:linear-gradient(180deg,color-mix(in srgb,var(--c-accent) 24%,#14171c),#14171c 55%);border-radius:2rem;border:1px solid rgba(255,255,255,.08);overflow:hidden;box-shadow:0 40px 90px rgba(0,0,0,.5);padding:3rem 1.6rem 1.6rem;text-align:center;display:flex;flex-direction:column;min-height:560px}
+    .fxonb-art{font-size:4rem;margin-bottom:1.6rem}
+    .fxonb-phone h3{font:600 1.5rem var(--f-body);color:#f2f4f6;margin:0 0 .7rem}
+    .fxonb-phone p{font-size:.9rem;line-height:1.65;color:rgba(242,244,246,.6);margin:0 auto;max-width:26ch}
+    .fxonb-dots{display:flex;gap:.4rem;justify-content:center;margin:auto 0 1.3rem;padding-top:2rem}
+    .fxonb-dots span{width:.45rem;height:.45rem;border-radius:999px;background:rgba(255,255,255,.2)}
+    .fxonb-dots span.on{width:1.4rem;background:var(--c-accent)}
+    .fxonb-btn{font:700 .95rem var(--f-body);color:#0e1013;background:#f2f4f6;border-radius:999px;padding:.95rem;text-decoration:none;display:block}
+    .fxonb-skip{font-size:.75rem;color:rgba(242,244,246,.45);text-decoration:none;display:block;margin-top:.8rem}
+  </style>
+  <div class="fxonb-phone" dir="rtl">
+    <div class="fxonb-art">✨</div>
+    <h3>כל התורים שלך, במקום אחד</h3>
+    <p>ניהול יומן, לקוחות ותשלומים — בלי ניירת ובלי כאב ראש.</p>
+    <div class="fxonb-dots"><span class="on"></span><span></span><span></span></div>
+    <a class="fxonb-btn" href="#">בואו נתחיל ←</a>
+    <a class="fxonb-skip" href="#">דלג</a>
+  </div>
+</section>
+
 </body>
 </html>

@@ -17,6 +17,7 @@
 				<div class="brandText">
 					<div class="brandName">Felix <span id="status"><span id="dot" class="dot"></span></span></div>
 					<div class="brandModel" id="brandModel">—</div>
+					<div class="engines" id="engines"></div>
 				</div>
 			</div>
 			<div id="quota" title=""></div>
@@ -1029,6 +1030,14 @@
 	}
 
 	// ---------- message routing ----------
+	function shortEngineName(e) {
+		const l = (e.label || e.runner || "").toString();
+		if (/gpt/i.test(l)) return "GPT-5.5";
+		if (/composer/i.test(l)) return "Composer";
+		if (/grok/i.test(l)) return "Grok";
+		if (/claude|opus/i.test(l)) return "Claude";
+		return l.split(" ")[0] || e.runner;
+	}
 	window.addEventListener("message", (event) => {
 		const msg = event.data;
 		switch (msg.type) {
@@ -1046,6 +1055,21 @@
 				modelEl.textContent = model || "—";
 				if (brandModelEl) brandModelEl.textContent = model || "Felix";
 				break;
+			case "engines": {
+				const box = document.getElementById("engines");
+				if (!box) break;
+				box.innerHTML = "";
+				for (const e of (msg.list || [])) {
+					const chip = document.createElement("span");
+					chip.className = "engChip " + (e.ok ? "ok" : "down") + (msg.current === e.key ? " cur" : "");
+					chip.title = (e.label || e.runner) + " — " + (e.detail || "");
+					const d = document.createElement("span"); d.className = "engDot";
+					chip.appendChild(d);
+					chip.appendChild(document.createTextNode(shortEngineName(e)));
+					box.appendChild(chip);
+				}
+				break;
+			}
 			case "models":
 				modelChoices = Array.isArray(msg.list) ? msg.list : [];
 				currentModelKey = msg.current || "";

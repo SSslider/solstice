@@ -969,6 +969,37 @@ self.addEventListener("fetch", (e) => {
 		return resolveGrokBinary(this.context.extensionPath, this.cfg().get("grokPath"));
 	}
 
+	// Per-model engine health for the header chips: can this runner's binary be
+	// found on THIS machine right now? Cheap (no spawns), safe to call often.
+	enginesStatus() {
+		const { whichFull } = require("./winspawn");
+		const seen = new Set();
+		const list = [];
+		for (const [key, meta] of Object.entries(MODEL_REGISTRY)) {
+			if (seen.has(meta.runner)) continue;
+			seen.add(meta.runner);
+			let bin = "";
+			let found = null;
+			try {
+				bin = this.runnerBin(meta.runner) || "";
+				found = bin ? whichFull(bin) : null;
+			} catch { /* status only — never throw */ }
+			list.push({
+				key, runner: meta.runner, label: meta.label,
+				ok: !!found,
+				detail: found ? found : (bin ? `לא נמצא: ${bin}` : "לא מוגדר"),
+			});
+		}
+		return list;
+	}
+	postEngineStatus() {
+		try {
+			const msg = { type: "engines", list: this.enginesStatus(), current: this.providerKey() };
+			this.post(msg);
+			this.postManager(msg);
+		} catch { /* chips are cosmetic — never break the panel */ }
+	}
+
 	// "Why won't Composer/Grok start?" — one command that answers it BEFORE a
 	// failed build: for every model, the exact binary that will be spawned, how
 	// it was found (or that it wasn't), and the node used to crack npm shims.
@@ -1190,6 +1221,7 @@ self.addEventListener("fetch", (e) => {
 		const models = { type: "models", list: this.modelChoices(), current: this.providerKey() };
 		this.post(models);
 		this.postManager(models);
+		this.postEngineStatus();
 		if (runnerFor(this.providerKey()) !== "codex") {
 			const auth = { type: "auth", authMethod: runnerFor(this.providerKey()) === "claude" ? "claude-cli" : "grok-cli" };
 			this.post(auth);
