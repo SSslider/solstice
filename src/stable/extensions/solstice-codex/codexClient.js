@@ -26,15 +26,16 @@ class CodexClient {
 		// Same Windows npm-shim EPERM guard as the grok provider: a bare codex
 		// resolves to codex.cmd, which CreateProcess refuses to run. No-op on *nix.
 		const sp = resolveWinSpawn(this.opts.binPath, ["app-server"]);
-		// EMPIRICAL (02/07): 04075 shipped `detached:true` and is the only build
-		// VERIFIED working for codex app-server on Thomas's Windows PC; the
-		// detached:false+windowsHide builds (04080-04083) broke it in the field
-		// (`codex exited(1)` / spawn EPERM). The Win32 mechanism is unproven, so we
-		// ship the proven flags instead of a theory. Known tradeoff: DETACHED_PROCESS
-		// can let console grandchildren pop visible windows (the 56075af "storm") —
-		// a model that CONNECTS beats cosmetic popups. Revisit only with on-machine
-		// evidence from the [EPERM]/engines diagnostics.
-		this.child = spawn(sp.cmd, sp.args, { stdio: ["pipe", "pipe", "pipe"], env: sp.env ? { ...env, ...sp.env } : env, detached: true, windowsHide: true });
+		// GROUND TRUTH (02/07): 04075 is the ONLY build verified working for codex/
+		// grok on Thomas's Windows PC. Its EXACT spawn options were `{ stdio, env,
+		// detached:true }` — NO windowsHide. `windowsHide:true` was added 06/27
+		// (59ff4c4, a Friday build) and detached was removed 06/28 (56075af, Saturday)
+		// — precisely the "Friday/Saturday build that brought EPERM back". Today's
+		// 74d4cf0 restored detached:true but LEFT the Friday windowsHide in, so 04085
+		// still differed from the proven build. windowsHide (CREATE_NO_WINDOW) is
+		// ignored by Win32 anyway when DETACHED_PROCESS is set, so dropping it only
+		// makes this spawn BYTE-IDENTICAL to the last build that actually ran.
+		this.child = spawn(sp.cmd, sp.args, { stdio: ["pipe", "pipe", "pipe"], env: sp.env ? { ...env, ...sp.env } : env, detached: true });
 		const rl = readline.createInterface({ input: this.child.stdout });
 		rl.on("line", (line) => this._onLine(line));
 		this.child.stderr.on("data", (d) => this.opts.log && this.opts.log(String(d)));
