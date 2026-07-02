@@ -13,6 +13,63 @@
 // which preserves argv verbatim and never hits a batch file.
 const fs = require("fs");
 const path = require("path");
+const { spawnSync } = require("child_process");
+
+// ── The user's REAL PATH, from the Windows registry ─────────────────────────
+// Every "grok works in the terminal but EPERMs in Solstice" incident shares one
+// root: the terminal builds PATH from the registry (HKCU\Environment + the
+// machine-wide Session Manager\Environment), while a GUI-launched Electron can
+// inherit a stale/stripped snapshot. Guessing install dirs one by one
+// (extraWinDirs) plays whack-a-mole with every package manager on earth; the
+// registry ends the game — whatever dir makes `grok` resolvable in the user's
+// terminal is BY DEFINITION in there. Read once, expand %VARS%, cache.
+let _regPathCache = null;
+function registryPathDirs() {
+	if (process.platform !== "win32") return [];
+	if (_regPathCache) return _regPathCache;
+	const dirs = [];
+	const queries = [
+		["HKCU\\Environment", "Path"],
+		["HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment", "Path"],
+	];
+	for (const [key, value] of queries) {
+		try {
+			const out = spawnSync("reg.exe", ["query", key, "/v", value], {
+				encoding: "utf8", timeout: 5000, windowsHide: true,
+			});
+			const m = (out.stdout || "").match(/Path\s+REG(?:_EXPAND)?_SZ\s+(.+)/i);
+			if (!m) continue;
+			// Expand %VAR% references the way the shell would.
+			const expanded = m[1].trim().replace(/%([^%]+)%/g, (_, name) => process.env[name] || `%${name}%`);
+			for (const d of expanded.split(";")) if (d && !d.includes("%")) dirs.push(d.trim());
+		} catch { /* reg.exe missing/timeout — fall through to the static list */ }
+	}
+	_regPathCache = [...new Set(dirs.filter(Boolean))];
+	return _regPathCache;
+}
+
+// npm can be configured with a CUSTOM global prefix (`prefix=` in ~/.npmrc) —
+// then the global bin dir is neither %APPDATA%\npm nor anything we can guess.
+// npm itself reads .npmrc, so we do too.
+function npmrcPrefixDirs() {
+	if (process.platform !== "win32") return [];
+	const out = [];
+	const rcs = [
+		process.env.USERPROFILE && path.join(process.env.USERPROFILE, ".npmrc"),
+		process.env.NPM_CONFIG_USERCONFIG,
+	].filter(Boolean);
+	for (const rc of rcs) {
+		try {
+			const text = fs.readFileSync(rc, "utf8");
+			const m = text.match(/^\s*prefix\s*=\s*(.+)\s*$/mi);
+			if (m) {
+				const prefix = m[1].trim().replace(/%([^%]+)%/g, (_, n) => process.env[n] || "");
+				if (prefix) { out.push(prefix); out.push(path.join(prefix, "bin")); }
+			}
+		} catch { /* no .npmrc — fine */ }
+	}
+	return out;
+}
 
 // Dirs a Windows GUI process (Electron launched from the Start Menu / desktop)
 // commonly MISSES from PATH, but where npm/node actually install. THE recurring
@@ -45,9 +102,14 @@ function extraWinDirs() {
 		env.PNPM_HOME,                                                      // pnpm global bin
 		env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "pnpm"),
 		env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "Yarn", "bin"),     // yarn global
+		env.USERPROFILE && path.join(env.USERPROFILE, ".bun", "bin"),       // bun global
+		env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "Microsoft", "WinGet", "Links"), // winget shims
+		env.ChocolateyInstall && path.join(env.ChocolateyInstall, "bin"),   // chocolatey
 	].filter(Boolean);
+	// The registry PATH (what the user's terminal actually uses) + custom npm
+	// prefix go FIRST — they are ground truth; the static guesses are backup.
 	// De-dup while preserving order.
-	return [...new Set(candidates)];
+	return [...new Set([...registryPathDirs(), ...npmrcPrefixDirs(), ...candidates])];
 }
 
 // Search PATH (+ PATHEXT on Windows) for a bare command name. Returns the full
@@ -172,4 +234,4 @@ function resolveWinSpawn(bin, args) {
 	return { cmd: full, args: args.slice(), env: null };
 }
 
-module.exports = { resolveWinSpawn, whichFull, jsEntryFromShim, jsEntryFromNodeModules, extraWinDirs };
+module.exports = { resolveWinSpawn, whichFull, jsEntryFromShim, jsEntryFromNodeModules, extraWinDirs, registryPathDirs, npmrcPrefixDirs };

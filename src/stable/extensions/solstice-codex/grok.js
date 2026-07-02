@@ -483,12 +483,15 @@ class GrokProvider {
 					const nodeOnPath = require("./winspawn").whichFull("node");
 					const bundledDir = path.join(this.extensionPath || "", "bin");
 					const usingBundled = sp.cmd && bundledDir && path.resolve(sp.cmd).toLowerCase().startsWith(path.resolve(bundledDir).toLowerCase());
+					const regDirs = (() => { try { return require("./winspawn").registryPathDirs().length; } catch { return 0; } })();
 					epermDiag =
 						`\n\n[EPERM] grok spawn failed — exact cause:\n` +
 						`• tried to launch : ${sp.cmd}\n` +
 						`• that file is    : ${usingBundled ? "the UNSIGNED bundled engine (Defender blocks this)" : "your installed grok"}\n` +
 						`• your installed grok : ${grokOnPath || "NOT FOUND on PATH"}\n` +
-						`• node : ${nodeOnPath || "NOT FOUND on PATH"}`;
+						`• node : ${nodeOnPath || "NOT FOUND on PATH"}\n` +
+						`• searched: process PATH + ${regDirs} registry-PATH dirs + npm/nvm/volta/pnpm/bun/winget dirs\n` +
+						`• if grok is really installed: run 'where grok' in your terminal and send the output`;
 					this.log(epermDiag + "\n");
 				}
 				this.notify("error", {
