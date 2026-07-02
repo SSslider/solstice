@@ -325,10 +325,10 @@ class ClaudeProvider {
 		return new Promise((resolve) => {
 			// Windows npm-shim EPERM guard (see winspawn.js) — no-op on Linux/macOS.
 			const sp = resolveWinSpawn(this.bin, args);
-			// EXACT 04075-proven flag set: { cwd, env, detached:true } — NO windowsHide
-			// (the Friday-06/27 delta from the last build that ran; ignored under
-			// DETACHED_PROCESS anyway). See GROUND-TRUTH note in codexClient.js:start.
-			const child = spawn(sp.cmd, sp.args, { cwd: this.cwd, env: sp.env ? { ...env, ...sp.env } : env, detached: true });
+			// ROOT CAUSE (corrected 02/07): detach ONLY on *nix; on Windows detached
+			// forces DETACHED_PROCESS → console-window storm + spawn EPERM. Match the
+			// repo's browse spawn (extension.js:2720). See note in codexClient.js:start.
+			const child = spawn(sp.cmd, sp.args, { cwd: this.cwd, env: sp.env ? { ...env, ...sp.env } : env, detached: process.platform !== "win32", windowsHide: true });
 			this.child = child;
 			child.stdin.write(prompt);
 			child.stdin.end();
