@@ -86,6 +86,59 @@ function webviewResourceRoots(extensionUri) {
 	return roots;
 }
 
+const CREDIT_PROVIDER_PATTERN = { re: /\b(x[-\s]?field|seedance|kling|higgsfield|runway|pika|luma|veo|sora)\b/i, label: "paid video/3D provider" };
+const CREDIT_VIDEO_PATTERNS = [
+	{ re: /\b(generate|create|make|produce|render|gen)\b[\s\S]{0,120}\b(video|mp4|webm|movie|film)\b/i, label: "video generation" },
+	{ re: /\b(video|mp4|webm|movie|film)\b[\s\S]{0,120}\b(generate|create|make|produce|render|gen)\b/i, label: "video generation" },
+	{ re: /(?:וידאו|סרטון)[\s\S]{0,120}(?:צור|ליצור|ג'נרוט|ג׳נרוט|רנדר|הפק|להפיק)/i, label: "video generation" },
+	{ re: /(?:צור|ליצור|ג'נרוט|ג׳נרוט|רנדר|הפק|להפיק)[\s\S]{0,120}(?:וידאו|סרטון)/i, label: "video generation" },
+];
+const CREDIT_3D_ASSET_PATTERNS = [
+	{ re: /\b(generate|create|make|produce|render|gen)\b[\s\S]{0,120}\b(animation|3d|three[-\s]?d|3d[-\s]?model|model)\b/i, label: "3D/animation generation" },
+	{ re: /\b(animation|3d|three[-\s]?d|3d[-\s]?model|model)\b[\s\S]{0,120}\b(generate|create|make|produce|render|gen)\b/i, label: "3D/animation generation" },
+	{ re: /(?:אנימציה|תלת[-\s]?ממד|תלת\s?מימד|מודל\s?3d|מודל\s?תלת)[\s\S]{0,120}(?:צור|ליצור|ג'נרוט|ג׳נרוט|רנדר|הפק|להפיק)/i, label: "3D/animation generation" },
+	{ re: /(?:צור|ליצור|ג'נרוט|ג׳נרוט|רנדר|הפק|להפיק)[\s\S]{0,120}(?:אנימציה|תלת[-\s]?ממד|תלת\s?מימד|מודל\s?3d|מודל\s?תלת)/i, label: "3D/animation generation" },
+];
+const LOCAL_FRONTEND_3D_PATTERN = /\b(three\.?js|three[-\s]?js|@react-three\/fiber|react[-\s]?three[-\s]?fiber|r3f|gsap|scrolltrigger|framer[-\s]?motion|css|webgl|canvas)\b/i;
+const LOCAL_FRONTEND_BUILD_PATTERN = /\b(page|site|website|app|component|viewer|hero|frontend|front[-\s]?end|ui|layout|smooth(?:er)?|scroll|animate|animation)\b/i;
+
+function creditRiskText(value, depth = 0) {
+	if (value == null || depth > 4) return "";
+	if (typeof value === "string") return value;
+	if (typeof value === "number" || typeof value === "boolean") return String(value);
+	if (Array.isArray(value)) return value.map((x) => creditRiskText(x, depth + 1)).join("\n");
+	if (typeof value === "object") {
+		return Object.entries(value)
+			.map(([k, v]) => `${k}: ${creditRiskText(v, depth + 1)}`)
+			.join("\n");
+	}
+	return "";
+}
+
+function creditRiskSignal(method, params) {
+	const text = `${method || ""}\n${creditRiskText(params)}`.slice(0, 12000);
+	if (CREDIT_PROVIDER_PATTERN.re.test(text)) {
+		const oneLine = text.replace(/\s+/g, " ").trim().slice(0, 500);
+		return { label: CREDIT_PROVIDER_PATTERN.label, detail: oneLine };
+	}
+	for (const p of CREDIT_VIDEO_PATTERNS) {
+		if (p.re.test(text)) {
+			const oneLine = text.replace(/\s+/g, " ").trim().slice(0, 500);
+			return { label: p.label, detail: oneLine };
+		}
+	}
+	if (LOCAL_FRONTEND_3D_PATTERN.test(text) && LOCAL_FRONTEND_BUILD_PATTERN.test(text)) {
+		return null;
+	}
+	for (const p of CREDIT_3D_ASSET_PATTERNS) {
+		if (p.re.test(text)) {
+			const oneLine = text.replace(/\s+/g, " ").trim().slice(0, 500);
+			return { label: p.label, detail: oneLine };
+		}
+	}
+	return null;
+}
+
 class AgentController {
 	constructor(context) {
 		this.context = context;
@@ -951,6 +1004,33 @@ self.addEventListener("fetch", (e) => {
 		return false; // supervised: ask for everything
 	}
 
+	requestCreditApproval(method, params, risk) {
+		const guarded = {
+			...(params || {}),
+			creditGate: {
+				label: risk.label,
+				reason: "Thomas approval is required before any paid video/3D generation or credit-risk provider call, even in Autonomous.",
+				detail: risk.detail,
+			},
+		};
+		const approveLabel = "Approve once";
+		return new Promise((resolve) => {
+			const key = crypto.randomUUID();
+			this.pendingApprovals.set(key, resolve);
+			const tid = guarded && guarded.threadId;
+			if (!tid || tid === this.threadId) this.post({ type: "approvalRequest", key, method, params: guarded });
+			this.postManager({ type: "approvalRequest", key, method, params: guarded });
+			if (!this.webview && !this.manager) {
+				vscode.window.showWarningMessage(
+					`Solstice credit gate: ${risk.label}`,
+					{ modal: true, detail: risk.detail || "This action may spend credits or generate video/3D assets." },
+					approveLabel,
+					"Deny"
+				).then((choice) => this.resolveApproval(key, choice === approveLabel ? "accept" : "decline"));
+			}
+		});
+	}
+
 	providerKey() {
 		const k = this.cfg().get("provider") || "composer-2.5";
 		// Claude is gated: never run it unless explicitly opted in. A stale
@@ -1471,10 +1551,11 @@ self.addEventListener("fetch", (e) => {
 			`- VIEW ANY IMAGE (you cannot see images yourself — this gives you a detailed text read of one): ${shot.replace(" shot <url> <out.png>", ' describe <image.png> ["what to focus on"]')}`,
 			"  Use it for every reference screenshot BEFORE designing, and for your own verification screenshots before declaring done. It routes to a vision model for you, so it works even though your chat model is text-only.",
 			`- Capture a design TOP-TO-BOTTOM in DESKTOP and MOBILE (Behance/Dribbble show both): desktop full-page → ${shot.replace(" shot <url> <out.png>", ' scrollshot <url> <outPrefix> [stops]')}; mobile full-page → ${shot.replace("shot <url> <out.png>", "shot <url> <out.png> 390x3000")}. Then 'describe' each to study layout/colors/typography in both viewports.`,
-			"- Generate images by subcontracting to codex (it has an image generation tool):",
-			'  codex exec --skip-git-repo-check --full-auto "Use your image generation tool to create: <detailed description>. Then copy the EXACT file you just generated (by its precise filename from ~/.codex/generated_images/ — never the most recent file, other jobs may write there concurrently) into <workspace>/public/images/<descriptive-name>.png"',
-			"  Verify the file exists in the workspace afterwards, and view it with codex vision to confirm it shows the right subject before using it.",
-			"- MANDATORY — real imagery, never placeholders: every page you build MUST use real images. NEVER ship gray boxes, solid-color rectangles, `placeholder.com` / `via.placeholder` / `dummyimage` / `picsum.photos` / `unsplash.com/random` URLs, empty `<img>`, or `TODO image` comments. For EVERY image the design calls for (hero, gallery, product shots, avatars, backgrounds), GENERATE a real one with the image command above and save it under public/images/ BEFORE you finish — a build that still contains placeholders is NOT done. If generation fails, retry; only as a last resort use a tasteful CSS gradient/photographic texture styled to look intentional, never a raw placeholder service.",
+				"- Generate images by subcontracting to codex (it has an image generation tool):",
+				'  codex exec --skip-git-repo-check --full-auto "Use your image generation tool to create: <detailed description>. Then copy the EXACT file you just generated (by its precise filename from ~/.codex/generated_images/ — never the most recent file, other jobs may write there concurrently) into <workspace>/public/images/<descriptive-name>.png"',
+				"  Verify the file exists in the workspace afterwards, and view it with codex vision to confirm it shows the right subject before using it.",
+				"- CREDIT GATE: never start paid/external video or 3D generation (Kling, Seedance, X-Field, Higgsfield, Runway, Pika, Luma, Veo, Sora, or similar) without an explicit Thomas approval card. This applies even in Autonomous.",
+				"- MANDATORY — real imagery, never placeholders: every page you build MUST use real images. NEVER ship gray boxes, solid-color rectangles, `placeholder.com` / `via.placeholder` / `dummyimage` / `picsum.photos` / `unsplash.com/random` URLs, empty `<img>`, or `TODO image` comments. For EVERY image the design calls for (hero, gallery, product shots, avatars, backgrounds), GENERATE a real one with the image command above and save it under public/images/ BEFORE you finish — a build that still contains placeholders is NOT done. If generation fails, retry; only as a last resort use a tasteful CSS gradient/photographic texture styled to look intentional, never a raw placeholder service.",
 			"- ALWAYS externalize your plan to a FILE — the user watches the plan in the CENTER window, not the chat. The MOMENT you start a multi-step build, WRITE the plan to `.solstice/PLAN.md` (create the .solstice folder) BEFORE doing anything else, and re-write the file after each step so the live timeline updates. Don't only describe the plan in chat. Shape: group steps under `## Phase name` headings; each step `1. [ ] Step title`; optional one-line `_short detail_`; nested `   - [ ] sub-task`. Progress marks: `[x]` done, `[~]` current, `[ ]` pending. Short, outcome-oriented titles. FOLLOW-UP PROMPTS CONTINUE THE SAME PLAN: when the user sends another request after a build, DO NOT overwrite or restart the plan — APPEND a new `## Phase` for the new request to the existing .solstice/PLAN.md and keep all completed phases with their [x] marks, so the center timeline shows the whole project evolving across prompts.",
 			"- ALWAYS externalize your design/site analysis to a FILE — the user reads the analysis in the CENTER window as a research dashboard, not the chat. When deconstructing / analyzing / researching a design, website or app, the FIRST thing you do is create `RESEARCH.md` (or `DECONSTRUCT.md`) in the workspace root, and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end, and never only in chat. Include as you go: what you examined, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, detected techniques (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed frames/screenshots with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
@@ -1509,10 +1590,11 @@ self.addEventListener("fetch", (e) => {
 			"- Research workflow: when the user asks you to imitate/take inspiration from a site or find references, SEARCH for it, READ or CRAWL the top results, and SCROLLSHOT the best ones before designing — don't guess from memory.",
 			"- You CAN view images: open any screenshot/reference image with your Read tool and study it in exhaustive detail (layout, sections, colors with hex, typography, imagery style, spacing, mood). Always do this for every reference screenshot before designing, and for your own verification screenshots before declaring done.",
 			`- Capture a design TOP-TO-BOTTOM in DESKTOP and MOBILE (Behance/Dribbble show both): desktop full-page → ${shot.replace(" shot <url> <out.png>", ' scrollshot <url> <outPrefix> [stops]')}; mobile full-page → ${shot.replace("shot <url> <out.png>", "shot <url> <out.png> 390x3000")}. Open each with your Read tool to study both viewports.`,
-			"- Generate images by subcontracting to codex (it has an image generation tool):",
-			'  codex exec --skip-git-repo-check --full-auto "Use your image generation tool to create: <detailed description>. Then copy the EXACT file you just generated (by its precise filename from ~/.codex/generated_images/ — never the most recent file, other jobs may write there concurrently) into <workspace>/public/images/<descriptive-name>.png"',
-			"  Verify the file exists in the workspace afterwards, and view it with your Read tool to confirm it shows the right subject before using it.",
-			"- MANDATORY — real imagery, never placeholders: every page you build MUST use real images. NEVER ship gray boxes, solid-color rectangles, `placeholder.com` / `via.placeholder` / `dummyimage` / `picsum.photos` / `unsplash.com/random` URLs, empty `<img>`, or `TODO image` comments. Generate a real image (via the codex image command above) for EVERY slot the design needs and save it under public/images/ before finishing — placeholders mean the build is NOT done.",
+				"- Generate images by subcontracting to codex (it has an image generation tool):",
+				'  codex exec --skip-git-repo-check --full-auto "Use your image generation tool to create: <detailed description>. Then copy the EXACT file you just generated (by its precise filename from ~/.codex/generated_images/ — never the most recent file, other jobs may write there concurrently) into <workspace>/public/images/<descriptive-name>.png"',
+				"  Verify the file exists in the workspace afterwards, and view it with your Read tool to confirm it shows the right subject before using it.",
+				"- CREDIT GATE: never start paid/external video or 3D generation (Kling, Seedance, X-Field, Higgsfield, Runway, Pika, Luma, Veo, Sora, or similar) without an explicit Thomas approval card. This applies even in Autonomous.",
+				"- MANDATORY — real imagery, never placeholders: every page you build MUST use real images. NEVER ship gray boxes, solid-color rectangles, `placeholder.com` / `via.placeholder` / `dummyimage` / `picsum.photos` / `unsplash.com/random` URLs, empty `<img>`, or `TODO image` comments. Generate a real image (via the codex image command above) for EVERY slot the design needs and save it under public/images/ before finishing — placeholders mean the build is NOT done.",
 			"- For multi-step builds, use your todo/plan tool and keep step statuses updated as you work — the IDE renders it as a live checklist.",
 			"- When deconstructing / analyzing / researching a design, website, or app: maintain DECONSTRUCT.md (or RESEARCH.md) in the workspace root and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end. The IDE renders this file live to the user as a research dashboard. Include as you go: what you examined so far, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, techniques you detected (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed the frames/screenshots you examine as images with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
 			"- FOLLOW-UP PROMPTS CONTINUE THE SAME PLAN: append a new `## Phase` to the existing .solstice/PLAN.md for each new user request — never restart the plan file; completed phases keep their [x].",
@@ -1739,6 +1821,10 @@ self.addEventListener("fetch", (e) => {
 		const toResult = (decision) => elicitation
 			? { action: decision === "decline" ? "decline" : "accept" }
 			: { decision: map[decision] || map.decline };
+		const creditRisk = creditRiskSignal(method, params);
+		if (creditRisk) {
+			return this.requestCreditApproval(method, params, creditRisk).then(toResult);
+		}
 		// Autonomy gate: depending on the selected autonomy level (and the legacy
 		// approvalPolicy "never" escape hatch) some action categories are
 		// auto-approved without interrupting the user.
@@ -1827,9 +1913,10 @@ self.addEventListener("fetch", (e) => {
 			"  Replace mode 'shot' with: 'search \"<query>\" [count]' to discover URLs for any topic / design references (Awwwards, Behance, Dribbble); 'read <url>' to get a page's main content as clean readable text (best for research); 'crawl <url> [depth] [maxPages]' to walk same-domain pages (e.g. an Awwwards gallery); 'live <url> [maxPages] [secPerPage] [keep]' to open a REAL VISIBLE browser window the user WATCHES while you tour+analyze a site (use when they ask to see the analysis live; 'keep' leaves it open); 'dom <url>' for raw HTML; 'videoframes <url> <outPrefix> [frames] [referrer]' to sample frames from a video on the page.",
 			"  Research workflow: when asked to imitate/take inspiration from a site or find references, SEARCH, then READ or CRAWL the top results, and screenshot the best before designing — don't guess from memory.",
 			"  After taking a screenshot, ALWAYS open it with your view_image tool to study layout, colors, typography and content. Use this whenever the user asks to inspect, analyze or imitate a website or design (e.g. Behance/Dribbble references).",
-			"  Capture designs TOP-TO-BOTTOM in DESKTOP and MOBILE: desktop full-page via 'scrollshot <url> <outPrefix> [stops]', mobile full-page via 'shot <url> <out.png> 390x3000'; open each with view_image to study both viewports.",
-			"- Image generation: you can generate images; afterwards copy the generated file from your image output directory into the workspace with a proper name and reference it from the site.",
-			"- MANDATORY — real imagery, never placeholders: every page MUST use real images. NEVER leave gray boxes, solid-color rectangles, `placeholder.com` / `via.placeholder` / `dummyimage` / `picsum.photos` / `unsplash.com/random` URLs, empty `<img>`, or `TODO image` comments. Generate a real image for EVERY slot the design needs (hero, gallery, product, avatar, background) and save it into the workspace before finishing — placeholders mean the build is NOT done.",
+				"  Capture designs TOP-TO-BOTTOM in DESKTOP and MOBILE: desktop full-page via 'scrollshot <url> <outPrefix> [stops]', mobile full-page via 'shot <url> <out.png> 390x3000'; open each with view_image to study both viewports.",
+				"- Image generation: you can generate images; afterwards copy the generated file from your image output directory into the workspace with a proper name and reference it from the site.",
+				"- CREDIT GATE: never start paid/external video or 3D generation (Kling, Seedance, X-Field, Higgsfield, Runway, Pika, Luma, Veo, Sora, or similar) without an explicit Thomas approval card. This applies even in Autonomous.",
+				"- MANDATORY — real imagery, never placeholders: every page MUST use real images. NEVER leave gray boxes, solid-color rectangles, `placeholder.com` / `via.placeholder` / `dummyimage` / `picsum.photos` / `unsplash.com/random` URLs, empty `<img>`, or `TODO image` comments. Generate a real image for EVERY slot the design needs (hero, gallery, product, avatar, background) and save it into the workspace before finishing — placeholders mean the build is NOT done.",
 			"- For any multi-step build task, first create a plan with your plan tool and keep step statuses updated as you work.",
 			"- When deconstructing / analyzing / researching a design, website, or app: maintain DECONSTRUCT.md (or RESEARCH.md) in the workspace root and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end. The IDE renders this file live to the user as a research dashboard. Include as you go: what you examined so far, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, techniques you detected (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed the frames/screenshots you examine as images with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
@@ -3040,7 +3127,12 @@ self.addEventListener("fetch", (e) => {
 		const action = String(f && f.action || "").trim().toLowerCase();
 		if (!action) return;
 		const name = (() => { const a = this.fleetAgents().find((x) => x.id === agentId); return a ? a.name : agentId; })();
+		const creditRisk = creditRiskSignal(`fleet/${action}`, f);
 		try {
+			if (creditRisk) {
+				const ok = await this.requestFleetCreditApproval(agentId, name, creditRisk);
+				if (!ok) return this.postFleetActivity(agentId, "idle", "נדחה שער קרדיטים");
+			}
 			if (action === "open") {
 				const uri = this.resolveWorkspacePath(f.path);
 				if (!uri) return this.postFleetActivity(agentId, "error", "נתיב לא חוקי");
@@ -3179,6 +3271,25 @@ self.addEventListener("fetch", (e) => {
 			// safety timeout: auto-deny after 2 min so an agent never hangs forever
 			setTimeout(() => finish(false), 120000);
 		});
+	}
+	async requestFleetCreditApproval(agentId, name, risk) {
+		if (this.fleetPanel) {
+			return this.requestFleetApproval(
+				agentId,
+				name,
+				"credit",
+				risk.detail,
+				`שער קרדיטים: ${risk.label}. נדרש אישור תומס לפני המשך.`
+			);
+		}
+		const approveLabel = "Approve once";
+		const choice = await vscode.window.showWarningMessage(
+			`Solstice credit gate: ${risk.label}`,
+			{ modal: true, detail: risk.detail || "This fleet action may spend credits or generate video/3D assets." },
+			approveLabel,
+			"Deny"
+		);
+		return choice === approveLabel;
 	}
 	resolveFleetApproval(key, decision) {
 		if (!this.fleetApprovals) return;

@@ -304,7 +304,7 @@
 	}
 
 	// ---- inline approval gate ----------------------------------------------
-	const APPR_KIND = { edit: "✎ כתיבת קובץ", run: "⌘ הרצת פקודה", dispatch: "➦ שיגור לסוכן", open: "▣ פתיחת קובץ" };
+	const APPR_KIND = { edit: "✎ כתיבת קובץ", run: "⌘ הרצת פקודה", dispatch: "➦ שיגור לסוכן", open: "▣ פתיחת קובץ", credit: "⚠ שער קרדיטים" };
 	function approvalCard(ap) {
 		const card = el("div", "apprCard apprCard--" + ap.kind);
 		const top = el("div", "apprTop");

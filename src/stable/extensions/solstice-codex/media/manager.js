@@ -440,7 +440,12 @@
 		const card = el("div", "card approval");
 		const isFile = method.indexOf("fileChange") !== -1 || method === "applyPatchApproval";
 		const isMcp = method.indexOf("elicitation") !== -1;
-		card.appendChild(el("div", "cardTitle", isMcp ? "⚠️ Agent wants to use an MCP tool" : isFile ? "⚠️ Agent wants to edit files" : "⚠️ Agent wants to run a command"));
+		const isCredit = !!(params && params.creditGate);
+		card.appendChild(el("div", "cardTitle", isCredit ? "⚠️ Credit gate: approve video/3D generation" : isMcp ? "⚠️ Agent wants to use an MCP tool" : isFile ? "⚠️ Agent wants to edit files" : "⚠️ Agent wants to run a command"));
+		if (isCredit) {
+			card.appendChild(el("div", "muted", params.creditGate.reason || "Thomas approval is required before continuing."));
+			if (params.creditGate.detail) card.appendChild(el("div", "cmdLine", params.creditGate.detail));
+		}
 		if (isMcp && params && params.serverName) card.appendChild(el("div", "cmdLine", "🔌 " + params.serverName));
 		if (params && params.command) card.appendChild(el("div", "cmdLine", "$ " + params.command));
 		if (params && params.reason) card.appendChild(el("div", "muted", params.reason));
