@@ -23,7 +23,18 @@
   const shotEl = document.getElementById("shot");
   const emptyEl = document.getElementById("empty");
   const histEl = document.getElementById("history");
-  const ACT = { shot: "📸 מצלם", read: "📖 קורא", crawl: "🕸 סורק", search: "🔎 מחפש" };
+  const ACT = {
+    shot: "📸 מצלם",
+    scrollshot: "📜 מצלם גלילה",
+    read: "📖 קורא",
+    crawl: "🕸 סורק",
+    search: "🔎 מחפש",
+    live: "👁 גולש חי",
+    act: "🖱 מפעיל אתר",
+    videoframes: "🎞 דוגם וידאו",
+    describe: "🧠 מנתח תמונה",
+    dom: "⌘ קורא DOM",
+  };
   let liveTimer = null;
   window.addEventListener("message", (e) => {
     const m = e.data;

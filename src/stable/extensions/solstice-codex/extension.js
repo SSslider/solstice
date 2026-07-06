@@ -90,14 +90,14 @@ const CREDIT_PROVIDER_PATTERN = { re: /\b(x[-\s]?field|seedance|kling|higgsfield
 const CREDIT_VIDEO_PATTERNS = [
 	{ re: /\b(generate|create|make|produce|render|gen)\b[\s\S]{0,120}\b(video|mp4|webm|movie|film)\b/i, label: "video generation" },
 	{ re: /\b(video|mp4|webm|movie|film)\b[\s\S]{0,120}\b(generate|create|make|produce|render|gen)\b/i, label: "video generation" },
-	{ re: /(?:וידאו|סרטון)[\s\S]{0,120}(?:צור|ליצור|ג'נרוט|ג׳נרוט|רנדר|הפק|להפיק)/i, label: "video generation" },
-	{ re: /(?:צור|ליצור|ג'נרוט|ג׳נרוט|רנדר|הפק|להפיק)[\s\S]{0,120}(?:וידאו|סרטון)/i, label: "video generation" },
+	{ re: /(?:וידאו|סרטון)[\s\S]{0,120}(?:צור|ליצור|ג'נרוט|ג׳נרוט|רנדר|הפק|הפיק|תפיק|יפיק|מפיק|נפיק|להפיק)/i, label: "video generation" },
+	{ re: /(?:צור|ליצור|ג'נרוט|ג׳נרוט|רנדר|הפק|הפיק|תפיק|יפיק|מפיק|נפיק|להפיק)[\s\S]{0,120}(?:וידאו|סרטון)/i, label: "video generation" },
 ];
 const CREDIT_3D_ASSET_PATTERNS = [
 	{ re: /\b(generate|create|make|produce|render|gen)\b[\s\S]{0,120}\b(animation|3d|three[-\s]?d|3d[-\s]?model|model)\b/i, label: "3D/animation generation" },
 	{ re: /\b(animation|3d|three[-\s]?d|3d[-\s]?model|model)\b[\s\S]{0,120}\b(generate|create|make|produce|render|gen)\b/i, label: "3D/animation generation" },
-	{ re: /(?:אנימציה|תלת[-\s]?ממד|תלת\s?מימד|מודל\s?3d|מודל\s?תלת)[\s\S]{0,120}(?:צור|ליצור|ג'נרוט|ג׳נרוט|רנדר|הפק|להפיק)/i, label: "3D/animation generation" },
-	{ re: /(?:צור|ליצור|ג'נרוט|ג׳נרוט|רנדר|הפק|להפיק)[\s\S]{0,120}(?:אנימציה|תלת[-\s]?ממד|תלת\s?מימד|מודל\s?3d|מודל\s?תלת)/i, label: "3D/animation generation" },
+	{ re: /(?:אנימציה|תלת[-\s]?ממד|תלת\s?מימד|מודל\s?3d|מודל\s?תלת)[\s\S]{0,120}(?:צור|ליצור|ג'נרוט|ג׳נרוט|רנדר|הפק|הפיק|תפיק|יפיק|מפיק|נפיק|להפיק)/i, label: "3D/animation generation" },
+	{ re: /(?:צור|ליצור|ג'נרוט|ג׳נרוט|רנדר|הפק|הפיק|תפיק|יפיק|מפיק|נפיק|להפיק)[\s\S]{0,120}(?:אנימציה|תלת[-\s]?ממד|תלת\s?מימד|מודל\s?3d|מודל\s?תלת)/i, label: "3D/animation generation" },
 ];
 const LOCAL_FRONTEND_3D_PATTERN = /\b(three\.?js|three[-\s]?js|@react-three\/fiber|react[-\s]?three[-\s]?fiber|r3f|gsap|scrolltrigger|framer[-\s]?motion|css|webgl|canvas)\b/i;
 const LOCAL_FRONTEND_BUILD_PATTERN = /\b(page|site|website|app|component|viewer|hero|frontend|front[-\s]?end|ui|layout|smooth(?:er)?|scroll|animate|animation)\b/i;
@@ -137,6 +137,29 @@ function creditRiskSignal(method, params) {
 		}
 	}
 	return null;
+}
+
+function needsResearchContract(text) {
+	const t = String(text || "");
+	if (!t || /SOLSTICE_RESEARCH_CONTRACT/.test(t)) return false;
+	const asksAnalysis = /\b(analy[sz]e|inspect|deconstruct|research|reference|references|inspiration|imitat(?:e|ion)|clone|recreate|study|break\s+down|style|look\s+like|based\s+on|attached)\b|(?:נתח|תנתח|לנתח|פרק|תפרק|לפרק|חקור|תחקור|רפרנס|רפרנסים|השראה|סגנון|כמו|לפי|מצורף)/i;
+	const hasVisualTarget = /https?:\/\/|www\.|behance|dribbble|awwwards|\b(site|website|web\s*app|app|page|landing|screenshot|image|photo|picture|video|mp4|webm|motion|animation)\b|(?:אתר|אפליקציה|דף|עמוד|צילום|סקרינשוט|תמונה|וידאו|סרטון|אנימציה)/i;
+	return asksAnalysis.test(t) && hasVisualTarget.test(t);
+}
+
+function appendResearchContract(text) {
+	if (!needsResearchContract(text)) return text;
+	return String(text || "") + [
+		"",
+		"[SOLSTICE_RESEARCH_CONTRACT]",
+		"This request includes site/design/media analysis. You must gather visual ground truth before building or final analysis:",
+		"1. Create or update `DECONSTRUCT.md` in the workspace root immediately, then keep updating it after each finding.",
+		"2. For websites/apps: use the bundled `browse.js` tools, not memory. Capture desktop scrollshots and a mobile screenshot; use `live` or `act` when the user asks to watch the browsing.",
+		"3. For image references/screenshots: inspect every image with vision (`view_image`, Claude Read, or `browse.js describe`) and record concrete observations in `DECONSTRUCT.md`.",
+		"4. For video/animated references: run `browse.js videoframes` or record why frames were blocked; describe motion, timing, pinned sections, parallax, and transitions in `DECONSTRUCT.md`.",
+		"5. Do not start implementation until the evidence table in `DECONSTRUCT.md` lists the URLs/files/frames examined and the build decisions derived from them.",
+		"[/SOLSTICE_RESEARCH_CONTRACT]",
+	].join("\n");
 }
 
 class AgentController {
@@ -447,6 +470,7 @@ class AgentController {
 			"## How to operate — you are an AGENT, not a one-shot chat model",
 			"- PERSIST: keep going until the user's request is FULLY done. Don't stop and hand back after a single step — plan the steps, execute every one, verify, then finish. If you hit uncertainty mid-task, research or deduce the most reasonable path and CONTINUE rather than stopping.",
 			"- GET GROUND TRUTH, don't guess: when unsure about a file, the project, or how a design/site looks, use your tools (read files, search/read/crawl the web, screenshot + describe the image). Never invent something you could verify.",
+			"- DESIGN/MEDIA RESEARCH CONTRACT: when the user asks you to analyze, deconstruct, imitate, recreate, or take inspiration from a site/app/design/image/video/reference, do not answer or build from memory. First create/update `DECONSTRUCT.md`, gather visual evidence with the browser/media tools, record what you examined, then derive build decisions from that evidence.",
 			"- PLAN first on any multi-step task and keep the plan updated as you go (the IDE renders it live).",
 			"- SELF-VERIFY before saying done: run/preview what you built, screenshot the live result, VIEW the screenshot, compare it to the goal, and fix issues — including a mobile-width pass. Placeholders, console errors, or an unopened preview mean it is NOT done.",
 			"- CONVERGE \u2014 don't loop: for a SMALL or incremental change (a tweak, a menu/style fix, one element, fixing a few links), make the edit, do AT MOST ONE quick verify, then STOP and report. Do NOT re-screenshot, re-edit and re-verify the same thing in a loop. Deep iterative self-verify is for a full from-scratch build, not a small follow-up. If the requested change is applied and reasonable you are DONE \u2014 never chase a subjective 'perfect' across dozens of steps; if you've taken many steps on one small ask, stop and hand back what you have.",
@@ -1607,6 +1631,7 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	async sendClaude(text) {
+		const prompt = appendResearchContract(text);
 		if (!this.claudeAllowed()) {
 			vscode.window.showWarningMessage("Solstice: Claude is disabled. Set solstice.codex.allowClaude to true to enable it.");
 			return;
@@ -1626,10 +1651,11 @@ self.addEventListener("fetch", (e) => {
 			th.preview = text;
 			this.post({ type: "thread", threadId: this.threadId, model: this.providerLabel() });
 		}
-		await this.claude.send(text, this.claudePreamble());
+		await this.claude.send(prompt, this.claudePreamble());
 	}
 
 	async sendGrok(text) {
+		const prompt = appendResearchContract(text);
 		const cwd = workspaceCwd();
 		if (!cwd) { vscode.window.showWarningMessage("Solstice: open a folder first."); return; }
 		if (!this.grok) {
@@ -1646,7 +1672,7 @@ self.addEventListener("fetch", (e) => {
 			this.post({ type: "thread", threadId: this.threadId, model: this.providerLabel() });
 		}
 		this.startGrokWatcher();
-		await this.grok.send(this.providerKey(), text, this.grokPreamble());
+		await this.grok.send(this.providerKey(), prompt, this.grokPreamble());
 		this.flushGrokChanges();
 	}
 
@@ -1763,11 +1789,11 @@ self.addEventListener("fetch", (e) => {
 		if (method === "item/completed" && params.item && params.item.type === "fileChange") {
 			this.onFilesChanged(params.item);
 		}
-		// flag turns that actually did web research (browse read/crawl/search/scrollshot)
+		// flag turns that actually did web/media research
 		// so we only surface a research dashboard for genuine analysis/clone work.
 		if ((method === "item/started" || method === "item/completed") && params.item && params.item.type === "commandExecution") {
 			const cmd = String(params.item.command || params.item.title || "");
-			if (/browse\.js["']?\s+(read|crawl|search|scrollshot|videoframes|describe|dom)\b/i.test(cmd)) this.turnDidResearch = true;
+			if (/browse\.js["']?\s+(read|crawl|search|shot|scrollshot|live|act|videoframes|describe|dom)\b/i.test(cmd)) this.turnDidResearch = true;
 		}
 		// Composer/grok narrate the plan and the site analysis as CHAT TEXT instead of
 		// writing .solstice/PLAN.md / RESEARCH.md or calling a plan tool — so the center
@@ -1959,6 +1985,7 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	async startTurn(threadId, text) {
+		const prompt = appendResearchContract(text);
 		const client = await this.ensureClient();
 		await this.ensureRunnable(threadId);
 		const th = this.upsertThread({ id: threadId });
@@ -1968,7 +1995,7 @@ self.addEventListener("fetch", (e) => {
 		}
 		await client.request("turn/start", {
 			threadId,
-			input: [{ type: "text", text, text_elements: [] }],
+			input: [{ type: "text", text: prompt, text_elements: [] }],
 		});
 	}
 
@@ -2002,6 +2029,7 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	async steer(threadId, text) {
+		text = appendResearchContract(text);
 		const provider = this.providerKey();
 		// grok / claude run as spawned CLIs with no native mid-turn injection.
 		// While they're busy, queue the steer and drain it into a follow-up turn
@@ -2184,11 +2212,13 @@ self.addEventListener("fetch", (e) => {
 		else if (item.type === "commandExecution") {
 			const cmd = String(item.command || (item.changes && item.changes[0] && item.changes[0].command) || "");
 			if (!/browse\.js/.test(cmd)) return;
-			const m = cmd.match(/browse\.js["']?\s+(shot|read|crawl|search|dom|videoframes)\s+["']?([^"'\s]+)["']?(?:\s+["']?([^"'\s]+\.png)["']?)?/i);
+			const m = cmd.match(/browse\.js["']?\s+(shot|read|crawl|search|dom|scrollshot|live|act|videoframes|describe)\s+((?:"[^"]+"|'[^']+'|[^\s]+))(?:\s+((?:"[^"]+"|'[^']+'|[^\s]+)))?/i);
 			if (!m) return;
 			action = m[1].toLowerCase();
-			out = m[3];
-			url = action === "search" ? ("חיפוש: " + m[2]) : m[2];
+			const arg1 = String(m[2] || "").replace(/^["']|["']$/g, "");
+			const arg2 = String(m[3] || "").replace(/^["']|["']$/g, "");
+			out = action === "shot" ? arg2 : (action === "describe" ? arg1 : null);
+			url = action === "search" ? ("חיפוש: " + arg1) : arg1;
 		} else return;
 		this.openBrowserPanel();
 		if (!this.browserPanel) return;
