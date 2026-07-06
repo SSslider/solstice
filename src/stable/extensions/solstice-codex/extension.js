@@ -70,6 +70,7 @@ const APPROVAL_METHODS = new Set([
 	"execCommandApproval",
 	"applyPatchApproval",
 ]);
+const PLAN_FILE_RE = /[\\/]\.solstice[\\/]PLAN\.md$/i;
 
 function workspaceCwd() {
 	const f = vscode.workspace.workspaceFolders;
@@ -405,7 +406,7 @@ class AgentController {
 			const it = params.item;
 			if (it.type === "agentMessage" && it.text) s.messages.push({ role: "agent", text: String(it.text).slice(0, 4000) });
 			else if (it.type === "fileChange" && Array.isArray(it.changes)) for (const c of it.changes) if (c && c.path) s.files.unshift({ path: c.path, t: Date.now() });
-		} else if (method === "turn/plan/updated" && params && params.plan) s.plan = params.plan;
+		} else if (method === "turn/plan/updated" && params && params.plan) s.plan = this.normalizePlan(params.plan);
 		s.messages = s.messages.slice(-40);
 		s.files = s.files.slice(0, 24);
 		s.ts = Date.now();
@@ -824,16 +825,61 @@ self.addEventListener("fetch", (e) => {
 		this.postPreview({ type: "reload", holdMs: 900 });
 	}
 
+	normalizePlanStatus(status) {
+		const s = String(status || "").toLowerCase().replace(/[_\s-]+/g, "");
+		if (/^(completed|complete|done|success|finished|x)$/.test(s)) return "completed";
+		if (/^(inprogress|current|running|active|doing|working|started|~)$/.test(s)) return "inProgress";
+		return "pending";
+	}
+
+	normalizePlan(plan) {
+		if (!Array.isArray(plan)) return [];
+		return plan.map((s) => {
+			if (!s) return null;
+			const item = {
+				step: String(s.step || s.content || s.title || s.text || "").trim(),
+				status: this.normalizePlanStatus(s.status),
+			};
+			if (!item.step) return null;
+			if (s.group) item.group = String(s.group).trim();
+			if (s.detail) item.detail = String(s.detail).trim();
+			const substeps = Array.isArray(s.substeps) ? this.normalizePlan(s.substeps) : [];
+			if (substeps.length) item.substeps = substeps;
+			return item;
+		}).filter(Boolean);
+	}
+
+	serializePlanMarkdown(th) {
+		const marks = { completed: "[x]", inProgress: "[~]", pending: "[ ]" };
+		const lines = [];
+		let group = "";
+		for (const s of th.plan || []) {
+			if (s.group && s.group !== group) {
+				group = s.group;
+				if (lines.length) lines.push("");
+				lines.push("## " + group);
+			}
+			const mark = marks[s.status] || "[ ]";
+			lines.push(`${lines.filter((l) => /^\d+\.\s/.test(l)).length + 1}. ${mark} ${s.step}${s.status === "inProgress" ? "   ← current" : ""}`);
+			if (s.detail) lines.push(`   _${s.detail}_`);
+			if (Array.isArray(s.substeps)) {
+				for (const sub of s.substeps) {
+					const sm = marks[sub.status] || "[ ]";
+					lines.push(`   - ${sm} ${sub.step}${sub.status === "inProgress" ? "   ← current" : ""}`);
+					if (sub.detail) lines.push(`     _${sub.detail}_`);
+				}
+			}
+		}
+		const title = (th.preview || "").split("\n")[0].slice(0, 80);
+		return `# Agent Plan\n\n${title ? "_" + title + "_\n\n" : ""}${lines.join("\n")}\n`;
+	}
+
 	writePlanFile(th) {
 		const root = workspaceCwd();
 		if (!root || !th || !Array.isArray(th.plan) || !th.plan.length) return;
 		const dir = path.join(root, ".solstice");
 		try { fs.mkdirSync(dir, { recursive: true }); } catch { return; }
-		const marks = { completed: "[x]", inProgress: "[~]", pending: "[ ]" };
-		const lines = th.plan.map((s, i) =>
-			`${i + 1}. ${marks[s.status] || "[ ]"} ${s.step}${s.status === "inProgress" ? "   ← current" : ""}`);
-		const title = (th.preview || "").split("\n")[0].slice(0, 80);
-		const text = `# Agent Plan\n\n${title ? "_" + title + "_\n\n" : ""}${lines.join("\n")}\n`;
+		const text = this.serializePlanMarkdown(th);
 		if (text === this.lastPlanFileText) return;
 		this.lastPlanFileText = text;
 		const file = path.join(dir, "PLAN.md");
@@ -842,9 +888,13 @@ self.addEventListener("fetch", (e) => {
 		// markdown — the visual plan webview (openPlanPanel) owns the center view.
 	}
 
-	onFilesChanged(item) {
+	onFilesChanged(item, threadId) {
 		const root = workspaceCwd();
 		const paths = (item.changes || []).map((c) => c.path || c.file).filter(Boolean);
+		for (const p of paths) {
+			const abs = path.isAbsolute(p) ? p : path.join(root || "", p);
+			if (PLAN_FILE_RE.test(abs)) this.emitPlanFile(abs, threadId);
+		}
 		// research/plan docs have dedicated views — never open their raw editors over them
 		const skip = /(^|[\\/])(RESEARCH|DECONSTRUCT)\.md$|[\\/]\.solstice[\\/]/;
 		for (const p of paths.filter((p) => !skip.test(p)).slice(0, 3)) {
@@ -1403,7 +1453,7 @@ self.addEventListener("fetch", (e) => {
 			const p = uri.fsPath;
 			// grok has no plan tool — it maintains .solstice/PLAN.md per the preamble;
 			// bridge it into turn/plan/updated so the panel shows a live checklist
-			if (/[\\/]\.solstice[\\/]PLAN\.md$/.test(p)) { this.emitGrokPlan(p); return; }
+			if (PLAN_FILE_RE.test(p)) { this.emitPlanFile(p, this.grok ? this.grok.threadId : undefined); return; }
 			if (/[\\/](node_modules|\.git|\.solstice|\.next|dist)([\\/]|$)/.test(p)) return;
 			this.grokChanged.add(p);
 		};
@@ -1413,14 +1463,14 @@ self.addEventListener("fetch", (e) => {
 		this.grokWatcher = w;
 	}
 
-	emitGrokPlan(file) {
+	emitPlanFile(file, threadId) {
 		let text;
 		try { text = fs.readFileSync(file, "utf8"); } catch { return; }
 		if (text === this.lastPlanFileText) return;
 		this.lastPlanFileText = text;
 		const plan = this.parseRichPlan(text);
 		if (plan.length) {
-			this.onNotification("turn/plan/updated", { threadId: this.grok ? this.grok.threadId : undefined, plan });
+			this.onNotification("turn/plan/updated", { threadId: threadId || this.threadId, plan });
 		}
 	}
 
@@ -1779,7 +1829,7 @@ self.addEventListener("fetch", (e) => {
 			if (tid === this.threadId) this.lastDiff = th.diff;
 		} else if (method === "turn/plan/updated" && tid) {
 			const th = this.upsertThread({ id: tid });
-			th.plan = params.plan || null;
+			th.plan = this.normalizePlan(params.plan);
 			this.writePlanFile(th);
 			this.pushPlanPanel(th);
 		}
@@ -1787,7 +1837,7 @@ self.addEventListener("fetch", (e) => {
 			this.recordTokenUsage(params);
 		}
 		if (method === "item/completed" && params.item && params.item.type === "fileChange") {
-			this.onFilesChanged(params.item);
+			this.onFilesChanged(params.item, tid);
 		}
 		// flag turns that actually did web/media research
 		// so we only surface a research dashboard for genuine analysis/clone work.
