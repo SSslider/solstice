@@ -148,19 +148,52 @@ function needsResearchContract(text) {
 	return asksAnalysis.test(t) && hasVisualTarget.test(t);
 }
 
+function needsAnimatedWebsiteKit(text) {
+	const t = String(text || "");
+	if (!t || /SOLSTICE_ANIMATED_WEBSITE_KIT/.test(t)) return false;
+	const asksSite = /\b(site|website|landing|homepage|page|web\s*app|microsite)\b|(?:אתר|דף|עמוד|לנדינג|נחיתה|מיניסייט)/i;
+	const asksMotion = /\b(animated|animation|motion|scrollytelling|scroll[-\s]?telling|scroll[-\s]?scrub|scrolltrigger|gsap|parallax|sticky\s+scroll|apple[-\s]?style|cinematic|webgl|three\.?js|three[-\s]?js|react[-\s]?three[-\s]?fiber|r3f|shader|canvas\s+sequence|video\s+scroll)\b|(?:מונפש|אנימציה|תנועה|גלילה|פרלקס|תלת[-\s]?ממד|תלת\s?מימד|וובגל|קנבס|סינמטי|בסגנון\s+אפל)/i;
+	return asksSite.test(t) && asksMotion.test(t);
+}
+
+let animatedWebsiteKitCache = null;
+function animatedWebsiteKitText() {
+	if (animatedWebsiteKitCache !== null) return animatedWebsiteKitCache;
+	try {
+		animatedWebsiteKitCache = fs.readFileSync(path.join(__dirname, "prompts", "animated-website-kit.md"), "utf8").trim();
+	} catch {
+		animatedWebsiteKitCache = "";
+	}
+	return animatedWebsiteKitCache;
+}
+
 function appendResearchContract(text) {
-	if (!needsResearchContract(text)) return text;
-	return String(text || "") + [
-		"",
-		"[SOLSTICE_RESEARCH_CONTRACT]",
-		"This request includes site/design/media analysis. You must gather visual ground truth before building or final analysis:",
-		"1. Create or update `DECONSTRUCT.md` in the workspace root immediately, then keep updating it after each finding.",
-		"2. For websites/apps: use the bundled `browse.js` tools, not memory. Capture desktop scrollshots and a mobile screenshot; use `live` or `act` when the user asks to watch the browsing.",
-		"3. For image references/screenshots: inspect every image with vision (`view_image`, Claude Read, or `browse.js describe`) and record concrete observations in `DECONSTRUCT.md`.",
-		"4. For video/animated references: run `browse.js videoframes` or record why frames were blocked; describe motion, timing, pinned sections, parallax, and transitions in `DECONSTRUCT.md`.",
-		"5. Do not start implementation until the evidence table in `DECONSTRUCT.md` lists the URLs/files/frames examined and the build decisions derived from them.",
-		"[/SOLSTICE_RESEARCH_CONTRACT]",
-	].join("\n");
+	let out = String(text || "");
+	const addResearchContract = needsResearchContract(out);
+	const addAnimatedKit = needsAnimatedWebsiteKit(out);
+	if (addResearchContract) {
+		out += [
+			"",
+			"[SOLSTICE_RESEARCH_CONTRACT]",
+			"This request includes site/design/media analysis. You must gather visual ground truth before building or final analysis:",
+			"1. Create or update `DECONSTRUCT.md` in the workspace root immediately, then keep updating it after each finding.",
+			"2. For websites/apps: use the bundled `browse.js` tools, not memory. Capture desktop scrollshots and a mobile screenshot; use `live` or `act` when the user asks to watch the browsing.",
+			"3. For image references/screenshots: inspect every image with vision (`view_image`, Claude Read, or `browse.js describe`) and record concrete observations in `DECONSTRUCT.md`.",
+			"4. For video/animated references: run `browse.js videoframes` or record why frames were blocked; describe motion, timing, pinned sections, parallax, and transitions in `DECONSTRUCT.md`.",
+			"5. Do not start implementation until the evidence table in `DECONSTRUCT.md` lists the URLs/files/frames examined and the build decisions derived from them.",
+			"[/SOLSTICE_RESEARCH_CONTRACT]",
+		].join("\n");
+	}
+	if (addAnimatedKit) {
+		const kit = animatedWebsiteKitText();
+		out += [
+			"",
+			"[SOLSTICE_ANIMATED_WEBSITE_KIT]",
+			kit || "Build a real animated website with GSAP ScrollTrigger or React Three Fiber, include scroll-depth verification, and keep paid video/3D providers behind the credit gate.",
+			"[/SOLSTICE_ANIMATED_WEBSITE_KIT]",
+		].join("\n");
+	}
+	return out;
 }
 
 class AgentController {
