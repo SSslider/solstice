@@ -31,18 +31,34 @@ class FelixSkills {
 		try { fs.mkdirSync(this.skillsDir, { recursive: true }); fs.mkdirSync(this.memoryDir, { recursive: true }); } catch { }
 	}
 
-	// import the static design playbook as the seed skill, once.
+	// import static prompt playbooks as seed skills, once.
 	seedFrom(extensionPath) {
-		const seedFile = path.join(this.skillsDir, "design-playbook.md");
+		this._seedPrompt(extensionPath, "design-playbook", "design-playbook.md", ["design", "premium", "landing", "ui"]);
+		this._seedPrompt(extensionPath, "animated-website-kit", "animated-website-kit.md", ["animation", "gsap", "r3f", "scrollytelling", "three"]);
+		this._seedPrompt(extensionPath, "felix-toolbox-router", "felix-toolbox-router.md", ["toolbox", "router", "workflow", "research", "build"]);
+		this._seedPrompt(extensionPath, "gap-analysis-playbook", "gap-analysis-playbook.md", ["gap", "antigravity", "cursor", "analysis"]);
+		const verticalDir = path.join(extensionPath, "prompts", "verticals");
+		let files = [];
+		try { files = fs.readdirSync(verticalDir).filter((f) => f.endsWith(".md")).sort(); } catch { }
+		for (const f of files) {
+			const name = "vertical-" + slug(f.replace(/\.md$/, ""));
+			const sector = slug(f.replace(/\.md$/, ""));
+			const tags = ["vertical", "template", sector].concat(sector.split("-").filter(Boolean));
+			this._seedPrompt(extensionPath, name, path.join("verticals", f), tags, sector);
+		}
+	}
+
+	_seedPrompt(extensionPath, name, rel, tags, sector) {
+		const seedFile = path.join(this.skillsDir, slug(name) + ".md");
 		if (fs.existsSync(seedFile)) return;
 		let src = "";
-		try { src = fs.readFileSync(path.join(extensionPath, "prompts", "design-playbook.md"), "utf8"); } catch { return; }
+		try { src = fs.readFileSync(path.join(extensionPath, "prompts", rel), "utf8"); } catch { return; }
 		this._writeFile(seedFile, {
-			name: "design-playbook", tags: ["design", "premium", "landing", "ui"], version: 1,
-			provenance: "seed:prompts/design-playbook.md", verified: true,
+			name, tags: tags || [], sector: sector || "", version: 1,
+			provenance: "seed:prompts/" + rel.replace(/\\/g, "/"), verified: true,
 			createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), change_note: "seeded",
 		}, src);
-		this.log("[skills] seeded design-playbook");
+		this.log("[skills] seeded " + name);
 	}
 
 	_writeFile(file, meta, body) {

@@ -156,21 +156,65 @@ function needsAnimatedWebsiteKit(text) {
 	return asksSite.test(t) && asksMotion.test(t);
 }
 
-let animatedWebsiteKitCache = null;
-function animatedWebsiteKitText() {
-	if (animatedWebsiteKitCache !== null) return animatedWebsiteKitCache;
+const PROMPT_CACHE = new Map();
+function promptText(rel) {
+	if (PROMPT_CACHE.has(rel)) return PROMPT_CACHE.get(rel);
+	let txt = "";
 	try {
-		animatedWebsiteKitCache = fs.readFileSync(path.join(__dirname, "prompts", "animated-website-kit.md"), "utf8").trim();
-	} catch {
-		animatedWebsiteKitCache = "";
-	}
-	return animatedWebsiteKitCache;
+		txt = fs.readFileSync(path.join(__dirname, "prompts", rel), "utf8").trim();
+	} catch { txt = ""; }
+	PROMPT_CACHE.set(rel, txt);
+	return txt;
+}
+function animatedWebsiteKitText() { return promptText("animated-website-kit.md"); }
+function toolboxRouterText() { return promptText("felix-toolbox-router.md"); }
+function gapAnalysisPlaybookText() { return promptText("gap-analysis-playbook.md"); }
+
+const VERTICAL_TEMPLATE_CATALOG = [
+	{ file: "verticals/medical-clinic.md", tags: ["medical", "clinic", "doctor", "dentist", "dental", "physio", "health", "רופא", "רופאה", "מרפאה", "שיניים", "דנטלי", "פיזיותרפיה", "בריאות"] },
+	{ file: "verticals/law-firm.md", tags: ["law", "lawyer", "legal", "attorney", "notary", "עו\"ד", "עו״ד", "עורך דין", "עורכת דין", "נוטריון", "משפט"] },
+	{ file: "verticals/barber-beauty.md", tags: ["barber", "salon", "beauty", "hair", "nails", "tattoo", "מספרה", "ספר גברים", "יופי", "שיער", "ציפורניים", "קעקוע"] },
+];
+
+function selectedVerticalTemplates(text) {
+	const t = String(text || "").toLowerCase();
+	const wantsLibrary = /\b(template|templates|vertical|verticals|sector|sectors|library|pack)\b|(?:תבנית|תבניות|ורטיקל|ורטיקלים|תחום|תחומים|ספרייה|חבילה)/i.test(t);
+	const hits = VERTICAL_TEMPLATE_CATALOG.filter((v) => v.tags.some((tag) => t.includes(String(tag).toLowerCase())));
+	const chosen = (wantsLibrary && !hits.length) ? VERTICAL_TEMPLATE_CATALOG : hits;
+	return chosen.map((v) => ({ ...v, body: promptText(v.file) })).filter((v) => v.body);
+}
+
+function needsVerticalTemplatePack(text) {
+	const t = String(text || "");
+	if (!t || /SOLSTICE_VERTICAL_TEMPLATE_PACK/.test(t)) return false;
+	return selectedVerticalTemplates(t).length > 0;
+}
+
+function verticalTemplatePackText(text) {
+	const blocks = selectedVerticalTemplates(text);
+	return blocks.map((b) => b.body).join("\n\n---\n\n");
+}
+
+function needsGapAnalysis(text) {
+	const t = String(text || "");
+	if (!t || /SOLSTICE_GAP_ANALYSIS_PLAYBOOK/.test(t)) return false;
+	return /\b(antigravity|cursor|windsurf|gap\s*(?:analysis|report)|compare|comparison|benchmark|adopt|adoption)\b|(?:פערים|השוואה|להשוות|לאמץ|אימוץ|דוח\s+פערים)/i.test(t)
+		&& /\b(solstice|felix|ide|agent|coding|builder|cursor|antigravity|windsurf)\b|(?:פליקס|סולסטיס|סוכן|סוכנים|איידיאי|עורך|בונה)/i.test(t);
+}
+
+function needsExplicitToolboxRouter(text) {
+	const t = String(text || "");
+	if (!t || /SOLSTICE_FELIX_TOOLBOX_ROUTER/.test(t)) return false;
+	return /\b(felix\s+toolbox|toolbox|tool\s*router|agent\s+toolkit|smart\s+agent|analy[sz]e\s+and\s+build)\b|(?:ארגז\s+כלים|כלים\s+של\s+פליקס|סוכן\s+חכם|נתח\s+ובנה)/i.test(t);
 }
 
 function appendResearchContract(text) {
 	let out = String(text || "");
 	const addResearchContract = needsResearchContract(out);
 	const addAnimatedKit = needsAnimatedWebsiteKit(out);
+	const addVerticalPack = needsVerticalTemplatePack(out);
+	const addGapAnalysis = needsGapAnalysis(out);
+	const addToolboxRouter = needsExplicitToolboxRouter(out);
 	if (addResearchContract) {
 		out += [
 			"",
@@ -182,7 +226,7 @@ function appendResearchContract(text) {
 			"4. For video/animated references: run `browse.js videoframes` or record why frames were blocked; describe motion, timing, pinned sections, parallax, and transitions in `DECONSTRUCT.md`.",
 			"5. Do not start implementation until the evidence table in `DECONSTRUCT.md` lists the URLs/files/frames examined and the build decisions derived from them.",
 			"[/SOLSTICE_RESEARCH_CONTRACT]",
-		].join("\n");
+			].join("\n");
 	}
 	if (addAnimatedKit) {
 		const kit = animatedWebsiteKitText();
@@ -191,6 +235,33 @@ function appendResearchContract(text) {
 			"[SOLSTICE_ANIMATED_WEBSITE_KIT]",
 			kit || "Build a real animated website with GSAP ScrollTrigger or React Three Fiber, include scroll-depth verification, and keep paid video/3D providers behind the credit gate.",
 			"[/SOLSTICE_ANIMATED_WEBSITE_KIT]",
+		].join("\n");
+	}
+	if (addVerticalPack) {
+		const pack = verticalTemplatePackText(out);
+		out += [
+			"",
+			"[SOLSTICE_VERTICAL_TEMPLATE_PACK]",
+			pack || "Use the closest Solstice vertical template pack. Preserve local-business conversion paths and adapt copy/assets to the actual sector.",
+			"[/SOLSTICE_VERTICAL_TEMPLATE_PACK]",
+		].join("\n");
+	}
+	if (addGapAnalysis) {
+		const playbook = gapAnalysisPlaybookText();
+		out += [
+			"",
+			"[SOLSTICE_GAP_ANALYSIS_PLAYBOOK]",
+			playbook || "Write GAP_REPORT.md with evidence, ROI-ranked gaps, adoption candidates, and do-not-adopt items. Do not implement unless asked.",
+			"[/SOLSTICE_GAP_ANALYSIS_PLAYBOOK]",
+		].join("\n");
+	}
+	if (addToolboxRouter) {
+		const toolbox = toolboxRouterText();
+		out += [
+			"",
+			"[SOLSTICE_FELIX_TOOLBOX_ROUTER]",
+			toolbox || "Choose the right route before acting: research, plan, build, animated site, vertical template, gap analysis, approval, recovery.",
+			"[/SOLSTICE_FELIX_TOOLBOX_ROUTER]",
 		].join("\n");
 	}
 	return out;
@@ -1643,6 +1714,7 @@ self.addEventListener("fetch", (e) => {
 			? `cmd /c "set ELECTRON_RUN_AS_NODE=1&& ""${node}"" ""${browseJs}"" dom <url>"`
 			: `ELECTRON_RUN_AS_NODE=1 "${node}" "${browseJs}" dom <url>`;
 		const playbook = this.designPlaybook();
+		const toolbox = toolboxRouterText();
 		return [
 			"You are the Solstice IDE agent. Work directly on files in this workspace.",
 			"Capabilities beyond your normal tools (run these as shell commands):",
@@ -1667,11 +1739,12 @@ self.addEventListener("fetch", (e) => {
 			"- ALWAYS externalize your design/site analysis to a FILE — the user reads the analysis in the CENTER window as a research dashboard, not the chat. When deconstructing / analyzing / researching a design, website or app, the FIRST thing you do is create `RESEARCH.md` (or `DECONSTRUCT.md`) in the workspace root, and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end, and never only in chat. Include as you go: what you examined, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, detected techniques (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed frames/screenshots with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
 			`- PREMIUM COMPONENT LIBRARY — your fastest path to an Awwwards-bar page. BEFORE building any common section (navbar, hero, features, gallery, stats, testimonials, pricing, CTA, footer) from scratch, read ${path.join(this.context.extensionPath, "prompts", "components", "library.html")} (sections are delimited by '═══ COMPONENT: <id> ═══' markers; ids+tags in manifest.json next to it). Copy the closest component, then ADAPT it to the client: retheme the --c-* tokens to the brand palette, replace ALL copy with sector-true Hebrew, swap in real/generated imagery, rename fx- prefixes on collision. NEVER ship a component verbatim — it is a high starting bar, not a final design.`,
-			this.agentBehavior(),
-			this.appModeGuidance(),
-			playbook ? "\n" + playbook : "",
-		].join("\n");
-	}
+				this.agentBehavior(),
+				this.appModeGuidance(),
+				toolbox ? "\n" + toolbox : "",
+				playbook ? "\n" + playbook : "",
+			].join("\n");
+		}
 
 	claudePreamble() {
 		const browseJs = path.join(this.context.extensionPath, "webtools", "browse.js"); // dir is "webtools" not "tools": the Windows build's 7z -x!tools strips any nested tools/ dir
@@ -1683,6 +1756,7 @@ self.addEventListener("fetch", (e) => {
 			? `cmd /c "set ELECTRON_RUN_AS_NODE=1&& ""${node}"" ""${browseJs}"" dom <url>"`
 			: `ELECTRON_RUN_AS_NODE=1 "${node}" "${browseJs}" dom <url>`;
 		const playbook = this.designPlaybook();
+		const toolbox = toolboxRouterText();
 		return [
 			"You are the Solstice IDE agent. Work directly on files in this workspace.",
 			"Capabilities beyond your normal tools (run these as shell commands):",
@@ -1707,11 +1781,12 @@ self.addEventListener("fetch", (e) => {
 			"- FOLLOW-UP PROMPTS CONTINUE THE SAME PLAN: append a new `## Phase` to the existing .solstice/PLAN.md for each new user request — never restart the plan file; completed phases keep their [x].",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
 			`- PREMIUM COMPONENT LIBRARY — your fastest path to an Awwwards-bar page. BEFORE building any common section (navbar, hero, features, gallery, stats, testimonials, pricing, CTA, footer) from scratch, read ${path.join(this.context.extensionPath, "prompts", "components", "library.html")} (sections are delimited by '═══ COMPONENT: <id> ═══' markers; ids+tags in manifest.json next to it). Copy the closest component, then ADAPT it to the client: retheme the --c-* tokens to the brand palette, replace ALL copy with sector-true Hebrew, swap in real/generated imagery, rename fx- prefixes on collision. NEVER ship a component verbatim — it is a high starting bar, not a final design.`,
-			this.agentBehavior(),
-			this.appModeGuidance(),
-			playbook ? "\n" + playbook : "",
-		].join("\n");
-	}
+				this.agentBehavior(),
+				this.appModeGuidance(),
+				toolbox ? "\n" + toolbox : "",
+				playbook ? "\n" + playbook : "",
+			].join("\n");
+		}
 
 	async sendClaude(text) {
 		const prompt = appendResearchContract(text);
@@ -2016,6 +2091,7 @@ self.addEventListener("fetch", (e) => {
 			? `cmd /c "set ELECTRON_RUN_AS_NODE=1&& ""${node}"" ""${browseJs}"" shot <url> <out.png>"`
 			: `ELECTRON_RUN_AS_NODE=1 "${node}" "${browseJs}" shot <url> <out.png>`;
 		const playbook = this.designPlaybook();
+		const toolbox = toolboxRouterText();
 		return [
 			"You are the Solstice IDE agent. Capabilities beyond your normal tools:",
 			`- Web browsing & research: ${run}`,
@@ -2031,11 +2107,12 @@ self.addEventListener("fetch", (e) => {
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
 			`- PREMIUM COMPONENT LIBRARY — your fastest path to an Awwwards-bar page. BEFORE building any common section (navbar, hero, features, gallery, stats, testimonials, pricing, CTA, footer) from scratch, read ${path.join(this.context.extensionPath, "prompts", "components", "library.html")} (sections are delimited by '═══ COMPONENT: <id> ═══' markers; ids+tags in manifest.json next to it). Copy the closest component, then ADAPT it to the client: retheme the --c-* tokens to the brand palette, replace ALL copy with sector-true Hebrew, swap in real/generated imagery, rename fx- prefixes on collision. NEVER ship a component verbatim — it is a high starting bar, not a final design.`,
 			"- FOLLOW-UP PROMPTS CONTINUE THE SAME PLAN: when the user sends another request after a build, keep ONE evolving plan for the project — append a new phase for the new request; never restart from scratch; completed steps stay marked done.",
-			this.agentBehavior(),
-			this.appModeGuidance(),
-			playbook ? "\n" + playbook : "",
-		].join("\n");
-	}
+				this.agentBehavior(),
+				this.appModeGuidance(),
+				toolbox ? "\n" + toolbox : "",
+				playbook ? "\n" + playbook : "",
+			].join("\n");
+		}
 
 	async startThread() {
 		const client = await this.ensureClient();
@@ -2954,16 +3031,21 @@ self.addEventListener("fetch", (e) => {
 	// crude sector/tag inference from the task text (bilingual keywords).
 	inferSkillTags(task) {
 		const t = String(task || "").toLowerCase();
-		const map = {
-			dental: ["dental", "dentist", "שיניים", "שינניות", "מרפאת שיניים"],
-			restaurant: ["restaurant", "menu", "מסעדה", "תפריט"],
-			crm: ["crm", "leads", "לידים", "פלקון"],
-			ecommerce: ["shop", "store", "ecommerce", "cart", "checkout", "חנות", "מוצרים"],
-			landing: ["landing", "דף נחיתה", "לנדינג"],
-			dashboard: ["dashboard", "admin", "analytics", "דשבורד"],
-			portfolio: ["portfolio", "תיק עבודות"],
-			auth: ["auth", "login", "signup", "התחברות"],
-		};
+			const map = {
+				dental: ["dental", "dentist", "שיניים", "שינניות", "מרפאת שיניים"],
+				medical: ["medical", "clinic", "doctor", "physio", "aesthetic", "health", "רופא", "מרפאה", "פיזיותרפיה", "אסתטיקה", "בריאות"],
+				legal: ["law", "lawyer", "legal", "attorney", "notary", "עו\"ד", "עורך דין", "עורכת דין", "נוטריון", "משפט"],
+				barber: ["barber", "salon", "beauty", "hair", "nails", "מספרה", "ספר גברים", "יופי", "שיער", "ציפורניים"],
+				restaurant: ["restaurant", "menu", "מסעדה", "תפריט"],
+				crm: ["crm", "leads", "לידים", "פלקון"],
+				ecommerce: ["shop", "store", "ecommerce", "cart", "checkout", "חנות", "מוצרים"],
+				landing: ["landing", "דף נחיתה", "לנדינג"],
+				dashboard: ["dashboard", "admin", "analytics", "דשבורד"],
+				portfolio: ["portfolio", "תיק עבודות"],
+				auth: ["auth", "login", "signup", "התחברות"],
+				animation: ["animated", "animation", "scrollytelling", "gsap", "three.js", "r3f", "מונפש", "אנימציה", "פרלקס"],
+				gap: ["antigravity", "cursor", "gap", "benchmark", "פערים", "השוואה"],
+			};
 		const tags = [];
 		for (const [tag, kws] of Object.entries(map)) if (kws.some((k) => t.includes(k))) tags.push(tag);
 		return tags;
