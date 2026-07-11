@@ -21,6 +21,28 @@ function tokenize(s) {
 	return (String(s || "").toLowerCase().match(/[a-z0-9\u0590-\u05ff]+/g)) || [];
 }
 
+const SKILL_LEVELS = [
+	{ level: 1, minXp: 0, title: "Foundation" },
+	{ level: 2, minXp: 300, title: "Proven" },
+	{ level: 3, minXp: 800, title: "Mastered" },
+];
+
+// XP is derived from durable metadata instead of stored separately, so it can
+// never drift from the real use/version counters. A use is the primary signal;
+// verified revisions add a smaller maturity bonus.
+function skillProgress(meta = {}) {
+	const uses = Math.max(0, parseInt(meta.uses, 10) || 0);
+	const version = Math.max(1, parseInt(meta.version, 10) || 1);
+	const xp = uses * 100 + (version - 1) * 250;
+	let tier = SKILL_LEVELS[0];
+	for (const candidate of SKILL_LEVELS) if (xp >= candidate.minXp) tier = candidate;
+	const next = SKILL_LEVELS.find((candidate) => candidate.level === tier.level + 1);
+	const progress = next
+		? Math.max(0, Math.min(100, Math.round(((xp - tier.minXp) / (next.minXp - tier.minXp)) * 100)))
+		: 100;
+	return { xp, level: tier.level, title: tier.title, progress, nextXp: next ? next.minXp : null };
+}
+
 class FelixSkills {
 	constructor(opts) {
 		this.dir = opts.dir;
@@ -126,14 +148,20 @@ class FelixSkills {
 
 	// bump the use-counter of retrieved skills (called at dispatch, best-effort).
 	recordUse(items) {
+		const events = [];
 		for (const s of items || []) {
 			try {
 				if (!s.file || s.meta.kind === "lesson") continue;
+				const before = skillProgress(s.meta);
 				const uses = (parseInt(s.meta.uses, 10) || 0) + 1;
 				const meta = { ...s.meta, uses, updatedAt: new Date().toISOString() };
 				this._writeFile(s.file, meta, s.body);
+				s.meta = meta;
+				const after = skillProgress(meta);
+				events.push({ item: s, before, after, leveledUp: after.level > before.level });
 			} catch { }
 		}
+		return events;
 	}
 
 	// write a LESSON (post-incident learning): fidelity gaps, failures, user
@@ -195,21 +223,25 @@ class FelixSkills {
 		const name = rec.name || "build";
 		const file = path.join(this.skillsDir, slug(name) + ".md");
 		const now = new Date().toISOString();
-		let version = 1, createdAt = now, change_note = "created from verified build " + (rec.provenance || "");
+		let version = 1, createdAt = now, uses = 0, change_note = "created from verified build " + (rec.provenance || "");
+		let before = skillProgress({ version, uses });
 		if (fs.existsSync(file)) {
 			const prev = this._parse(file);
+			before = skillProgress(prev.meta);
 			version = (parseInt(prev.meta.version, 10) || 1) + 1;
 			createdAt = prev.meta.createdAt || now;
+			uses = parseInt(prev.meta.uses, 10) || 0;
 			change_note = "updated after verified build " + (rec.provenance || "");
 			try { fs.copyFileSync(file, path.join(this.skillsDir, slug(name) + ".v" + (version - 1) + ".md")); } catch { }
 		}
 		this._writeFile(file, {
 			name, tags: rec.tags || [], sector: rec.sector || "", version,
-			provenance: rec.provenance || "", verified: true, createdAt, updatedAt: now, change_note,
+			provenance: rec.provenance || "", verified: true, uses, createdAt, updatedAt: now, change_note,
 		}, rec.body || "");
 		this.log("[skills] learned '" + name + "' v" + version);
-		return { file, version };
+		const after = skillProgress({ version, uses });
+		return { file, version, uses, before, after, leveledUp: after.level > before.level };
 	}
 }
 
-module.exports = { FelixSkills, slug, tokenize };
+module.exports = { FelixSkills, slug, tokenize, skillProgress, SKILL_LEVELS };

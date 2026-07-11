@@ -8,6 +8,7 @@
 //   node browse.js scrollshot <url> <outPrefix> [stops]   → outPrefix_s0..sN.png at scroll positions
 //   node browse.js dom  <url>
 //   node browse.js videoframes <url> <outPrefix> [frames] [referrer] → outPrefix_f0..fN.png seeked across the video
+//   node browse.js showcase <url> <outDir> [maxAssets] → lazy-load page, download embedded media + manifest
 // Uses an installed Chrome/Chromium/Edge in headless mode.
 // search/read/crawl give the agent real autonomous research: discover URLs, read pages as
 // text, and walk a site (e.g. an Awwwards/Behance gallery) — beyond single-URL screenshots.
@@ -198,6 +199,128 @@ async function videoframes(bin, url, outPrefix, nFrames, referrer) {
 	}
 }
 
+// Behance and Dribbble case studies hide useful evidence behind lazy loading,
+// srcsets, hydration payloads, and nested players. Turn the rendered showcase
+// into a deterministic evidence bundle for DECONSTRUCT.md.
+async function showcase(bin, url, outDir, maxAssets) {
+	const root = path.resolve(outDir);
+	fs.mkdirSync(root, { recursive: true });
+	await withChrome(bin, async ({ evalJs, goto }) => {
+		await goto(url, 1800);
+		// Lazy galleries grow while scrolling. Recalculate height on every pass
+		// and stop only after the bottom has remained stable several times.
+		let previousHeight = 0, stablePasses = 0;
+		for (let i = 0; i < 60 && stablePasses < 4; i++) {
+			const height = await evalJs("Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)");
+			const y = Math.min(Math.max(0, height - 900), i * 850);
+			await evalJs(`window.scrollTo({top:${y}, behavior:'instant'}); ''`);
+			await sleep(450);
+			const nextHeight = await evalJs("Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)");
+			stablePasses = y >= nextHeight - 950 && nextHeight === previousHeight ? stablePasses + 1 : 0;
+			previousHeight = nextHeight;
+		}
+		await sleep(1200);
+		const page = await evalJs(`(() => {
+			const abs = (u) => { try { return new URL(u, location.href).href; } catch { return ''; } };
+			const bestSrc = (img) => {
+				const candidates = [];
+				for (const item of (img.srcset || '').split(',')) {
+					const m = item.trim().match(/^(\\S+)(?:\\s+(\\d+)w)?/);
+					if (m) candidates.push({u: abs(m[1]), w: Number(m[2]) || 0});
+				}
+				candidates.push({u: abs(img.currentSrc || img.src || img.dataset.src || ''), w: img.naturalWidth || 0});
+				return candidates.filter(x => x.u).sort((a,b) => b.w-a.w)[0]?.u || '';
+			};
+			const domImages = [...document.images].map((img, index) => {
+				const r = img.getBoundingClientRect();
+				return {index, url: bestSrc(img), alt: img.alt || '', width: img.naturalWidth || 0,
+					height: img.naturalHeight || 0, renderedWidth: Math.round(r.width), renderedHeight: Math.round(r.height)};
+			}).filter(x => x.url && x.width >= 280 && x.height >= 180);
+			const videos = [...document.querySelectorAll('video')].map((v, index) => ({
+				index, url: abs(v.currentSrc || v.src || v.querySelector('source')?.src || ''), poster: abs(v.poster || ''),
+				duration: isFinite(v.duration) ? v.duration : 0, width: v.videoWidth || 0, height: v.videoHeight || 0
+			})).filter(x => x.url || x.poster);
+			const iframes = [...document.querySelectorAll('iframe')].map((f, index) => ({index, url: abs(f.src || ''), title: f.title || ''}))
+				.filter(x => /vimeo|youtube|player|video/i.test(x.url + ' ' + x.title));
+			return {title: document.title, finalUrl: location.href, pageHeight: document.documentElement.scrollHeight,
+				viewport: {width: innerWidth, height: innerHeight}, images: domImages, videos, iframes,
+				hydrationHtml: document.documentElement.innerHTML};
+		})()`);
+		if (!page) throw new Error("showcase extraction returned no page data");
+		// Some case studies never mount off-screen modules in the DOM, but keep
+		// canonical media in JSON hydration. Parse that payload in Node so page
+		// script escaping cannot break the CDP evaluation expression.
+		const hydrated = String(page.hydrationHtml || "").replace(/\\\//g, "/").replace(/&amp;/g, "&");
+		delete page.hydrationHtml;
+		const hydratedImageUrls = [...new Set([
+			...(hydrated.match(/https?:[^"'<>\s]+mir-s3-cdn-cf\.behance\.net\/project_modules\/(?:source|max_3840(?:_webp)?|2800(?:_webp)?)[^"'<>\s]+/gi) || []),
+			...(hydrated.match(/https?:[^"'<>\s]+cdn\.dribbble\.com\/(?:userupload|users\/[^/]+\/screenshots)\/[^"'<>\s]*original-[^"'<>\s]+/gi) || [])
+		])];
+		// Prefer the rendered project modules: hydration also contains recommendation
+		// cards from unrelated projects. Use hydration images only when the showcase
+		// mounted no real image modules at all.
+		// A Dribbble animation shot is often video-only. In that case hydration
+		// also lists unrelated recommendation thumbnails; do not misreport them
+		// as project screens just because the page has no standalone <img>.
+		if (!page.images.length && !page.videos.length) page.images.push(...hydratedImageUrls.map((assetUrl, index) => ({
+			index, url: assetUrl, alt: "", width: 0, height: 0, source: "hydration"
+		})));
+		page.embedded = [...new Set(hydrated.match(/https?:[^"'<>\s]+(?:mp4|webm|m3u8)(?:\?[^"'<>\s]*)?/gi) || [])]
+			.map((assetUrl, index) => ({index, url: assetUrl}));
+		const playerUrls = [...new Set(hydrated.match(/https?:[^"'<>\s]*(?:player\.vimeo\.com|youtube\.com\/embed)[^"'<>\s]*/gi) || [])];
+		page.iframes.push(...playerUrls.map((playerUrl, index) => ({index: page.iframes.length + index, url: playerUrl, title: "hydration player"})));
+		const seen = new Set();
+		const chosen = [];
+		const sourceHost = new URL(page.finalUrl).hostname;
+		for (const asset of page.images || []) {
+			const isProjectAsset = /behance\.net$/i.test(sourceHost)
+				? /mir-s3-cdn-cf\.behance\.net\/project_modules\//i.test(asset.url)
+				: /dribbble\.com$/i.test(sourceHost)
+					? /cdn\.dribbble\.com\/(?:userupload|users\/\d+\/screenshots)\//i.test(asset.url) && (asset.source === "hydration" || !!String(asset.alt || "").trim())
+					: asset.renderedWidth >= 700;
+			if (!isProjectAsset || (asset.source !== "hydration" && asset.renderedWidth < 600)) continue;
+			const clean = asset.url.replace(/([?&])resize=[^&]+/i, '$1').replace(/[?&]$/, '');
+			const identity = clean.split('/').pop().replace(/\?.*$/, '');
+			if (seen.has(identity)) continue;
+			seen.add(identity);
+			chosen.push({...asset, url: clean});
+			if (chosen.length >= maxAssets) break;
+		}
+		const downloads = [];
+		for (let i = 0; i < chosen.length; i++) {
+			const asset = chosen[i];
+			try {
+				const preferred = /mir-s3-cdn-cf\.behance\.net\/project_modules\//i.test(asset.url)
+					? asset.url.replace(/\/project_modules\/[^/]+\//, "/project_modules/source/")
+					: asset.url.replace(/\?.*$/, "");
+				let response = await fetch(preferred, { headers: { Referer: page.finalUrl, "User-Agent": "Mozilla/5.0 SolsticeShowcase/1.0" } });
+				if (!response.ok && preferred !== asset.url) response = await fetch(asset.url, { headers: { Referer: page.finalUrl, "User-Agent": "Mozilla/5.0 SolsticeShowcase/1.0" } });
+				if (!response.ok) throw new Error(`HTTP ${response.status}`);
+				const type = response.headers.get('content-type') || '';
+				const ext = /png/i.test(type) ? '.png' : /webp/i.test(type) ? '.webp' : /gif/i.test(type) ? '.gif' : '.jpg';
+				const file = `asset-${String(i + 1).padStart(2, '0')}${ext}`;
+				fs.writeFileSync(path.join(root, file), Buffer.from(await response.arrayBuffer()));
+				const ratio = asset.width && asset.height ? asset.width / asset.height : 0;
+				const deviceHint = !ratio ? "unknown" : ratio <= 0.72 ? "mobile-candidate" : ratio <= 1.18 ? "tablet-or-presentation-candidate" : "desktop-or-presentation-candidate";
+				downloads.push({...asset, file, contentType: type, downloadedUrl: response.url, deviceHint, animated: /gif/i.test(type)});
+			} catch (error) {
+				downloads.push({...asset, error: error.message});
+			}
+		}
+		const manifest = {...page, images: downloads, capturedAt: new Date().toISOString()};
+		const manifestFile = path.join(root, 'showcase-manifest.json');
+		fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
+		const imageRows = downloads.map((item, index) => `| ${index + 1} | ${item.file ? `![asset ${index + 1}](${item.file})` : "download failed"} | ${item.width}×${item.height} | ${item.deviceHint || "unknown"} | pending vision |`).join("\n");
+		const videoEvidence = [...(page.videos || []).map(v => ({kind:"video", url:v.url})), ...(page.iframes || []).map(v => ({kind:"iframe", url:v.url})), ...(page.embedded || []).map(v => ({kind:"embedded", url:v.url}))];
+		const videoRows = videoEvidence.length ? videoEvidence.map((item, index) => `| ${index + 1} | ${item.kind} | ${item.url} | pending videoframes |`).join("\n") : "| — | — | none detected after full lazy scroll | n/a |";
+		const deconstruct = `# DECONSTRUCT — ${page.title}\n\nSource: ${page.finalUrl}\nCaptured: ${manifest.capturedAt}\n\n> Geometry labels are hints only. Classify every asset by visible content with vision; presentation posters and mockups are not website screens.\n\n## Evidence inventory\n\n| # | evidence | pixels | geometry hint | vision classification |\n|---:|---|---:|---|---|\n${imageRows}\n\n## Video / motion evidence\n\n| # | kind | URL | sampling |\n|---:|---|---|---|\n${videoRows}\n\n## Desktop analysis\n- Pending vision review.\n\n## Mobile analysis\n- Pending vision review.\n\n## Tablet analysis\n- Pending vision review; state explicitly if absent.\n\n## Motion specification\n- Sample every playable candidate with videoframes and record pinning, parallax, reveal order, transitions and pacing.\n- If the host blocks playback, record the attempted URL and exact failure.\n\n## Build decisions\n- Pending evidence review.\n`;
+		fs.writeFileSync(path.join(root, 'DECONSTRUCT.md'), deconstruct);
+		console.log(manifestFile);
+		console.log(path.join(root, 'DECONSTRUCT.md'));
+		console.log(`showcase: ${downloads.filter(x => x.file).length}/${downloads.length} images downloaded; ${page.videos.length} video elements; ${page.iframes.length} player iframes; ${page.embedded.length} embedded video URLs`);
+	}, { headed: false });
+}
+
 // ---- shared Chrome + CDP session (search / read / crawl / live) ----
 // Mirrors the scrollshot/videoframes setup but exposes a tiny {send, evalJs, goto}
 // API so the text-oriented modes don't each re-implement the boilerplate.
@@ -249,9 +372,11 @@ async function withChrome(bin, fn, opts = {}) {
 		});
 		await send("Page.enable");
 		await send("Runtime.enable");
+		if (headed) await send("Page.bringToFront");
 		const evalJs = async (expr) => (await send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true })).result.value;
 		const goto = async (u, settleMs = 800) => {
 			await send("Page.navigate", { url: u }, 30000);
+			if (headed) await send("Page.bringToFront");
 			for (let i = 0; i < 40; i++) { if (await evalJs("document.readyState === 'complete'")) break; await sleep(400); }
 			await sleep(settleMs);
 		};
@@ -507,8 +632,8 @@ function main() {
 		describeImage(url, process.argv.slice(4).join(" ").trim());
 		return;
 	}
-	if (!mode || !url || ((mode === "shot" || mode === "scrollshot" || mode === "videoframes") && !out)) {
-		console.error("usage:\n  browse.js search <query> [count]            web search → ranked title/url/snippet list (no API key)\n  browse.js read <url>                        page main content as clean readable text/markdown\n  browse.js crawl <url> [depth] [maxPages]    same-site crawl → text of each page\n  browse.js live <url> [maxPages] [secPerPage] [keep]   VISIBLE browser tour the user watches (analysis text to stdout)\n  browse.js shot <url> <out.png> [WxH]        screenshot\n  browse.js scrollshot <url> <outPrefix> [stops]\n  browse.js videoframes <url> <outPrefix> [frames] [referrer]\n  browse.js dom <url>                         raw rendered HTML");
+	if (!mode || !url || ((mode === "shot" || mode === "scrollshot" || mode === "videoframes" || mode === "showcase") && !out)) {
+		console.error("usage:\n  browse.js search <query> [count]            web search → ranked title/url/snippet list (no API key)\n  browse.js read <url>                        page main content as clean readable text/markdown\n  browse.js crawl <url> [depth] [maxPages]    same-site crawl → text of each page\n  browse.js live <url> [maxPages] [secPerPage] [keep]   VISIBLE browser tour the user watches (analysis text to stdout)\n  browse.js shot <url> <out.png> [WxH]        screenshot\n  browse.js scrollshot <url> <outPrefix> [stops]\n  browse.js videoframes <url> <outPrefix> [frames] [referrer]\n  browse.js showcase <url> <outDir> [maxAssets] lazy-load + download case-study media\n  browse.js dom <url>                         raw rendered HTML");
 		process.exit(2);
 	}
 	const bin = findBrowser();
@@ -520,6 +645,14 @@ function main() {
 		const frames = /^\d+$/.test(size || "") ? Math.min(24, Math.max(2, parseInt(size, 10))) : 10;
 		videoframes(bin, url, out, frames, extra || "").catch((err) => {
 			console.error(`videoframes failed: ${err.message}`);
+			process.exit(1);
+		});
+		return;
+	}
+	if (mode === "showcase") {
+		const maxAssets = /^\d+$/.test(size || "") ? Math.min(80, Math.max(1, parseInt(size, 10))) : 30;
+		showcase(bin, url, out, maxAssets).catch((err) => {
+			console.error(`showcase failed: ${err.message}`);
 			process.exit(1);
 		});
 		return;

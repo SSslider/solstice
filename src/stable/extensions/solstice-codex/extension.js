@@ -4,12 +4,14 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { spawn } = require("child_process");
 const { CodexClient, resolveCodexBinary } = require("./codexClient");
 const { PreviewServer, DevServer, detectDevServerUrl, hasFramework } = require("./preview");
 const { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, resolveGrokBinary, grokBundlePresent } = require("./grok");
 const { ClaudeProvider, CLAUDE_LABEL } = require("./claude");
 const { FleetBridge } = require("./fleetBridge");
-const { FelixSkills } = require("./felixSkills");
+const { FelixSkills, skillProgress } = require("./felixSkills");
+const { captureBuild, projectContext, captureAnnotation, ensureScheduledCheck, dueScheduledChecks } = require("./projectBrain");
 
 // Resolve a bare CLI name against PATH the same way child_process.spawn would,
 // so we can tell BEFORE spawning whether the model binary actually exists on
@@ -87,7 +89,17 @@ function webviewResourceRoots(extensionUri) {
 	return roots;
 }
 
-const CREDIT_PROVIDER_PATTERN = { re: /\b(x[-\s]?field|seedance|kling|higgsfield|runway|pika|luma|veo|sora)\b/i, label: "paid video/3D provider" };
+const CREDIT_PROVIDERS = [
+	{ re: /\bx[-\s]?field\b|אקס[-\s]?פילד/i, name: "X-Field" },
+	{ re: /\bseedance\b|סידאנס/i, name: "Seedance" },
+	{ re: /\bhiggsfield\b|היגספילד/i, name: "Higgsfield" },
+	{ re: /\brunway\b|(?:ראנוויי|רנוויי)/i, name: "Runway" },
+	{ re: /\bkling\b|קלינג/i, name: "Kling" },
+	{ re: /\bsora\b|סורה/i, name: "Sora" },
+	{ re: /\bveo\b|ואו/i, name: "Veo" },
+	{ re: /\bpika\b|פיקה/i, name: "Pika" },
+	{ re: /\bluma\b|לומה/i, name: "Luma" },
+];
 const CREDIT_VIDEO_PATTERNS = [
 	{ re: /\b(generate|create|make|produce|render|gen)\b[\s\S]{0,120}\b(video|mp4|webm|movie|film)\b/i, label: "video generation" },
 	{ re: /\b(video|mp4|webm|movie|film)\b[\s\S]{0,120}\b(generate|create|make|produce|render|gen)\b/i, label: "video generation" },
@@ -116,16 +128,41 @@ function creditRiskText(value, depth = 0) {
 	return "";
 }
 
+function creditRequestSummary(text) {
+	if (/(?:וידאו|סרטון)|\b(video|mp4|webm|movie|film|clip)\b/i.test(text)) return "וידאו / קליפ";
+	if (/(?:אנימציה|תלת[-\s]?ממד|תלת\s?מימד|מודל\s?3d|מודל\s?תלת)|\b(animation|3d|three[-\s]?d|3d[-\s]?model)\b/i.test(text)) return "נכס אנימציה / 3D";
+	return "נכס מדיה בתשלום";
+}
+
+function creditEstimate(params) {
+	if (params && typeof params === "object") {
+		for (const key of ["creditEstimate", "estimatedCredits", "credits", "creditCost"]) {
+			const value = params[key];
+			if (value != null && String(value).trim()) return String(value).trim();
+		}
+	}
+	return "חיוב קרדיטים חיצוני; הכמות המדויקת תלויה במודל, במשך וברזולוציה ותוצג אצל הספק לפני ההרצה";
+}
+
+function makeCreditRisk(label, text, params, provider = "ספק חיצוני") {
+	return {
+		label,
+		detail: text.replace(/\s+/g, " ").trim().slice(0, 500),
+		provider,
+		creation: creditRequestSummary(text),
+		creditEstimate: creditEstimate(params),
+	};
+}
+
 function creditRiskSignal(method, params) {
 	const text = `${method || ""}\n${creditRiskText(params)}`.slice(0, 12000);
-	if (CREDIT_PROVIDER_PATTERN.re.test(text)) {
-		const oneLine = text.replace(/\s+/g, " ").trim().slice(0, 500);
-		return { label: CREDIT_PROVIDER_PATTERN.label, detail: oneLine };
+	const provider = CREDIT_PROVIDERS.find((item) => item.re.test(text));
+	if (provider) {
+		return makeCreditRisk("paid video/3D provider", text, params, provider.name);
 	}
 	for (const p of CREDIT_VIDEO_PATTERNS) {
 		if (p.re.test(text)) {
-			const oneLine = text.replace(/\s+/g, " ").trim().slice(0, 500);
-			return { label: p.label, detail: oneLine };
+			return makeCreditRisk(p.label, text, params);
 		}
 	}
 	if (LOCAL_FRONTEND_3D_PATTERN.test(text) && LOCAL_FRONTEND_BUILD_PATTERN.test(text)) {
@@ -133,8 +170,7 @@ function creditRiskSignal(method, params) {
 	}
 	for (const p of CREDIT_3D_ASSET_PATTERNS) {
 		if (p.re.test(text)) {
-			const oneLine = text.replace(/\s+/g, " ").trim().slice(0, 500);
-			return { label: p.label, detail: oneLine };
+			return makeCreditRisk(p.label, text, params);
 		}
 	}
 	return null;
@@ -167,6 +203,7 @@ function promptText(rel) {
 	return txt;
 }
 function animatedWebsiteKitText() { return promptText("animated-website-kit.md"); }
+function xfieldAnimatedWiringPlanText() { return promptText("xfield-animated-wiring-plan.md"); }
 function toolboxRouterText() { return promptText("felix-toolbox-router.md"); }
 function gapAnalysisPlaybookText() { return promptText("gap-analysis-playbook.md"); }
 
@@ -221,19 +258,25 @@ function appendResearchContract(text) {
 			"[SOLSTICE_RESEARCH_CONTRACT]",
 			"This request includes site/design/media analysis. You must gather visual ground truth before building or final analysis:",
 			"1. Create or update `DECONSTRUCT.md` in the workspace root immediately, then keep updating it after each finding.",
-			"2. For websites/apps: use the bundled `browse.js` tools, not memory. Capture desktop scrollshots and a mobile screenshot; use `live` or `act` when the user asks to watch the browsing.",
-			"3. For image references/screenshots: inspect every image with vision (`view_image`, Claude Read, or `browse.js describe`) and record concrete observations in `DECONSTRUCT.md`.",
-			"4. For video/animated references: run `browse.js videoframes` or record why frames were blocked; describe motion, timing, pinned sections, parallax, and transitions in `DECONSTRUCT.md`.",
-			"5. Do not start implementation until the evidence table in `DECONSTRUCT.md` lists the URLs/files/frames examined and the build decisions derived from them.",
+			"2. INTERACTIVE RESEARCH DEFAULT: as the first browser action, automatically run bundled `browse.js live <url> 3 8` so the user sees a real Chrome window tour and scroll through the target. Do this for every interactive site/app research request even when the user did not say `live` or ask to watch. If the prompt names a site but has no URL, run `search` only to resolve its canonical URL, then immediately run `live` on the best match before `read`, `crawl`, or headless screenshots.",
+			"3. This visible-first rule applies only to this user-initiated research turn. Background engine discovery, build-time checks, and unattended `search`/`read`/`crawl` operations remain headless unless the user turn carries this contract.",
+			"4. For Behance/Dribbble showcases, run `browse.js showcase <url> .solstice/showcase/<slug> 30` to force lazy-load, download the best image variants, and inventory video/player URLs. Classify every downloaded frame as desktop, tablet, mobile, presentation, or embedded-device evidence before deriving the site.",
+			"5. Capture desktop scrollshots and a mobile screenshot. Inspect every relevant extracted image with vision (`view_image`, Claude Read, or `browse.js describe`) and record concrete per-device observations in `DECONSTRUCT.md`.",
+			"6. For every video/player URL in showcase-manifest.json, run `browse.js videoframes` with the showcase URL as referrer. If none are detected or playback is blocked, record that explicitly; otherwise describe motion, timing, pinned sections, parallax, and transitions.",
+			"7. Do not start implementation until the evidence table in `DECONSTRUCT.md` lists the URLs/files/frames examined and the build decisions derived from them.",
 			"[/SOLSTICE_RESEARCH_CONTRACT]",
 			].join("\n");
 	}
 	if (addAnimatedKit) {
 		const kit = animatedWebsiteKitText();
+		const premiumPlan = xfieldAnimatedWiringPlanText();
 		out += [
 			"",
 			"[SOLSTICE_ANIMATED_WEBSITE_KIT]",
 			kit || "Build a real animated website with GSAP ScrollTrigger or React Three Fiber, include scroll-depth verification, and keep paid video/3D providers behind the credit gate.",
+			"[SOLSTICE_XFIELD_WIRING_PLAN_ONLY]",
+			premiumPlan || "Do not implement or call a paid provider. Present the provider bridge and one-time approval boundary for review first.",
+			"[/SOLSTICE_XFIELD_WIRING_PLAN_ONLY]",
 			"[/SOLSTICE_ANIMATED_WEBSITE_KIT]",
 		].join("\n");
 	}
@@ -301,6 +344,8 @@ class AgentController {
 		this._verifyTaskId = null;     // taskId already given its one auto self-verify pass
 		this.output = vscode.window.createOutputChannel("Felix");
 		this.skills = null;            // Felix's private self-improvement store (Phase 6)
+		this.scheduledCheckTimer = null;
+		this._scheduledCheckRunning = false;
 		try {
 			this.skills = new FelixSkills({
 				dir: path.join(context.globalStorageUri.fsPath, "felix-skills"),
@@ -309,6 +354,34 @@ class AgentController {
 			});
 			this.skills.seedFrom(context.extensionPath);
 		} catch (e) { this.output.append("[skills] init failed: " + (e && e.message || e) + "\n"); }
+	}
+
+	startScheduledChecks() {
+		if (this.scheduledCheckTimer) return;
+		const tick = () => this.runScheduledChecks().catch((e) => this.output.append("[scheduled-check] " + (e && e.message || e) + "\n"));
+		this.scheduledCheckTimer = setInterval(tick, 15 * 60 * 1000);
+		this.scheduledCheckTimer.unref && this.scheduledCheckTimer.unref();
+		setTimeout(tick, 20000);
+	}
+	async runScheduledChecks() {
+		const cwd = workspaceCwd();
+		if (!cwd || this._scheduledCheckRunning || !dueScheduledChecks(cwd).length) return;
+		this._scheduledCheckRunning = true;
+		try {
+			const tool = path.join(this.context.extensionPath, "webtools", "site-check.js");
+			const result = await this.runCli(process.execPath, [tool, cwd], cwd, { ELECTRON_RUN_AS_NODE: "1" });
+			if (result.code !== 0) throw new Error((result.stderr || result.stdout || "site check failed").slice(-800));
+			const parsed = JSON.parse(result.stdout || "{}");
+			const deviations = (parsed.results || []).filter((x) => x.deviation);
+			this.announceAgentMessage(deviations.length ? `⚠️ בדיקה מתוזמנת מצאה ${deviations.length} סטיות — הדוחות נשמרו ב-.solstice/scheduled-checks.` : `✅ בדיקה מתוזמנת עברה על ${parsed.checked || 0} אתרים ללא סטייה.`);
+		} finally { this._scheduledCheckRunning = false; }
+	}
+
+	async queueArtifactAnnotation(artifact, note) {
+		const saved = captureAnnotation(workspaceCwd(), artifact, note);
+		this.announceAgentMessage("📝 הערת artifact נקלטה לתור: " + String(note).slice(0, 120));
+		if (this.threadId) await this.steer(this.threadId, saved.prompt);
+		else { this._planApprovalBypass = true; await this.send(saved.prompt); }
 	}
 
 	// ---- stuck-agent watchdog ----------------------------------------------
@@ -499,11 +572,12 @@ class AgentController {
 	}
 
 	// ---- Phone Companion (PWA): drive Felix + watch the build live from a phone ----
-	_companion() { return (this.companionState = this.companionState || { messages: [], plan: [], files: [], previewUrl: "", building: false, model: "", ts: 0 }); }
+	_companion() { return (this.companionState = this.companionState || { messages: [], plan: [], files: [], previewUrl: "", liveUrl: "", building: false, model: "", ts: 0 }); }
 	captureCompanionState(method, params) {
 		const s = this._companion();
 		try { s.model = (this.cfg().get("provider") || "composer-2.5"); } catch (e) {}
 		if (this.previewUrl) s.previewUrl = this.previewUrl;
+		if (this.lastDeployUrl) s.liveUrl = this.lastDeployUrl;
 		if (method === "turn/started") s.building = true;
 		else if (method === "turn/completed") s.building = false;
 		else if (method === "item/completed" && params && params.item) {
@@ -542,6 +616,94 @@ class AgentController {
 		srv.on("error", (e) => { try { this.output.append("companion server: " + e.message + "\n"); } catch (x) {} });
 		try { srv.listen(port, "127.0.0.1"); this._companionServer = srv; this._companionPort = port; vscode.window.showInformationMessage(`📱 Solstice Companion חי על http://127.0.0.1:${port}. הרץ tunnel (cloudflared) לכתובת הזו כדי לפתוח מהפלאפון.`); } catch (e) {}
 		return port;
+	}
+
+	// ---- production deploy -------------------------------------------------
+	// Uses the user's existing local Vercel CLI login first. A token stored in
+	// the connector vault is a fallback only; it is passed through the child env
+	// and never written to the workspace, model context, process argv, or logs.
+	runCli(bin, args, cwd, env) {
+		return new Promise((resolve) => {
+			let stdout = "", stderr = "", settled = false;
+			const child = spawn(bin, args, {
+				cwd, env: { ...process.env, ...(env || {}) },
+				shell: process.platform === "win32", windowsHide: true,
+			});
+			const append = (key, chunk) => {
+				const text = String(chunk || "");
+				if (key === "out") stdout = (stdout + text).slice(-2 * 1024 * 1024);
+				else stderr = (stderr + text).slice(-2 * 1024 * 1024);
+			};
+			if (child.stdout) child.stdout.on("data", (d) => append("out", d));
+			if (child.stderr) child.stderr.on("data", (d) => append("err", d));
+			const timer = setTimeout(() => {
+				if (settled) return;
+				settled = true;
+				try { child.kill(); } catch { }
+				resolve({ code: -1, stdout, stderr, error: new Error("Vercel CLI timed out") });
+			}, 10 * 60 * 1000);
+			child.on("error", (error) => { if (!settled) { settled = true; clearTimeout(timer); resolve({ code: -1, stdout, stderr, error }); } });
+			child.on("close", (code) => { if (!settled) { settled = true; clearTimeout(timer); resolve({ code: code == null ? -1 : Number(code), stdout, stderr }); } });
+		});
+	}
+
+	announceAgentMessage(text) {
+		const item = { id: "solstice_" + Date.now(), type: "agentMessage", text: String(text || ""), status: "completed" };
+		this.onNotification("item/completed", { threadId: this.threadId || undefined, item });
+	}
+
+	async deployCurrentProject(projectDir) {
+		const selectedDir = projectDir || workspaceCwd();
+		if (!selectedDir) { vscode.window.showWarningMessage("Solstice: פתח תיקיית פרויקט לפני deploy."); return null; }
+		const cwd = path.resolve(selectedDir);
+		try { if (!fs.statSync(cwd).isDirectory()) throw new Error("not a directory"); }
+		catch { vscode.window.showWarningMessage("Solstice: תיקיית הפרויקט לא קיימת."); return null; }
+		const bin = process.platform === "win32" ? "vercel.cmd" : "vercel";
+		const fallbackToken = await this.connectorToken("vercel");
+		return vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Solstice · Vercel", cancellable: false }, async (progress) => {
+			progress.report({ message: "בודק login מקומי…" });
+			let who = await this.runCli(bin, ["whoami"], cwd, {});
+			let env = {};
+			if (who.code !== 0 && fallbackToken) {
+				env = { VERCEL_TOKEN: fallbackToken };
+				who = await this.runCli(bin, ["whoami"], cwd, env);
+			}
+			if (who.code !== 0) {
+				const missing = who.error && (who.error.code === "ENOENT" || /not found/i.test(who.error.message || ""));
+				const message = missing
+					? "Vercel CLI לא מותקן. התקן אותו (`npm i -g vercel`) ואז הרץ `vercel login`."
+					: "אין login פעיל ל-Vercel. הרץ `vercel login` בטרמינל של המחשב ונסה שוב.";
+				vscode.window.showErrorMessage(message);
+				this.announceAgentMessage("▲ הפריסה נעצרה: " + message);
+				return null;
+			}
+			progress.report({ message: "פורס production…" });
+			const deployed = await this.runCli(bin, ["deploy", "--prod", "--yes"], cwd, env);
+			if (deployed.code !== 0) {
+				const detail = (deployed.stderr || deployed.stdout || "Vercel deploy failed").trim().split("\n").slice(-3).join(" ").slice(0, 500);
+				vscode.window.showErrorMessage("Vercel deploy נכשל: " + detail);
+				this.announceAgentMessage("▲ הפריסה נכשלה: " + detail);
+				return null;
+			}
+			const cleanOutput = (deployed.stdout + "\n" + deployed.stderr).replace(/\x1b\[[0-9;]*m/g, "");
+			const urls = cleanOutput.match(/https:\/\/[^\s\]\[()<>]+/g) || [];
+			const liveUrl = [...urls].reverse().find((u) => /\.vercel\.app\/?$/i.test(u)) || urls[urls.length - 1];
+			if (!liveUrl) {
+				vscode.window.showErrorMessage("Vercel סיים בלי להחזיר URL חי.");
+				return null;
+			}
+			this.lastDeployUrl = liveUrl.replace(/[.,;]+$/, "");
+			const state = this._companion(); state.liveUrl = this.lastDeployUrl; state.previewUrl = this.lastDeployUrl; state.ts = Date.now();
+			try {
+				const dir = path.join(cwd, ".solstice"); fs.mkdirSync(dir, { recursive: true });
+				fs.writeFileSync(path.join(dir, "deploy.json"), JSON.stringify({ provider: "vercel", liveUrl: this.lastDeployUrl, deployedAt: new Date().toISOString() }, null, 2) + "\n");
+			} catch (e) { this.output.append("deploy manifest: " + (e && e.message || e) + "\n"); }
+			this.announceAgentMessage("▲ האתר חי: " + this.lastDeployUrl);
+			this.sendBuildStatus("deployed", { deployUrl: this.lastDeployUrl, previewUrl: this.lastDeployUrl });
+			if (this.galleryPanel) this.galleryPanel.webview.postMessage({ type: "projects", projects: this.scanProjects(this.galleryPanel.webview) });
+			vscode.window.showInformationMessage("▲ האתר עלה ל-Vercel", "פתח אתר").then((choice) => { if (choice === "פתח אתר") vscode.env.openExternal(vscode.Uri.parse(this.lastDeployUrl)); });
+			return this.lastDeployUrl;
+		});
 	}
 
 	// Extra guidance appended to the build preamble when the user is in App mode,
@@ -1189,6 +1351,9 @@ self.addEventListener("fetch", (e) => {
 				label: risk.label,
 				reason: "Thomas approval is required before any paid video/3D generation or credit-risk provider call, even in Autonomous.",
 				detail: risk.detail,
+				provider: risk.provider,
+				creation: risk.creation,
+				creditEstimate: risk.creditEstimate,
 			},
 		};
 		const approveLabel = "Approve once";
@@ -1721,11 +1886,12 @@ self.addEventListener("fetch", (e) => {
 			`- Search the web — discover URLs for any topic / design references (Awwwards, Behance, Dribbble): ${shot.replace(" shot <url> <out.png>", ' search "<query>" [count]')}`,
 			`- Read any web page as clean readable text/markdown (use this to actually research a page — much better than raw HTML): ${shot.replace(" shot <url> <out.png>", ' read <url>')}`,
 			`- Crawl a site — walk same-domain pages and read each (e.g. browse an Awwwards/Behance gallery): ${shot.replace(" shot <url> <out.png>", ' crawl <url> [depth] [maxPages]')}`,
-			`- LIVE ANALYSIS THE USER WATCHES — when the user asks to analyze a site live / "so I can see" / wants to watch you browse, open a REAL VISIBLE browser window on their screen that tours the site page-by-page with slow cinematic scrolling while the readable text streams back to you: ${shot.replace(" shot <url> <out.png>", ' live <url> [maxPages] [secPerPage] [keep]')}. Append 'keep' to leave the window open for them afterwards. Run it FIRST so they watch from the start, and STILL write DECONSTRUCT.md incrementally while the tour runs.`,
+			`- LIVE ANALYSIS THE USER WATCHES — for EVERY interactive site/design research request, automatically open a REAL VISIBLE browser window on their screen, even when they did not say "live" or ask to watch. Tour the site page-by-page with slow cinematic scrolling while readable text streams back to you: ${shot.replace(" shot <url> <out.png>", ' live <url> [maxPages] [secPerPage] [keep]')}. Run it as the FIRST browser action (after URL resolution when needed), and STILL write DECONSTRUCT.md incrementally. Background engine research stays on headless search/read/crawl.`,
 			`- LIVE INTERACTION — operate a site while the user WATCHES (click menus, fill forms, walk a checkout): write an actions JSON file [{"goto":"…"},{"click":"text:תפריט"},{"type":["#q","חיפוש"]},{"scroll":900},{"shot":"out.png"},{"keep":true}] then run: ${shot.replace(" shot <url> <out.png>", ' act <actions.json>')}. Every step prints the page state back to you.`,
 			`- Screenshot any website: ${shot}`,
 			`- Dump a website's raw rendered HTML (prefer 'read' above unless you need exact markup): ${dom}`,
 			`- Sample frames from a video on any page (case-study scroll videos, domain-locked Vimeo embeds): ${shot.replace(" shot <url> <out.png>", ' videoframes <url> <outPrefix> [frames] [referrer]')}`,
+			`- Extract a Behance/Dribbble showcase as structured evidence (forces lazy-load, downloads best image variants, inventories players): ${shot.replace(" shot <url> <out.png>", ' showcase <url> <outDir> [maxAssets]')}`,
 			"- Research workflow: when the user asks you to imitate/take inspiration from a site or find references, SEARCH for it, READ or CRAWL the top results, and SCROLLSHOT the best ones before designing — don't guess from memory.",
 			`- VIEW ANY IMAGE (you cannot see images yourself — this gives you a detailed text read of one): ${shot.replace(" shot <url> <out.png>", ' describe <image.png> ["what to focus on"]')}`,
 			"  Use it for every reference screenshot BEFORE designing, and for your own verification screenshots before declaring done. It routes to a vision model for you, so it works even though your chat model is text-only.",
@@ -1763,11 +1929,12 @@ self.addEventListener("fetch", (e) => {
 			`- Search the web — discover URLs for any topic / design references (Awwwards, Behance, Dribbble): ${shot.replace(" shot <url> <out.png>", ' search "<query>" [count]')}`,
 			`- Read any web page as clean readable text/markdown (use this to actually research a page — much better than raw HTML): ${shot.replace(" shot <url> <out.png>", ' read <url>')}`,
 			`- Crawl a site — walk same-domain pages and read each (e.g. browse an Awwwards/Behance gallery): ${shot.replace(" shot <url> <out.png>", ' crawl <url> [depth] [maxPages]')}`,
-			`- LIVE ANALYSIS THE USER WATCHES — when the user asks to analyze a site live / "so I can see" / wants to watch you browse, open a REAL VISIBLE browser window on their screen that tours the site page-by-page with slow cinematic scrolling while the readable text streams back to you: ${shot.replace(" shot <url> <out.png>", ' live <url> [maxPages] [secPerPage] [keep]')}. Append 'keep' to leave the window open for them afterwards. Run it FIRST so they watch from the start, and STILL write DECONSTRUCT.md incrementally while the tour runs.`,
+			`- LIVE ANALYSIS THE USER WATCHES — for EVERY interactive site/design research request, automatically open a REAL VISIBLE browser window on their screen, even when they did not say "live" or ask to watch. Tour the site page-by-page with slow cinematic scrolling while readable text streams back to you: ${shot.replace(" shot <url> <out.png>", ' live <url> [maxPages] [secPerPage] [keep]')}. Run it as the FIRST browser action (after URL resolution when needed), and STILL write DECONSTRUCT.md incrementally. Background engine research stays on headless search/read/crawl.`,
 			`- LIVE INTERACTION — operate a site while the user WATCHES (click menus, fill forms, walk a checkout): write an actions JSON file [{"goto":"…"},{"click":"text:תפריט"},{"type":["#q","חיפוש"]},{"scroll":900},{"shot":"out.png"},{"keep":true}] then run: ${shot.replace(" shot <url> <out.png>", ' act <actions.json>')}. Every step prints the page state back to you.`,
 			`- Screenshot any website: ${shot}`,
 			`- Dump a website's raw rendered HTML (prefer 'read' above unless you need exact markup): ${dom}`,
 			`- Sample frames from a video on any page (case-study scroll videos, domain-locked Vimeo embeds): ${shot.replace(" shot <url> <out.png>", ' videoframes <url> <outPrefix> [frames] [referrer]')}`,
+			`- Extract a Behance/Dribbble showcase as structured evidence (forces lazy-load, downloads best image variants, inventories players): ${shot.replace(" shot <url> <out.png>", ' showcase <url> <outDir> [maxAssets]')}`,
 			"- Research workflow: when the user asks you to imitate/take inspiration from a site or find references, SEARCH for it, READ or CRAWL the top results, and SCROLLSHOT the best ones before designing — don't guess from memory.",
 			"- You CAN view images: open any screenshot/reference image with your Read tool and study it in exhaustive detail (layout, sections, colors with hex, typography, imagery style, spacing, mood). Always do this for every reference screenshot before designing, and for your own verification screenshots before declaring done.",
 			`- Capture a design TOP-TO-BOTTOM in DESKTOP and MOBILE (Behance/Dribbble show both): desktop full-page → ${shot.replace(" shot <url> <out.png>", ' scrollshot <url> <outPrefix> [stops]')}; mobile full-page → ${shot.replace("shot <url> <out.png>", "shot <url> <out.png> 390x3000")}. Open each with your Read tool to study both viewports.`,
@@ -1929,6 +2096,12 @@ self.addEventListener("fetch", (e) => {
 			th.activeTurnId = null;
 			th.status = "idle";
 			if (tid === this.threadId) { this.markBusy("_builder", false); this.postPreview({ type: "building", on: false }); this.fleetFlow("done"); this._failoverTried = null; this.refreshPreview(); }
+			if (tid === this.threadId) this.learnFromFidelityFile();
+			if (tid === this.threadId) {
+				try { captureBuild(workspaceCwd(), { prompt: this._lastUserPrompt, provider: this.providerLabel(), previewUrl: this.previewUrl }); }
+				catch (e) { this.output.append("[project-brain] capture failed: " + (e && e.message || e) + "\n"); }
+			}
+			if (tid === this.threadId) this.maybeCreateWalkthrough();
 			this.pushThreads();
 			if (tid === this.threadId) this.drainSteerQueue();
 		} else if (method === "turn/diff/updated" && tid) {
@@ -1951,7 +2124,7 @@ self.addEventListener("fetch", (e) => {
 		// so we only surface a research dashboard for genuine analysis/clone work.
 		if ((method === "item/started" || method === "item/completed") && params.item && params.item.type === "commandExecution") {
 			const cmd = String(params.item.command || params.item.title || "");
-			if (/browse\.js["']?\s+(read|crawl|search|shot|scrollshot|live|act|videoframes|describe|dom)\b/i.test(cmd)) this.turnDidResearch = true;
+			if (/browse\.js["']?\s+(read|crawl|search|shot|scrollshot|live|act|videoframes|showcase|describe|dom)\b/i.test(cmd)) this.turnDidResearch = true;
 		}
 		// Composer/grok narrate the plan and the site analysis as CHAT TEXT instead of
 		// writing .solstice/PLAN.md / RESEARCH.md or calling a plan tool — so the center
@@ -2095,7 +2268,7 @@ self.addEventListener("fetch", (e) => {
 		return [
 			"You are the Solstice IDE agent. Capabilities beyond your normal tools:",
 			`- Web browsing & research: ${run}`,
-			"  Replace mode 'shot' with: 'search \"<query>\" [count]' to discover URLs for any topic / design references (Awwwards, Behance, Dribbble); 'read <url>' to get a page's main content as clean readable text (best for research); 'crawl <url> [depth] [maxPages]' to walk same-domain pages (e.g. an Awwwards gallery); 'live <url> [maxPages] [secPerPage] [keep]' to open a REAL VISIBLE browser window the user WATCHES while you tour+analyze a site (use when they ask to see the analysis live; 'keep' leaves it open); 'dom <url>' for raw HTML; 'videoframes <url> <outPrefix> [frames] [referrer]' to sample frames from a video on the page.",
+			"  Replace mode 'shot' with: 'search \"<query>\" [count]' to discover URLs; 'read <url>' for readable text; 'crawl <url> [depth] [maxPages]' for same-site research; 'live <url> [maxPages] [secPerPage] [keep]' for a VISIBLE tour; 'showcase <url> <outDir> [maxAssets]' to force lazy-load and extract Behance/Dribbble images plus video/player URLs; 'dom <url>' for raw HTML; 'videoframes <url> <outPrefix> [frames] [referrer]' to sample video. For every interactive site/design research request, run `live` first; keep background engine research headless.",
 			"  Research workflow: when asked to imitate/take inspiration from a site or find references, SEARCH, then READ or CRAWL the top results, and screenshot the best before designing — don't guess from memory.",
 			"  After taking a screenshot, ALWAYS open it with your view_image tool to study layout, colors, typography and content. Use this whenever the user asks to inspect, analyze or imitate a website or design (e.g. Behance/Dribbble references).",
 				"  Capture designs TOP-TO-BOTTOM in DESKTOP and MOBILE: desktop full-page via 'scrollshot <url> <outPrefix> [stops]', mobile full-page via 'shot <url> <out.png> 390x3000'; open each with view_image to study both viewports.",
@@ -2161,9 +2334,20 @@ self.addEventListener("fetch", (e) => {
 
 	// sidebar send: lazily creates the sidebar thread
 	async send(text) {
+		if (this._planApprovalBypass) this._planApprovalBypass = false;
+		else if (this.isBuildIntent(text)) { this.requestPlanApproval(text); return; }
+		const rawText = text;
+		if (text && !String(text).includes("[FELIX_PROJECT_BRAIN]")) {
+			const memory = projectContext(workspaceCwd());
+			if (memory) text = memory + text;
+		}
+		if (text && !String(text).includes("[FELIX_SKILLS]")) {
+			const hint = await this.skillsHint(text);
+			if (hint) text = hint + text;
+		}
 		// remember the last prompt so auto-failover can transparently re-run it
 		// on the next model in the chain after a quota/rate-limit error.
-		if (text) this._lastUserPrompt = text;
+		if (rawText) this._lastUserPrompt = rawText;
 		// Make sure the live provider actually has an installed CLI on THIS
 		// machine before we try to spawn it — otherwise switch to one that does,
 		// or show an install card. Prevents the silent ENOENT desktop failure.
@@ -2372,7 +2556,7 @@ self.addEventListener("fetch", (e) => {
 		else if (item.type === "commandExecution") {
 			const cmd = String(item.command || (item.changes && item.changes[0] && item.changes[0].command) || "");
 			if (!/browse\.js/.test(cmd)) return;
-			const m = cmd.match(/browse\.js["']?\s+(shot|read|crawl|search|dom|scrollshot|live|act|videoframes|describe)\s+((?:"[^"]+"|'[^']+'|[^\s]+))(?:\s+((?:"[^"]+"|'[^']+'|[^\s]+)))?/i);
+			const m = cmd.match(/browse\.js["']?\s+(shot|read|crawl|search|dom|scrollshot|live|act|videoframes|showcase|describe)\s+((?:"[^"]+"|'[^']+'|[^\s]+))(?:\s+((?:"[^"]+"|'[^']+'|[^\s]+)))?/i);
 			if (!m) return;
 			action = m[1].toLowerCase();
 			const arg1 = String(m[2] || "").replace(/^["']|["']$/g, "");
@@ -2424,7 +2608,30 @@ self.addEventListener("fetch", (e) => {
 				}
 			);
 			this.planPanel.webview.html = mediaHtml(this.planPanel.webview, this.context.extensionUri, "plan.js", "plan.css");
-			this.planPanel.webview.onDidReceiveMessage((m) => { if (m.type === "ready") this.pushPlanPanel(); });
+			this.planPanel.webview.onDidReceiveMessage(async (m) => {
+				if (m.type === "ready") { this.pushPlanPanel(); this.pushPlanApproval(); }
+				else if (m.type === "replanPlan" && this.pendingPlanApproval) {
+					this.replanPendingBuild(m.prompt, m.answers);
+					this.announceAgentMessage("🗺 התוכנית עודכנה לפי העריכות והתשובות. אפשר לעבור עליה ולאשר ביצוע.");
+				} else if (m.type === "researchPlan" && this.pendingPlanApproval) {
+					await this.researchPendingPlan(m.prompt, m.answers);
+				}
+				else if (m.type === "approvePlan" && this.pendingPlanApproval) {
+					this.replanPendingBuild(m.prompt, m.answers, { final: true });
+					const prompt = this.approvedBuildPrompt(this.pendingPlanApproval);
+					this.pendingPlanApproval = null;
+					this._planApprovalBypass = true;
+					this._walkthroughPending = true;
+					this.announceAgentMessage("🗺 התוכנית אושרה. מתחיל לבצע לפי הנוסח המאושר.");
+					await this.send(prompt).catch((e) => vscode.window.showErrorMessage("Solstice: " + (e && e.message || e)));
+				} else if (m.type === "cancelPlan") {
+					this.pendingPlanApproval = null;
+					this._walkthroughPending = false;
+					this.announceAgentMessage("🗺 הבנייה נעצרה לפני ביצוע — התוכנית לא אושרה.");
+				} else if (m.type === "artifactAnnotation") {
+					await this.queueArtifactAnnotation(m.artifact, m.note).catch((e) => vscode.window.showErrorMessage("Solstice annotation: " + (e && e.message || e)));
+				}
+			});
 			this.planPanel.onDidDispose(() => { this.planPanel = null; });
 		}
 	}
@@ -2437,6 +2644,111 @@ self.addEventListener("fetch", (e) => {
 		const title = (th.preview || "").split("\n")[0].slice(0, 100);
 		this.planPanel.webview.postMessage({ type: "plan", plan: th.plan, title, time: Date.now() });
 		this.planPanel.reveal(vscode.ViewColumn.One, true);
+	}
+
+	planProjectType(prompt) {
+		const t = String(prompt || "");
+		if (/animated|motion|scroll.?tell|video.?scrub|three\.js|r3f|מונפש|אנימצי|תלת.?ממד/i.test(t)) return "animated-site";
+		if (/e-?commerce|shop|store|cart|checkout|product|מסחר|חנות|מוצר/i.test(t)) return "commerce";
+		if (/dashboard|crm|admin|portal|saas|backend|api|דשבורד|מערכת|בקאנד/i.test(t)) return "business-app";
+		return "marketing-site";
+	}
+
+	planClarifyingQuestions(type) {
+		const common = [
+			{ id: "outcome", label: "מה התוצאה העסקית החשובה ביותר?", placeholder: "למשל: יותר לידים איכותיים / רכישה / חיסכון תפעולי", required: true },
+			{ id: "audience", label: "מי הקהל והפעולה המרכזית שלו?", placeholder: "קהל, מכשיר עיקרי ו-CTA", required: true },
+		];
+		const byType = {
+			"animated-site": { id: "motion", label: "מה תפקיד התנועה בסיפור?", placeholder: "פרקים, רגעי שיא, reference או מגבלת ביצועים", required: true },
+			commerce: { id: "catalog", label: "מהו מבנה הקטלוג וההמרה?", placeholder: "מוצרים/וריאציות, סליקה, משלוח ויעד conversion", required: true },
+			"business-app": { id: "roles", label: "מי המשתמשים ומה מקור האמת?", placeholder: "roles, workflows, DB ואינטגרציות", required: true },
+			"marketing-site": { id: "brand", label: "מה הכיוון המותגי והרפרנסים?", placeholder: "אופי, מתחרים, קישורים ודברים שאסור לחקות", required: false },
+		};
+		return common.concat(byType[type]);
+	}
+
+	planTemplate(prompt, answers, opts) {
+		const type = this.planProjectType(prompt);
+		const researched = !!(opts && opts.researched);
+		const answerText = Object.values(answers || {}).filter(Boolean).join(" · ");
+		const buildStep = type === "business-app" ? "סכימה, API וממשק לפי סדר תלות" :
+			type === "commerce" ? "קטלוג, מסלול המרה ותשלום" :
+			type === "animated-site" ? "פרקי עולם, נכסים ותנועה מדורגת" : "היררכיית עמודים וקומפוננטות";
+		return [
+			{ group: "הבהרה", step: "מטרות, קהל וגבולות", status: "completed", detail: answerText || "ממתין לתשובות תומס לפני ביצוע." },
+			{ group: "מחקר", step: "רפרנסים, מתחרים ואילוצים", status: researched ? "completed" : "pending", detail: researched ? "המחקר המקדים הוזן לתוכנית." : "search / read / scrollshot זמינים מכאן לפני אישור." },
+			{ group: "כיוון עיצובי", step: "שפה חזותית וחוזה חוויה", status: "pending", detail: "טיפוגרפיה, צבע, קומפוזיציה, motion והתנהגות responsive." },
+			{ group: "ביצוע", step: buildStep, status: "pending", detail: "passes קטנים עם תוצר נראה בכל שלב." },
+			{ group: "סיכונים", step: "תלויות, ביצועים ו-fallbacks", status: "pending", detail: "חסמים חיצוניים, מובייל, נגישות, reduced-motion ונתיב התאוששות." },
+			{ group: "אימות", step: "פונקציונליות, fidelity ומכשירים", status: "pending", detail: "בדיקות, preview, mobile/desktop והשוואה מול החוזה." },
+			{ group: "מסירה", step: "לינק חי וחבילת walkthrough", status: "pending", detail: "ראיות, החלטות, פתוחים ושלמות artifacts." },
+		];
+	}
+
+	pushPlanApproval() {
+		if (!this.planPanel || !this.pendingPlanApproval) return;
+		const p = this.pendingPlanApproval;
+		this.planPanel.webview.postMessage({
+			type: "approval", prompt: p.prompt, answers: p.answers || {}, questions: p.questions,
+			projectType: p.projectType, revision: p.revision || 0, researched: !!p.researched,
+		});
+	}
+
+	replanPendingBuild(prompt, answers, opts) {
+		if (!this.pendingPlanApproval) return;
+		const p = this.pendingPlanApproval;
+		p.prompt = String(prompt || p.prompt || "").trim();
+		p.answers = answers && typeof answers === "object" ? answers : (p.answers || {});
+		p.projectType = this.planProjectType(p.prompt);
+		p.questions = this.planClarifyingQuestions(p.projectType);
+		p.revision = (p.revision || 0) + (opts && opts.final ? 0 : 1);
+		const plan = this.planTemplate(p.prompt, p.answers, { researched: p.researched });
+		const th = { id: this.threadId || "pending-build", preview: p.prompt, plan };
+		this.planThread = th;
+		const companion = this._companion(); companion.plan = plan; companion.ts = Date.now();
+		this.pushPlanPanel(th);
+		this.pushPlanApproval();
+	}
+
+	async researchPendingPlan(prompt, answers) {
+		this.replanPendingBuild(prompt, answers);
+		const p = this.pendingPlanApproval;
+		p.researched = true;
+		const research = this.planTemplate(p.prompt, p.answers, { researched: false });
+		const step = research.find((s) => s.group === "מחקר"); if (step) step.status = "inProgress";
+		this.planThread = { id: this.threadId || "pending-build", preview: p.prompt, plan: research };
+		this.pushPlanPanel(this.planThread);
+		this.announceAgentMessage("🔎 מתחיל מחקר תכנון בלבד — בלי כתיבת קוד מוצר.");
+		this._planApprovalBypass = true;
+		const answersText = p.questions.map((q) => `${q.label}: ${p.answers[q.id] || "לא נענה"}`).join("\n");
+		await this.send(`[FELIX_PLAN_ONLY_RESEARCH]\nDo planning research only. Do NOT create or edit application source code. Use search/read/scrollshot as needed, write findings to RESEARCH.md and refine .solstice/PLAN.md under the quality contract: research → design direction → implementation stages → risks → verification. Keep the build waiting for Thomas approval.\n\nTask:\n${p.prompt}\n\nClarifications:\n${answersText}`)
+			.catch((e) => vscode.window.showErrorMessage("Solstice planning research: " + (e && e.message || e)));
+	}
+
+	approvedBuildPrompt(p) {
+		const answers = (p.questions || []).map((q) => `- ${q.label}: ${(p.answers || {})[q.id] || "לא נענה"}`).join("\n");
+		return `${p.prompt}\n\n[FELIX_APPROVED_PLAN_CONTRACT]\nProject template: ${p.projectType}.\nClarifications:\n${answers}\nExecute the approved evolving .solstice/PLAN.md. Keep exactly one step [~] current and mark every finished step [x] immediately so the live timeline stays synchronized. Preserve the quality order: research → design direction → implementation stages → risks → verification → delivery.`;
+	}
+
+	isBuildIntent(text) {
+		const t = String(text || "");
+		return /\b(build|create|make|implement|develop|scaffold|redesign|rebuild|clone|ship|code|fix)\b[\s\S]{0,180}\b(site|website|app|application|page|dashboard|project|feature|frontend|backend|api|component|flow)\b/i.test(t) ||
+			/(?:ת?בנה|לבנות|ת?צור|ליצור|תפתח|פתח|יישם|תקן|עצב מחדש)[\s\S]{0,180}(?:אתר|אפליקצי|עמוד|דשבורד|פרויקט|פיצ'ר|בקאנד|פרונט|API|קומפוננט|מערכת)/i.test(t);
+	}
+
+	requestPlanApproval(prompt) {
+		const cleanPrompt = String(prompt || "").trim();
+		const projectType = this.planProjectType(cleanPrompt);
+		const plan = this.planTemplate(cleanPrompt, {}, {});
+		plan[0].status = "inProgress";
+		this.pendingPlanApproval = { prompt: cleanPrompt, createdAt: Date.now(), projectType, questions: this.planClarifyingQuestions(projectType), answers: {}, revision: 0, researched: false };
+		const th = { id: this.threadId || "pending-build", preview: this.pendingPlanApproval.prompt, plan };
+		this.planThread = th;
+		const companion = this._companion(); companion.plan = plan; companion.ts = Date.now();
+		this.openPlanPanel();
+		this.pushPlanPanel(th);
+		this.pushPlanApproval();
 	}
 
 	// ---- projects gallery (home view inside Solstice) ----
@@ -2497,6 +2809,15 @@ self.addEventListener("fetch", (e) => {
 		return { pkg, tags };
 	}
 
+	projectDeploy(dir) {
+		try {
+			const file = path.join(dir, ".solstice", "deploy.json");
+			const value = JSON.parse(fs.readFileSync(file, "utf8"));
+			if (value && /^https:\/\//i.test(value.liveUrl || "")) return value;
+		} catch { }
+		return null;
+	}
+
 	scanProjects(webview) {
 		const out = [];
 		const seen = new Set();
@@ -2516,6 +2837,7 @@ self.addEventListener("fetch", (e) => {
 				seen.add(dir);
 				const { pkg, tags } = this.detectStack(dir);
 				const preview = this.projectPreview(dir);
+				const deploy = this.projectDeploy(dir);
 				out.push({
 					name: (pkg && pkg.name) || name,
 					dir,
@@ -2523,6 +2845,9 @@ self.addEventListener("fetch", (e) => {
 					tags,
 					updatedAt: st.mtimeMs,
 					preview: preview && webview ? webview.asWebviewUri(vscode.Uri.file(preview)).toString() : null,
+					openUrl: deploy && deploy.liveUrl || null,
+					liveUrl: deploy && deploy.liveUrl || null,
+					deployedAt: deploy && deploy.deployedAt || null,
 					agent: this.projectAgent(dir),
 				});
 			}
@@ -3019,12 +3344,22 @@ self.addEventListener("fetch", (e) => {
 			if (!this.skills) return "";
 			const hits = await this.skills.retrieve(task, 4);
 			if (!hits.length) return "";
-			this.skills.recordUse(hits); // proven skills float up over time
+			const useEvents = this.skills.recordUse(hits); // proven skills float up over time
+			const names = hits.map((h) => h.meta.name || "skill");
+			this.announceAgentMessage("🧠 השתמשתי ב-skills: " + names.join(", "));
+			for (const event of useEvents) {
+				if (!event.leveledUp) continue;
+				const name = event.item.meta.name || "skill";
+				const message = "⬆️ Skill leveled up: " + name + " · Lv." + event.after.level;
+				this.announceAgentMessage(message);
+				vscode.window.showInformationMessage(message);
+			}
+			pushSkillsPanel(this);
 			const blocks = hits.map((h) =>
 				"• " + (h.meta.kind === "lesson" ? "⚠️ לקח: " : "") + (h.meta.name || "skill") +
 				(h.meta.tags && h.meta.tags.length ? " [" + h.meta.tags.join(", ") + "]" : "") +
 				"\n" + h.body.slice(0, 500).trim());
-			return "🧠 ידע נצבר רלוונטי (skills מבניות מאומתות + לקחים מטעויות עבר — השתמש, ואל תחזור על לקח שסומן ⚠️):\n" + blocks.join("\n\n") + "\n\n---\n\n";
+			return "[FELIX_SKILLS]\n🧠 ידע נצבר רלוונטי (skills מבניות מאומתות + לקחים מטעויות עבר — השתמש, ואל תחזור על לקח שסומן ⚠️):\n" + blocks.join("\n\n") + "\n[/FELIX_SKILLS]\n\n---\n\n";
 		} catch { return ""; }
 	}
 
@@ -3076,23 +3411,69 @@ self.addEventListener("fetch", (e) => {
 				"- verified at: " + new Date().toISOString(),
 				"",
 			].join("\n");
-			this.skills.learn({ name, tags, sector, body, provenance: b.taskId || "" });
-			// Post-incident learning: if the fidelity loop logged gaps, distill them
-			// into a LESSON so the same gaps are avoided in the NEXT build.
-			const cwd = workspaceCwd();
-			const fidelityFile = cwd ? path.join(cwd, ".solstice", "FIDELITY.md") : null;
-			if (fidelityFile && fs.existsSync(fidelityFile)) {
-				const gaps = fs.readFileSync(fidelityFile, "utf8").slice(0, 1500);
-				this.skills.rememberLesson({
-					name: "fidelity-" + (sector || "general"),
-					tags: [...tags, "fidelity", "gaps"],
-					sector,
-					body: "# פערי נאמנות שנמצאו ותוקנו בבנייה מאומתת\n\nבבנייה הבאה מאותו סוג — הימנע מהפערים האלה מראש:\n\n" + gaps,
-					provenance: b.taskId || "",
-					change_note: "distilled from FIDELITY.md of verified build",
-				});
+			const learned = this.skills.learn({ name, tags, sector, body, provenance: b.taskId || "" });
+			this.announceAgentMessage("🧠 למדתי skill חדש: " + name + " v" + learned.version);
+			vscode.window.showInformationMessage("🧠 Felix למד skill חדש: " + name + " v" + learned.version);
+			if (learned.leveledUp) {
+				const message = "⬆️ Skill leveled up: " + name + " · Lv." + learned.after.level;
+				this.announceAgentMessage(message);
+				vscode.window.showInformationMessage(message);
 			}
+			pushSkillsPanel(this);
 		} catch (e) { this.output.append("[skills] learn failed: " + (e && e.message || e) + "\n"); }
+	}
+
+	// A fidelity loop is itself a verified learning signal when it records an
+	// explicit round and concrete fixes. Distill that lesson even for an
+	// interactive (non-fleet) build, where _activeBuild/self-verify may not exist.
+	learnFromFidelityFile() {
+		try {
+			if (!this.skills) return;
+			const cwd = workspaceCwd(); if (!cwd) return;
+			const file = path.join(cwd, ".solstice", "FIDELITY.md");
+			if (!fs.existsSync(file)) return;
+			const body = fs.readFileSync(file, "utf8").slice(0, 6000);
+			if (!/(?:round\s*\d+|סבב\s*\d+)/i.test(body) || !/(?:fix|fixed|closed|resolved|תוקן|נסגר)/i.test(body)) return;
+			const digest = crypto.createHash("sha256").update(body).digest("hex");
+			if (digest === this.lastFidelityLessonHash) return;
+			this.lastFidelityLessonHash = digest;
+			const tags = ["fidelity", "visual", ...this.inferSkillTags(this._lastUserPrompt || "")];
+			const name = "fidelity-" + (this.inferSkillSector(this._lastUserPrompt || "") || "general");
+			const learned = this.skills.rememberLesson({ name, tags, sector: this.inferSkillSector(this._lastUserPrompt || ""), body: "# לקח מלולאת fidelity מאומתת\n\n" + body, provenance: digest.slice(0, 12), change_note: "distilled from completed fidelity rounds" });
+			this.announceAgentMessage("🧠 למדתי לקח fidelity: " + name + " v" + learned.version);
+			vscode.window.showInformationMessage("🧠 Felix למד לקח fidelity: " + name + " v" + learned.version);
+		} catch (e) { this.output.append("[skills] fidelity learn failed: " + (e && e.message || e) + "\n"); }
+	}
+
+	maybeCreateWalkthrough() {
+		if (!this._walkthroughPending || this._walkthroughRunning) return;
+		// The first fleet "done" can launch self-verify and keep _activeBuild alive.
+		// Wait for that verification turn to finish before freezing the evidence.
+		if (this._activeBuild) return;
+		const cwd = workspaceCwd(), previewUrl = this.previewUrl;
+		if (!cwd || !previewUrl) {
+			this.output.append("[walkthrough] skipped: no workspace/preview URL\n");
+			return;
+		}
+		this._walkthroughPending = false;
+		this._walkthroughRunning = true;
+		const tool = path.join(this.context.extensionPath, "webtools", "walkthrough.js");
+		const args = [tool, cwd, previewUrl];
+		if (this.lastDeployUrl) args.push(this.lastDeployUrl);
+		this.runCli(process.execPath, args, cwd, { ELECTRON_RUN_AS_NODE: "1" }).then((result) => {
+			if (result.code !== 0) throw new Error((result.stderr || result.stdout || "walkthrough failed").trim().slice(-600));
+			const parsed = JSON.parse(result.stdout);
+			const artifact = parsed.artifact;
+			ensureScheduledCheck(cwd, this.lastDeployUrl || previewUrl);
+			const companion = this._companion(); companion.walkthrough = artifact; companion.ts = Date.now();
+			this.announceAgentMessage("📦 חבילת walkthrough מוכנה: " + artifact);
+			vscode.window.showInformationMessage("📦 Solstice יצר חבילת walkthrough", "פתח").then((choice) => {
+				if (choice === "פתח") vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(artifact));
+			});
+		}).catch((e) => {
+			this.output.append("[walkthrough] " + (e && e.message || e) + "\n");
+			this.announceAgentMessage("⚠️ יצירת חבילת walkthrough נכשלה: " + String(e && e.message || e).slice(0, 300));
+		}).finally(() => { this._walkthroughRunning = false; });
 	}
 
 	// ---- connectors: on-demand link-auth + vault (Phase 4) -----------------
@@ -3765,6 +4146,31 @@ function openManager(controller, extensionUri) {
 	});
 }
 
+let skillsPanel = null;
+function pushSkillsPanel(controller) {
+	if (!skillsPanel) return;
+	const skills = controller.skills ? controller.skills.list() : [];
+	const lessons = controller.skills ? controller.skills.listLessons() : [];
+	const map = (x, kind) => {
+		const progress = kind === "skill" ? skillProgress(x.meta) : null;
+		return {
+			kind, name: x.meta.name || path.basename(x.file || ""), tags: x.meta.tags || [], uses: Number(x.meta.uses || 0),
+			version: x.meta.version || 1, updatedAt: x.meta.updatedAt || "", preview: String(x.body || "").replace(/[#*_`]/g, "").trim().slice(0, 220),
+			...(progress || {}),
+		};
+	};
+	skillsPanel.webview.postMessage({ type: "skills", items: [...skills.map((x) => map(x, "skill")), ...lessons.map((x) => map(x, "lesson"))] });
+}
+function openSkills(controller, extensionUri) {
+	if (skillsPanel) { skillsPanel.reveal(vscode.ViewColumn.One); return; }
+	skillsPanel = vscode.window.createWebviewPanel("solstice.skills", "🧠 Felix Skills", vscode.ViewColumn.One, {
+		enableScripts: true, retainContextWhenHidden: true, localResourceRoots: webviewResourceRoots(extensionUri),
+	});
+	skillsPanel.webview.html = mediaHtml(skillsPanel.webview, extensionUri, "skills.js", "skills.css");
+	skillsPanel.webview.onDidReceiveMessage((m) => { if (m.type === "ready" || m.type === "refresh") pushSkillsPanel(controller); });
+	skillsPanel.onDidDispose(() => { skillsPanel = null; });
+}
+
 let galleryPanel = null;
 
 // Fetch a URL with the host's Node http(s) stack (webview CSP blocks remote
@@ -4008,6 +4414,7 @@ function openGallery(controller, extensionUri) {
 					vscode.commands.executeCommand("simpleBrowser.show", msg.url));
 				else vscode.window.showWarningMessage("אין כתובת אתר חי לפרויקט הזה — בנה/פרוס אותו קודם.");
 				break;
+			case "deployProject": controller.deployCurrentProject(msg.dir).then(() => pushProjects()); break;
 			// bring a server-built project down to the PC and open it in a fresh
 			// Solstice window so the user can keep working on it locally.
 			case "continueWorking": continueWorkingOnRemote(controller, msg.project); break;
@@ -4062,6 +4469,8 @@ function companionHtml() {
 		'.dot{width:7px;height:7px;border-radius:50%}.dot.busy{background:#f59e0b;animation:pl 1.2s infinite}.dot.idle{background:#3fb950}',
 		'@keyframes pl{50%{opacity:.4}}',
 		'#preview{display:none;width:100%;height:160px;border:0;border-bottom:1px solid #161b22;background:#0d0f14}',
+		'#live{display:none;margin:8px 14px 0;padding:9px 12px;border:1px solid #2e7d55;border-radius:12px;color:#8ce8b4;text-decoration:none;font-size:12px;font-weight:800;background:#102219}',
+		'#plan{display:none;margin:8px 14px 0;padding:10px 12px;border:1px solid #282d38;border-radius:12px;background:#0d1016;font-size:12px}.pl{display:flex;gap:7px;padding:3px 0;color:#8792a2}.pl.run{color:#f5b84b}.pl.done{color:#6ee7a8}',
 		'#chat{flex:1;overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:9px}',
 		'.msg{display:flex}.msg.user{justify-content:flex-end}.b{max-width:82%;padding:8px 11px;border-radius:14px;font-size:14px;line-height:1.45;white-space:pre-wrap;word-break:break-word}',
 		'.msg.user .b{background:linear-gradient(135deg,#0ea5e9,#22d3ee);color:#06121a;border-bottom-left-radius:4px}',
@@ -4073,7 +4482,7 @@ function companionHtml() {
 		'</style></head><body>',
 		'<div id="hd"><div class="fx"></div><div><div class="nm">Felix <span style="color:#5b6573;font-size:11px">· Solstice</span></div>',
 		'<div class="sub"><span id="statusdot" class="dot idle"></span><span id="status">מוכן</span><span style="color:#5b6573">· <span id="model"></span></span></div></div></div>',
-		'<iframe id="preview"></iframe>',
+		'<a id="live" target="_blank" rel="noopener">▲ פתח אתר חי</a><div id="plan"></div><iframe id="preview"></iframe>',
 		'<div id="chat"></div><div id="files"></div>',
 		'<div id="cmp"><input id="inp" placeholder="שלח ל-Felix משימה או שינוי…" enterkeyhint="send"><button id="snd">שלח</button></div>',
 		'<script>',
@@ -4082,6 +4491,8 @@ function companionHtml() {
 		'document.getElementById("model").textContent=s.model||"";',
 		'document.getElementById("status").textContent=s.building?"פליקס בונה…":"מוכן";',
 		'document.getElementById("statusdot").className="dot "+(s.building?"busy":"idle");',
+		'var l=document.getElementById("live");if(s.liveUrl){l.style.display="block";l.href=s.liveUrl;l.textContent="▲ פתח אתר חי · "+s.liveUrl.replace(/^https?:\\/\\//,"")}else{l.style.display="none"}',
+		'var q=document.getElementById("plan"),ps=s.plan||[];q.style.display=ps.length?"block":"none";q.innerHTML=ps.map(function(x){var z=x.status==="completed"?"done":x.status==="inProgress"?"run":"";var m=z==="done"?"✓":z==="run"?"▸":"·";return "<div class=\"pl "+z+"\"><span>"+m+"</span><span>"+esc(x.step)+"</span></div>"}).join("");',
 		'var p=document.getElementById("preview");if(s.previewUrl){p.style.display="block";var b=(s.previewUrl);if((p.dataset.u||"")!==b){p.dataset.u=b;p.src=b}}',
 		'var c=document.getElementById("chat");c.innerHTML=(s.messages||[]).map(function(m){return "<div class=\\"msg "+m.role+"\\"><div class=\\"b\\">"+esc(m.text)+"</div></div>"}).join("");c.scrollTop=c.scrollHeight;',
 		'document.getElementById("files").innerHTML=(s.files||[]).slice(0,8).map(function(f){return "<div class=\\"f\\">+ "+esc(f.path)+"</div>"}).join("");',
@@ -4255,6 +4666,8 @@ function activate(context) {
 		vscode.commands.registerCommand("solstice.agent.signOut", () => controller.signOut()),
 		vscode.commands.registerCommand("solstice.agent.openManager", () => openManager(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.openPreview", (url) => controller.openPreview(typeof url === "string" ? url : "")),
+		vscode.commands.registerCommand("solstice.agent.deployVercel", () => controller.deployCurrentProject()),
+		vscode.commands.registerCommand("solstice.agent.openSkills", () => openSkills(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.scaffoldApp", () => controller.scaffoldAppIntoWorkspace()),
 		vscode.commands.registerCommand("solstice.agent.selectModel", () => controller.selectModel()),
 		vscode.commands.registerCommand("solstice.agent.selectAutonomy", () => controller.selectAutonomy()),
@@ -4279,7 +4692,9 @@ function activate(context) {
 	// stuck-agent watchdog: warn when an agent loops in a busy state (e.g.
 	// "Exploring…") past the threshold with no fresh progress event.
 	controller.startWatchdog();
+	controller.startScheduledChecks();
 	context.subscriptions.push({ dispose: () => { if (controller.watchTimer) { clearInterval(controller.watchTimer); controller.watchTimer = null; } } });
+	context.subscriptions.push({ dispose: () => { if (controller.scheduledCheckTimer) { clearInterval(controller.scheduledCheckTimer); controller.scheduledCheckTimer = null; } } });
 	// relaunch recovery: if a build was interrupted by an IDE restart, report a
 	// terminal frame to the dispatching agent the moment its bridge reconnects.
 	try { controller.recoverBuildJournal(); } catch { }
@@ -4292,6 +4707,13 @@ function activate(context) {
 	researchWatcher.onDidCreate(onResearchFile);
 	researchWatcher.onDidChange(onResearchFile);
 	context.subscriptions.push(researchWatcher);
+	// PLAN.md is engine-agnostic: Codex, Grok, Composer and Claude all flow
+	// through the same workspace watcher instead of the old Grok-only bridge.
+	const planWatcher = vscode.workspace.createFileSystemWatcher("**/.solstice/PLAN.md");
+	const onPlanFile = (u) => controller.emitPlanFile(u.fsPath, controller.threadId);
+	planWatcher.onDidCreate(onPlanFile);
+	planWatcher.onDidChange(onPlanFile);
+	context.subscriptions.push(planWatcher);
 	// fleet bridge: external agents (Orion/Jasper/Niko) drop a task JSON into the
 	// inbox dir (relayed from Telegram or written directly); we focus the panel,
 	// inject the task as a prompt, and archive the file so it runs exactly once.

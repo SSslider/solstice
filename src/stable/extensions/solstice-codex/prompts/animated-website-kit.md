@@ -16,7 +16,20 @@ Every animated site must include at least one substantial motion system:
 1. Sticky scrollytelling stage: a 300-500vh wrapper with a sticky 100vh stage. Use scroll progress to scrub a GSAP timeline.
 2. Section reveal system: masked headline reveals, staggered content, and parallax media driven by `ScrollTrigger`, not only CSS opacity fades.
 3. Optional 3D scene: pointer-parallax, scroll-linked camera movement, product viewer, exploded view, shader background, or particle field using three.js/R3F.
-4. Optional video/canvas sequence: a sticky canvas or video stage where scroll progress maps to frame/time. Use real local frames/video assets or generated bitmap frames; no placeholder rectangles.
+4. Video/canvas sequence: a sticky canvas stage where scroll progress maps to a real frame sequence. For cinematic/Apple-style requests this is required, not optional. Use the bundled `webtools/animated-assets.js` pipeline; no placeholder rectangles.
+
+## Asset Pipeline (required for canvas/video scrollytelling)
+
+Use the free path by default:
+
+1. Run `node <extension>/webtools/animated-assets.js init <workspace>`.
+2. Edit `.solstice/animated/brief.json`: define one coherent world, 4-8 chapter scenes, continuity lock, duration, fps, and output dimensions.
+3. Run `node <extension>/webtools/animated-assets.js free <workspace>`. It asks Codex image generation for coherent chapter keyframes, verifies exact files, uses ffmpeg motion interpolation/preparation, writes `public/frames/frame_001.webp ...`, a manifest, and a ready `src/components/CanvasScrub.jsx` scaffold.
+4. Import `CanvasScrub`, pass the chapter copy from the manifest/brief, and keep text in crisp DOM layers above the canvas.
+
+Do not invoke X-Field/Seedance or any paid provider from this kit. The premium route is only designed in `xfield-animated-wiring-plan.md`; it remains behind the Solstice credit gate and requires a one-time Thomas approval before a future bridge can create a clip. After an approved clip exists locally, only the non-billable extraction step is allowed: `animated-assets.js from-video <workspace> <approved-clip> --thomas-approved`.
+
+Never silently fall back from the free route to a paid provider.
 
 ## GSAP Scrollytelling Template
 
@@ -108,10 +121,20 @@ export function ScrollScene() {
 
 ## Canvas / Video Sequence Pattern
 
-- Put frames in `public/frames/frame_001.webp` ... `frame_080.webp`.
+- Generate frames with `webtools/animated-assets.js`; do not hand-wave the asset step.
+- Read `public/frames/manifest.json` for frame count, fps, chapters, and route provenance.
 - Preload frames in chunks; on mobile, use fewer/lower-resolution frames.
 - Use a sticky canvas stage and map scroll progress to frame index.
 - If using a video, keep it muted/inline and drive `video.currentTime` from scroll progress after metadata loads.
+
+## World in Chapters
+
+- Treat the page as one continuous world, not unrelated sections. Lock subject identity, camera language, palette, light direction, horizon, materials, and environmental geometry in the brief.
+- Build 4-8 pinned chapters. Each chapter advances one narrative beat and one visible state change; no chapter may reset the art direction.
+- Use the frame sequence for the visual continuity, DOM layers for legible copy, and GSAP/ScrollTrigger for chapter timing.
+- For R3F scenes, drive camera position/target and material state from the same normalized scroll progress used by the chapter timeline.
+- Scene transitions must overlap deliberately (light wipe, depth pass, material morph, camera occlusion), with no hard blank frame.
+- Reduced motion shows a strong representative still per chapter and preserves the full story and CTA without scroll scrubbing.
 
 ## Verification Gate
 

@@ -14,6 +14,19 @@
 					<div id="pChips" class="pChips"></div>
 				</div>
 			</header>
+			<section id="pApproval" hidden>
+				<label for="pPrompt">ערוך את המשימה לפני ביצוע</label>
+				<textarea id="pPrompt" rows="6"></textarea>
+				<div id="pQuestions"></div>
+				<div class="pPlanningTools"><button id="pResearch">🔎 מחקר תכנון</button><button id="pReplan">↻ עדכן תוכנית</button></div>
+				<div class="pApprovalActions"><button id="pCancel">עצור</button><button id="pApprove">אשר והתחל</button></div>
+				<div id="pApprovalMeta" class="pApprovalNote">הסוכן לא יכתוב קוד עד האישור.</div>
+			</section>
+			<section id="pAnnotations">
+				<div class="pAnnotationTitle">📝 הערה על ה-artifact</div>
+				<div class="pAnnotationRow"><select id="pArtifact"><option value="PLAN.md">Plan</option><option value="WALKTHROUGH.md">Walkthrough</option></select><input id="pAnnotation" placeholder="כתוב שינוי או תיקון — הוא ייכנס לתור הפעיל בלי restart"><button id="pAnnotate">הוסף לתור</button></div>
+				<div id="pAnnotationMeta" class="pApprovalNote"></div>
+			</section>
 			<div id="pBody"><div id="pEmpty">הסוכן יפרק את העבודה לשלבים — הם יופיעו כאן בזמן אמת.</div></div>
 		</div>`;
 
@@ -24,6 +37,34 @@
 	const chipsEl = document.getElementById("pChips");
 	const bodyEl = document.getElementById("pBody");
 	const liveEl = document.getElementById("pLive");
+	const approvalEl = document.getElementById("pApproval");
+	const promptEl = document.getElementById("pPrompt");
+	const questionsEl = document.getElementById("pQuestions");
+	const approvalMetaEl = document.getElementById("pApprovalMeta");
+	let questions = [], revision = 0, dirty = false, replanTimer = null;
+	function answers() { const out = {}; for (const q of questions) { const input = document.querySelector('[data-q="' + q.id + '"]'); out[q.id] = input ? input.value.trim() : ""; } return out; }
+	function validate() {
+		let ok = !!promptEl.value.trim();
+		for (const q of questions) { const input = document.querySelector('[data-q="' + q.id + '"]'); const missing = q.required && (!input || !input.value.trim()); if (input) input.classList.toggle("pMissing", missing); if (missing) ok = false; }
+		return ok;
+	}
+	function scheduleReplan() {
+		dirty = true; clearTimeout(replanTimer);
+		replanTimer = setTimeout(() => {
+			if (!validate()) return;
+			dirty = false; vscode.postMessage({ type: "replanPlan", prompt: promptEl.value.trim(), answers: answers() });
+		}, 700);
+	}
+	document.getElementById("pApprove").addEventListener("click", () => {
+		const prompt = promptEl.value.trim(); if (!validate()) { approvalMetaEl.textContent = "חסרות תשובות חובה לפני אישור."; return; }
+		if (dirty) { dirty = false; vscode.postMessage({ type: "replanPlan", prompt, answers: answers() }); return; }
+		approvalEl.hidden = true; vscode.postMessage({ type: "approvePlan", prompt });
+	});
+	document.getElementById("pReplan").addEventListener("click", () => { if (!validate()) return; dirty = false; vscode.postMessage({ type: "replanPlan", prompt: promptEl.value.trim(), answers: answers() }); });
+	document.getElementById("pResearch").addEventListener("click", () => { if (!validate()) return; dirty = false; vscode.postMessage({ type: "researchPlan", prompt: promptEl.value.trim(), answers: answers() }); });
+	document.getElementById("pCancel").addEventListener("click", () => { approvalEl.hidden = true; vscode.postMessage({ type: "cancelPlan" }); });
+	document.getElementById("pAnnotate").addEventListener("click", () => { const input = document.getElementById("pAnnotation"); const note = input.value.trim(); if (!note) return; vscode.postMessage({ type: "artifactAnnotation", artifact: document.getElementById("pArtifact").value, note }); input.value = ""; document.getElementById("pAnnotationMeta").textContent = "ההערה נקלטה ונוספה לתור העבודה."; });
+	promptEl.addEventListener("input", scheduleReplan);
 
 	let lastUpdate = 0;
 	setInterval(() => { liveEl.classList.toggle("stale", Date.now() - lastUpdate > 45000); }, 5000);
@@ -105,6 +146,12 @@
 			lastUpdate = Date.now();
 			liveEl.classList.remove("stale");
 			render(m.plan, m.title);
+		} else if (m.type === "approval") {
+			promptEl.value = m.prompt || ""; questions = Array.isArray(m.questions) ? m.questions : []; revision = m.revision || 0;
+			questionsEl.innerHTML = "";
+			for (const q of questions) { const wrap = el("label", "pQuestion"); wrap.appendChild(el("span", "pQuestionLabel", q.label + (q.required ? " *" : ""))); const input = el("input", "pQuestionInput"); input.dataset.q = q.id; input.placeholder = q.placeholder || ""; input.value = (m.answers || {})[q.id] || ""; input.addEventListener("input", scheduleReplan); wrap.appendChild(input); questionsEl.appendChild(wrap); }
+			approvalMetaEl.textContent = (m.researched ? "המחקר המקדים הושלם · " : "") + "תבנית " + (m.projectType || "project") + " · גרסה " + revision + ". שינוי נוסף דורש re-plan לפני ביצוע.";
+			dirty = false; approvalEl.hidden = false; promptEl.focus();
 		}
 	});
 

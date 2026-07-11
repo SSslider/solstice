@@ -443,8 +443,12 @@
 		const isCredit = !!(params && params.creditGate);
 		card.appendChild(el("div", "cardTitle", isCredit ? "⚠️ Credit gate: approve video/3D generation" : isMcp ? "⚠️ Agent wants to use an MCP tool" : isFile ? "⚠️ Agent wants to edit files" : "⚠️ Agent wants to run a command"));
 		if (isCredit) {
-			card.appendChild(el("div", "muted", params.creditGate.reason || "Thomas approval is required before continuing."));
-			if (params.creditGate.detail) card.appendChild(el("div", "cmdLine", params.creditGate.detail));
+			const gate = params.creditGate;
+			card.appendChild(el("div", "muted", gate.reason || "Thomas approval is required before continuing."));
+			card.appendChild(el("div", "cmdLine", `מה ייווצר: ${gate.creation || "נכס מדיה בתשלום"}`));
+			card.appendChild(el("div", "cmdLine", `ספק: ${gate.provider || "ספק חיצוני"}`));
+			card.appendChild(el("div", "cmdLine", `הערכת קרדיטים: ${gate.creditEstimate || "לא ידועה מראש"}`));
+			if (gate.detail) card.appendChild(el("div", "muted", gate.detail));
 		}
 		if (isMcp && params && params.serverName) card.appendChild(el("div", "cmdLine", "🔌 " + params.serverName));
 		if (params && params.command) card.appendChild(el("div", "cmdLine", "$ " + params.command));
@@ -460,7 +464,7 @@
 			return b;
 		};
 		bar.appendChild(mk("Approve", "accept", "primary"));
-		bar.appendChild(mk("Approve for session", "acceptForSession", ""));
+		if (!isCredit) bar.appendChild(mk("Approve for session", "acceptForSession", ""));
 		bar.appendChild(mk("Deny", "decline", "danger"));
 		card.appendChild(bar);
 		messagesEl.appendChild(card);

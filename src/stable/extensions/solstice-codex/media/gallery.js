@@ -123,8 +123,10 @@
 		} else {
 			row.appendChild(btn("pAct--primary", "✎ פתח ב-Solstice",
 				"פתח את הפרויקט ב-IDE להמשך עבודה", { type: "openProject", dir: p.dir, newWindow: false }));
-			row.appendChild(btn("", "↗ חלון חדש", "פתח בחלון Solstice נפרד",
-				{ type: "openProject", dir: p.dir, newWindow: true }));
+			if (p.openUrl) row.appendChild(btn("", "🌐 אתר חי", "פתח את אתר ה-production",
+				{ type: "openSiteExternal", url: p.openUrl, name: p.name }));
+			else row.appendChild(btn("", "▲ Deploy", "פרוס את הפרויקט ל-Vercel production",
+				{ type: "deployProject", dir: p.dir }));
 		}
 		return row;
 	}

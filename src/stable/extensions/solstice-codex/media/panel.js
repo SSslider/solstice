@@ -991,7 +991,16 @@
 		const card = el("div", "card approval");
 		const isFile = method.indexOf("fileChange") !== -1 || method === "applyPatchApproval";
 		const isMcp = method.indexOf("elicitation") !== -1;
-		card.appendChild(el("div", "cardTitle", isMcp ? "⚠️ Agent wants to use an MCP tool" : isFile ? "⚠️ Agent wants to edit files" : "⚠️ Agent wants to run a command"));
+		const isCredit = !!(params && params.creditGate);
+		card.appendChild(el("div", "cardTitle", isCredit ? "⚠️ נדרש אישור תומס לשימוש בקרדיטים" : isMcp ? "⚠️ Agent wants to use an MCP tool" : isFile ? "⚠️ Agent wants to edit files" : "⚠️ Agent wants to run a command"));
+		if (isCredit) {
+			const gate = params.creditGate;
+			card.appendChild(el("div", "muted", gate.reason || "נדרש אישור תומס לפני המשך."));
+			card.appendChild(el("div", "cmdLine", `מה ייווצר: ${gate.creation || "נכס מדיה בתשלום"}`));
+			card.appendChild(el("div", "cmdLine", `ספק: ${gate.provider || "ספק חיצוני"}`));
+			card.appendChild(el("div", "cmdLine", `הערכת קרדיטים: ${gate.creditEstimate || "לא ידועה מראש"}`));
+			if (gate.detail) card.appendChild(el("div", "muted", gate.detail));
+		}
 		if (isMcp && params && params.serverName) card.appendChild(el("div", "cmdLine", "🔌 " + params.serverName));
 		if (params && params.command) card.appendChild(el("div", "cmdLine", "$ " + params.command));
 		if (params && params.reason) card.appendChild(el("div", "muted", params.reason));
@@ -1006,7 +1015,7 @@
 			return b;
 		};
 		bar.appendChild(mk("Approve", "accept", "primary"));
-		bar.appendChild(mk("Approve for session", "acceptForSession", ""));
+		if (!isCredit) bar.appendChild(mk("Approve for session", "acceptForSession", ""));
 		bar.appendChild(mk("Deny", "decline", "danger"));
 		card.appendChild(bar);
 		messagesEl.appendChild(card);

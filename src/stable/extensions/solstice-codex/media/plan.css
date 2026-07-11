@@ -36,6 +36,33 @@ body {
 	border-bottom: 1px solid var(--sol-line);
 }
 
+#pApproval {
+	margin: 0 0 22px;
+	padding: 18px;
+	border: 1px solid rgba(245, 158, 11, 0.38);
+	border-radius: 14px;
+	background: var(--sol-accent-soft);
+}
+#pApproval[hidden] { display: none; }
+#pAnnotations { margin: 0 0 22px; padding: 14px 16px; border: 1px solid var(--sol-line); border-radius: 12px; background: rgba(255,255,255,0.025); }
+.pAnnotationTitle { margin-bottom: 9px; font-size: 12px; font-weight: 750; color: var(--sol-dim); }
+.pAnnotationRow { display: grid; grid-template-columns: 130px 1fr auto; gap: 8px; }
+.pAnnotationRow select, .pAnnotationRow input { min-width: 0; padding: 9px 10px; border: 1px solid var(--sol-line); border-radius: 8px; color: var(--sol-fg); background: var(--vscode-input-background, #101116); }
+.pAnnotationRow button { padding: 8px 13px; border: 1px solid var(--sol-accent); border-radius: 8px; color: #1b1205; background: var(--sol-accent); font-weight: 750; cursor: pointer; }
+@media (max-width: 620px) { .pAnnotationRow { grid-template-columns: 1fr; } }
+#pApproval label { display: block; margin-bottom: 9px; font-size: 13px; font-weight: 700; }
+#pPrompt { width: 100%; resize: vertical; padding: 11px 12px; border: 1px solid var(--sol-line); border-radius: 9px; color: var(--sol-fg); background: var(--vscode-input-background, #101116); font: 13px/1.55 var(--vscode-font-family, system-ui); }
+.pApprovalActions { display: flex; gap: 8px; margin-top: 10px; }
+.pApprovalActions button { border: 1px solid var(--sol-line); border-radius: 8px; padding: 8px 14px; color: var(--sol-fg); background: var(--vscode-button-secondaryBackground, #2a2c34); cursor: pointer; }
+#pApprove { border-color: var(--sol-accent); background: var(--sol-accent); color: #1b1205; font-weight: 800; }
+.pApprovalNote { margin-top: 8px; font-size: 11px; color: var(--sol-dim); }
+.pQuestion { display: block; margin-top: 12px; }
+.pQuestionLabel { display: block; margin-bottom: 5px; color: var(--sol-dim); font-size: 12px; font-weight: 650; }
+.pQuestionInput { width: 100%; padding: 9px 11px; border: 1px solid var(--sol-line); border-radius: 8px; color: var(--sol-fg); background: var(--vscode-input-background, #101116); font: 12.5px/1.4 var(--vscode-font-family, system-ui); }
+.pQuestionInput.pMissing { border-color: #f87171; box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.12); }
+.pPlanningTools { display: flex; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--sol-line); }
+.pPlanningTools button { border: 1px solid rgba(245, 158, 11, 0.32); border-radius: 8px; padding: 7px 11px; color: var(--sol-accent); background: transparent; cursor: pointer; }
+
 .pHeroRing {
 	flex: 0 0 auto;
 	position: relative;

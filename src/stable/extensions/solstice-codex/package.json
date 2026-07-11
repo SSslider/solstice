@@ -71,6 +71,18 @@
         "icon": "$(globe)"
       },
       {
+        "command": "solstice.agent.deployVercel",
+        "title": "Deploy Current Project to Vercel",
+        "category": "Solstice",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "solstice.agent.openSkills",
+        "title": "Open Felix Skills",
+        "category": "Solstice",
+        "icon": "$(book)"
+      },
+      {
         "command": "solstice.agent.scaffoldApp",
         "title": "Scaffold App Shell (PWA)",
         "category": "Solstice",
@@ -165,6 +177,16 @@
           "command": "solstice.agent.openPreview",
           "when": "view == solstice.agentPanel",
           "group": "navigation@4"
+        },
+        {
+          "command": "solstice.agent.deployVercel",
+          "when": "view == solstice.agentPanel",
+          "group": "navigation@4.5"
+        },
+        {
+          "command": "solstice.agent.openSkills",
+          "when": "view == solstice.agentPanel",
+          "group": "navigation@4.6"
         },
         {
           "command": "solstice.agent.selectModel",
