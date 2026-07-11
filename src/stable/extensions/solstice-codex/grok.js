@@ -133,6 +133,11 @@ function runnerFor(key) {
 	return (m && m.runner) || "codex";
 }
 
+// Max system-prompt bytes we allow on argv. Windows kills oversized command
+// lines (cmd shim ≈8KB, CreateProcess 32KB) with a bare spawn EPERM; anything
+// bigger is embedded in the --prompt-file payload instead.
+const GROK_SYS_ARGV_MAX = 4096;
+
 // Both fallback models are served by the same `grok` CLI (Grok Build TUI).
 // Derived from MODEL_REGISTRY so there is a single source of truth.
 const GROK_MODELS = Object.fromEntries(
@@ -269,6 +274,21 @@ class GrokProvider {
 		if (preamble) this._sys = preamble;            // remember system prompt across turns
 		const userPrompt = this._composePrompt(text);
 		// History+prompt can be large → pass via --prompt-file (avoids ARG_MAX).
+		// The SYSTEM prompt must ride in the file too once it outgrows argv: on
+		// Windows an oversized --system-prompt-override blows the CreateProcess /
+		// cmd-shim command-line limit and surfaces as spawn EPERM (the 04089
+		// Composer regression — the preamble crossed the line when the toolbox
+		// router was injected across engines).
+		const sysInline = !this._sys || this._sys.length <= GROK_SYS_ARGV_MAX;
+		let agentFile = null;
+		if (this._sys && !sysInline) {
+			// Agent-definition file: frontmatter + body, where the body IS the
+			// system prompt (same format as ~/.grok/bundled/agents/*.md). Verified
+			// live: a 29KB body is enforced exactly like --system-prompt-override.
+			agentFile = path.join(os.tmpdir(), `solstice-grok-agent-${Date.now().toString(36)}-${this.seq}.md`);
+			const def = "---\nname: solstice-felix\ndescription: Solstice Felix system prompt (file carrier for oversized argv)\nprompt_mode: full\n---\n\n" + this._sys;
+			try { fs.writeFileSync(agentFile, def, "utf8"); } catch { agentFile = null; }
+		}
 		const promptFile = path.join(os.tmpdir(), `solstice-grok-${Date.now().toString(36)}-${this.seq++}.txt`);
 		try { fs.writeFileSync(promptFile, userPrompt, "utf8"); } catch { }
 		const args = ["--cwd", this.cwd, "-m", model.id,
@@ -277,7 +297,8 @@ class GrokProvider {
 			// blocking them makes those fail fast instead of SIGTERM-killing the turn.
 			"--disallowed-tools", "Read,Write,Edit,Bash,Glob,Grep,List,LS,WebFetch,WebSearch",
 			"--output-format", "streaming-json"];
-		if (this._sys) args.push("--system-prompt-override", this._sys);
+		if (this._sys && sysInline) args.push("--system-prompt-override", this._sys);
+		else if (agentFile) args.push("--agent", agentFile);
 		args.push("--prompt-file", promptFile);
 		this.turns++;
 		const turnIn = Math.ceil((userPrompt || "").length / 4);
