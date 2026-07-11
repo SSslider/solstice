@@ -7,7 +7,7 @@ const os = require("os");
 const { spawn } = require("child_process");
 const { CodexClient, resolveCodexBinary } = require("./codexClient");
 const { PreviewServer, DevServer, detectDevServerUrl, hasFramework } = require("./preview");
-const { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, resolveGrokBinary, grokBundlePresent } = require("./grok");
+const { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, resolveGrokBinary, grokBundlePresent, killTree } = require("./grok");
 const { ClaudeProvider, CLAUDE_LABEL } = require("./claude");
 const { FleetBridge } = require("./fleetBridge");
 const { FelixSkills, skillProgress } = require("./felixSkills");
@@ -315,12 +315,13 @@ class AgentController {
 		this.context = context;
 		this.client = null;
 		this.threadId = null;          // the sidebar's active thread
+		this.activeCodexThreadId = null; // actual active app-server turn (may differ after plan gate)
 		this.lastDiff = "";
 		this.webview = null;           // sidebar webview
 		this.manager = null;           // manager panel webview
 		this.threads = new Map();      // threadId -> {id, preview, status, activeTurnId, plan, diff, updatedAt}
 		this.loaded = new Set();       // threadIds resumed/started in this server process
-		this.pendingApprovals = new Map(); // approvalKey -> resolve(decision)
+		this.pendingApprovals = new Map(); // approvalKey -> { resolve(decision), creditGate }
 		this.terminal = null;          // integrated terminal spawned from the panel
 		this.preview = null;
 		this.devServer = null;         // auto-started dev server (npm run dev) for framework apps
@@ -346,6 +347,7 @@ class AgentController {
 		this.skills = null;            // Felix's private self-improvement store (Phase 6)
 		this.scheduledCheckTimer = null;
 		this._scheduledCheckRunning = false;
+		this.activeCliChildren = new Set(); // walkthrough/deploy/helper processes stopped by global Stop
 		try {
 			this.skills = new FelixSkills({
 				dir: path.join(context.globalStorageUri.fsPath, "felix-skills"),
@@ -629,6 +631,7 @@ class AgentController {
 				cwd, env: { ...process.env, ...(env || {}) },
 				shell: process.platform === "win32", windowsHide: true,
 			});
+			this.activeCliChildren.add(child);
 			const append = (key, chunk) => {
 				const text = String(chunk || "");
 				if (key === "out") stdout = (stdout + text).slice(-2 * 1024 * 1024);
@@ -639,11 +642,11 @@ class AgentController {
 			const timer = setTimeout(() => {
 				if (settled) return;
 				settled = true;
-				try { child.kill(); } catch { }
+				killTree(child);
 				resolve({ code: -1, stdout, stderr, error: new Error("Vercel CLI timed out") });
 			}, 10 * 60 * 1000);
-			child.on("error", (error) => { if (!settled) { settled = true; clearTimeout(timer); resolve({ code: -1, stdout, stderr, error }); } });
-			child.on("close", (code) => { if (!settled) { settled = true; clearTimeout(timer); resolve({ code: code == null ? -1 : Number(code), stdout, stderr }); } });
+			child.on("error", (error) => { this.activeCliChildren.delete(child); if (!settled) { settled = true; clearTimeout(timer); resolve({ code: -1, stdout, stderr, error }); } });
+			child.on("close", (code) => { this.activeCliChildren.delete(child); if (!settled) { settled = true; clearTimeout(timer); resolve({ code: code == null ? -1 : Number(code), stdout, stderr }); } });
 		});
 	}
 
@@ -1359,7 +1362,7 @@ self.addEventListener("fetch", (e) => {
 		const approveLabel = "Approve once";
 		return new Promise((resolve) => {
 			const key = crypto.randomUUID();
-			this.pendingApprovals.set(key, resolve);
+			this.pendingApprovals.set(key, { resolve, creditGate: true });
 			const tid = guarded && guarded.threadId;
 			if (!tid || tid === this.threadId) this.post({ type: "approvalRequest", key, method, params: guarded });
 			this.postManager({ type: "approvalRequest", key, method, params: guarded });
@@ -1513,11 +1516,24 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	// Premium design playbook — only injected when Design Elevation is ON (optional layer).
-	designPlaybook() {
+	designPlaybook(text = "") {
 		if (!this.designElevationOn()) return "";
+		const source = String(text || "");
+		const needsDesign = this.isBuildIntent(source)
+			|| needsResearchContract(source)
+			|| needsAnimatedWebsiteKit(source)
+			|| needsVerticalTemplatePack(source);
+		if (!needsDesign) return "";
 		try {
 			return fs.readFileSync(path.join(this.context.extensionPath, "prompts", "design-playbook.md"), "utf8");
 		} catch { return ""; }
+	}
+
+	logPreambleSize(runner, preamble) {
+		const bytes = Buffer.byteLength(String(preamble || ""), "utf8");
+		const warning = bytes > 24 * 1024 ? " WARNING>24KB" : "";
+		this.output.append(`[preamble] runner=${runner} bytes=${bytes}${warning}\n`);
+		return preamble;
 	}
 
 	async toggleDesignElevation() {
@@ -1869,7 +1885,7 @@ self.addEventListener("fetch", (e) => {
 		this.onNotification("item/completed", { threadId: this.grok ? this.grok.threadId : undefined, item });
 	}
 
-	grokPreamble() {
+	grokPreamble(text = "") {
 		const browseJs = path.join(this.context.extensionPath, "webtools", "browse.js"); // dir is "webtools" not "tools": the Windows build's 7z -x!tools strips any nested tools/ dir
 		const node = process.execPath;
 		const shot = process.platform === "win32"
@@ -1878,8 +1894,7 @@ self.addEventListener("fetch", (e) => {
 		const dom = process.platform === "win32"
 			? `cmd /c "set ELECTRON_RUN_AS_NODE=1&& ""${node}"" ""${browseJs}"" dom <url>"`
 			: `ELECTRON_RUN_AS_NODE=1 "${node}" "${browseJs}" dom <url>`;
-		const playbook = this.designPlaybook();
-		const toolbox = toolboxRouterText();
+		const playbook = this.designPlaybook(text);
 		return [
 			"You are the Solstice IDE agent. Work directly on files in this workspace.",
 			"Capabilities beyond your normal tools (run these as shell commands):",
@@ -1907,12 +1922,11 @@ self.addEventListener("fetch", (e) => {
 			`- PREMIUM COMPONENT LIBRARY — your fastest path to an Awwwards-bar page. BEFORE building any common section (navbar, hero, features, gallery, stats, testimonials, pricing, CTA, footer) from scratch, read ${path.join(this.context.extensionPath, "prompts", "components", "library.html")} (sections are delimited by '═══ COMPONENT: <id> ═══' markers; ids+tags in manifest.json next to it). Copy the closest component, then ADAPT it to the client: retheme the --c-* tokens to the brand palette, replace ALL copy with sector-true Hebrew, swap in real/generated imagery, rename fx- prefixes on collision. NEVER ship a component verbatim — it is a high starting bar, not a final design.`,
 				this.agentBehavior(),
 				this.appModeGuidance(),
-				toolbox ? "\n" + toolbox : "",
 				playbook ? "\n" + playbook : "",
 			].join("\n");
 		}
 
-	claudePreamble() {
+	claudePreamble(text = "") {
 		const browseJs = path.join(this.context.extensionPath, "webtools", "browse.js"); // dir is "webtools" not "tools": the Windows build's 7z -x!tools strips any nested tools/ dir
 		const node = process.execPath;
 		const shot = process.platform === "win32"
@@ -1921,8 +1935,7 @@ self.addEventListener("fetch", (e) => {
 		const dom = process.platform === "win32"
 			? `cmd /c "set ELECTRON_RUN_AS_NODE=1&& ""${node}"" ""${browseJs}"" dom <url>"`
 			: `ELECTRON_RUN_AS_NODE=1 "${node}" "${browseJs}" dom <url>`;
-		const playbook = this.designPlaybook();
-		const toolbox = toolboxRouterText();
+		const playbook = this.designPlaybook(text);
 		return [
 			"You are the Solstice IDE agent. Work directly on files in this workspace.",
 			"Capabilities beyond your normal tools (run these as shell commands):",
@@ -1950,7 +1963,6 @@ self.addEventListener("fetch", (e) => {
 			`- PREMIUM COMPONENT LIBRARY — your fastest path to an Awwwards-bar page. BEFORE building any common section (navbar, hero, features, gallery, stats, testimonials, pricing, CTA, footer) from scratch, read ${path.join(this.context.extensionPath, "prompts", "components", "library.html")} (sections are delimited by '═══ COMPONENT: <id> ═══' markers; ids+tags in manifest.json next to it). Copy the closest component, then ADAPT it to the client: retheme the --c-* tokens to the brand palette, replace ALL copy with sector-true Hebrew, swap in real/generated imagery, rename fx- prefixes on collision. NEVER ship a component verbatim — it is a high starting bar, not a final design.`,
 				this.agentBehavior(),
 				this.appModeGuidance(),
-				toolbox ? "\n" + toolbox : "",
 				playbook ? "\n" + playbook : "",
 			].join("\n");
 		}
@@ -1976,7 +1988,7 @@ self.addEventListener("fetch", (e) => {
 			th.preview = text;
 			this.post({ type: "thread", threadId: this.threadId, model: this.providerLabel() });
 		}
-		await this.claude.send(prompt, this.claudePreamble());
+		await this.claude.send(prompt, this.claudePreamble(text));
 	}
 
 	async sendGrok(text) {
@@ -1997,7 +2009,7 @@ self.addEventListener("fetch", (e) => {
 			this.post({ type: "thread", threadId: this.threadId, model: this.providerLabel() });
 		}
 		this.startGrokWatcher();
-		await this.grok.send(this.providerKey(), prompt, this.grokPreamble());
+		await this.grok.send(this.providerKey(), prompt, this.grokPreamble(text));
 		this.flushGrokChanges();
 	}
 
@@ -2089,12 +2101,14 @@ self.addEventListener("fetch", (e) => {
 			th.updatedAt = Date.now() / 1000;
 			this.planFileOpened = false;
 			this.turnDidResearch = false;
+			if (!String(tid).startsWith("grok-") && !String(tid).startsWith("claude-")) this.activeCodexThreadId = tid;
 			if (tid === this.threadId) { this.markBusy("_builder", true); this.notePulse("_builder", "state"); this.postPreview({ type: "building", on: true }); this.fleetFlow("building"); this.injectMercuryClient().catch(() => { }); }
 			this.pushThreads();
 		} else if (method === "turn/completed" && tid) {
 			const th = this.upsertThread({ id: tid });
 			th.activeTurnId = null;
 			th.status = "idle";
+			if (this.activeCodexThreadId === tid) this.activeCodexThreadId = null;
 			if (tid === this.threadId) { this.markBusy("_builder", false); this.postPreview({ type: "building", on: false }); this.fleetFlow("done"); this._failoverTried = null; this.refreshPreview(); }
 			if (tid === this.threadId) this.learnFromFidelityFile();
 			if (tid === this.threadId) {
@@ -2190,7 +2204,7 @@ self.addEventListener("fetch", (e) => {
 		}
 		return new Promise((resolve) => {
 			const key = crypto.randomUUID();
-			this.pendingApprovals.set(key, resolve);
+			this.pendingApprovals.set(key, { resolve, creditGate: false });
 			const tid = params && params.threadId;
 			if (!tid || tid === this.threadId) this.post({ type: "approvalRequest", key, method, params });
 			this.postManager({ type: "approvalRequest", key, method, params });
@@ -2202,10 +2216,14 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	resolveApproval(key, decision) {
-		const resolve = this.pendingApprovals.get(key);
-		if (resolve) {
+		const pending = this.pendingApprovals.get(key);
+		if (pending) {
 			this.pendingApprovals.delete(key);
-			resolve(decision);
+			if (pending.creditGate && decision === "acceptForSession") {
+				this.output.append("credit key: session-approve downgraded to one-shot\n");
+				decision = "accept";
+			}
+			pending.resolve(decision);
 		}
 	}
 
@@ -2257,14 +2275,13 @@ self.addEventListener("fetch", (e) => {
 		}
 	}
 
-	developerInstructions() {
+	developerInstructions(text = "") {
 		const browseJs = path.join(this.context.extensionPath, "webtools", "browse.js"); // dir is "webtools" not "tools": the Windows build's 7z -x!tools strips any nested tools/ dir
 		const node = process.execPath;
 		const run = process.platform === "win32"
 			? `cmd /c "set ELECTRON_RUN_AS_NODE=1&& ""${node}"" ""${browseJs}"" shot <url> <out.png>"`
 			: `ELECTRON_RUN_AS_NODE=1 "${node}" "${browseJs}" shot <url> <out.png>`;
-		const playbook = this.designPlaybook();
-		const toolbox = toolboxRouterText();
+		const playbook = this.designPlaybook(text);
 		return [
 			"You are the Solstice IDE agent. Capabilities beyond your normal tools:",
 			`- Web browsing & research: ${run}`,
@@ -2282,19 +2299,20 @@ self.addEventListener("fetch", (e) => {
 			"- FOLLOW-UP PROMPTS CONTINUE THE SAME PLAN: when the user sends another request after a build, keep ONE evolving plan for the project — append a new phase for the new request; never restart from scratch; completed steps stay marked done.",
 				this.agentBehavior(),
 				this.appModeGuidance(),
-				toolbox ? "\n" + toolbox : "",
 				playbook ? "\n" + playbook : "",
 			].join("\n");
 		}
 
-	async startThread() {
+	async startThread(text = "") {
+		const developerInstructions = this.developerInstructions(text);
+		this.logPreambleSize("codex", developerInstructions);
 		const client = await this.ensureClient();
 		const th = await client.request("thread/start", {
 			cwd: workspaceCwd(),
 			model: this.cfg().get("model") || undefined,
 			approvalPolicy: this.cfg().get("approvalPolicy"),
 			sandbox: this.cfg().get("sandbox"),
-			developerInstructions: this.developerInstructions(),
+			developerInstructions,
 		});
 		const id = th.thread && th.thread.id;
 		if (id) {
@@ -2364,7 +2382,7 @@ self.addEventListener("fetch", (e) => {
 		if (runner === "claude") return this.sendClaude(text);
 		if (runner === "grok") return this.sendGrok(text);
 		if (!this.threadId) {
-			const { id, model } = await this.startThread();
+			const { id, model } = await this.startThread(text);
 			this.threadId = id;
 			this.lastDiff = "";
 			this.post({ type: "thread", threadId: this.threadId, model });
@@ -2417,18 +2435,46 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	async interrupt(threadId) {
-		if (this.claude && this.claude.busy && (!threadId || threadId === this.claude.threadId)) {
-			this.claude.interrupt();
-			return;
+		let stopped = false;
+		if (this.pendingPlanApproval) {
+			this.pendingPlanApproval = null;
+			this._planApprovalBypass = false;
+			this._walkthroughPending = false;
+			stopped = true;
+			this.announceAgentMessage("🛑 התוכנית בוטלה לפני ביצוע.");
 		}
-		if (this.grok && this.grok.busy && (!threadId || threadId === this.grok.threadId)) {
-			this.grok.interrupt();
-			return;
+		for (const [key, pending] of this.pendingApprovals) {
+			this.pendingApprovals.delete(key);
+			try { pending.resolve("decline"); } catch { }
+			stopped = true;
 		}
-		const tid = threadId || this.threadId;
-		if (this.client && this.client.running && tid) {
-			await this.client.request("turn/interrupt", { threadId: tid }).catch(() => { });
+		this.steerQueue = [];
+		if (this.claude && (!threadId || threadId === this.claude.threadId)) stopped = this.claude.interrupt() || stopped;
+		if (this.grok && (!threadId || threadId === this.grok.threadId)) stopped = this.grok.interrupt() || stopped;
+		for (const child of this.activeCliChildren) { killTree(child); stopped = true; }
+		const active = [...this.threads.values()].filter((th) => th && th.activeTurnId).map((th) => th.id);
+		const tids = [...new Set([threadId, this.activeCodexThreadId, ...active, this.threadId].filter((tid) =>
+			tid && !String(tid).startsWith("grok-") && !String(tid).startsWith("claude-")))];
+		if (this.client && this.client.running && tids.length) {
+			stopped = true;
+			const interruptOne = (tid) => new Promise((resolve) => {
+				let done = false;
+				const finish = () => { if (done) return; done = true; clearTimeout(timer); resolve(); };
+				const timer = setTimeout(() => { this.output.append(`[stop] codex ${tid}: interrupt acknowledgement timeout\n`); finish(); }, 1500);
+				this.client.request("turn/interrupt", { threadId: tid }).then(finish).catch((e) => {
+					this.output.append(`[stop] codex ${tid}: ${e && e.message || e}\n`); finish();
+				});
+			});
+			await Promise.all(tids.map(interruptOne));
 		}
+		this.activeCodexThreadId = null;
+		this.markBusy("_builder", false);
+		this.postPreview({ type: "building", on: false });
+		const companion = this._companion(); companion.building = false; companion.ts = Date.now();
+		this.post({ type: "interrupted", stopped });
+		this.postManager({ type: "interrupted", stopped });
+		this.output.append(`[stop] completed stopped=${stopped} codexThreads=${tids.length} cliChildren=${this.activeCliChildren.size}\n`);
+		return stopped;
 	}
 
 	async listThreads() {
@@ -2625,9 +2671,7 @@ self.addEventListener("fetch", (e) => {
 					this.announceAgentMessage("🗺 התוכנית אושרה. מתחיל לבצע לפי הנוסח המאושר.");
 					await this.send(prompt).catch((e) => vscode.window.showErrorMessage("Solstice: " + (e && e.message || e)));
 				} else if (m.type === "cancelPlan") {
-					this.pendingPlanApproval = null;
-					this._walkthroughPending = false;
-					this.announceAgentMessage("🗺 הבנייה נעצרה לפני ביצוע — התוכנית לא אושרה.");
+					await this.interrupt();
 				} else if (m.type === "artifactAnnotation") {
 					await this.queueArtifactAnnotation(m.artifact, m.note).catch((e) => vscode.window.showErrorMessage("Solstice annotation: " + (e && e.message || e)));
 				}
@@ -2747,6 +2791,7 @@ self.addEventListener("fetch", (e) => {
 		this.planThread = th;
 		const companion = this._companion(); companion.plan = plan; companion.ts = Date.now();
 		this.openPlanPanel();
+		this.post({ type: "planPending" });
 		this.pushPlanPanel(th);
 		this.pushPlanApproval();
 	}
@@ -3445,6 +3490,15 @@ self.addEventListener("fetch", (e) => {
 		} catch (e) { this.output.append("[skills] fidelity learn failed: " + (e && e.message || e) + "\n"); }
 	}
 
+	resolveWalkthroughRuntime(platform = process.platform) {
+		if (platform === "win32") {
+			const signedNode = path.join(this.context.extensionPath, "bin", "node.exe");
+			if (fs.existsSync(signedNode)) return { bin: signedNode, env: {}, source: "signed-node.exe" };
+			this.output.append(`[walkthrough] WARNING signed node.exe missing at ${signedNode}; falling back to Electron runtime\n`);
+		}
+		return { bin: process.execPath, env: { ELECTRON_RUN_AS_NODE: "1" }, source: "electron-fallback" };
+	}
+
 	maybeCreateWalkthrough() {
 		if (!this._walkthroughPending || this._walkthroughRunning) return;
 		// The first fleet "done" can launch self-verify and keep _activeBuild alive.
@@ -3460,7 +3514,9 @@ self.addEventListener("fetch", (e) => {
 		const tool = path.join(this.context.extensionPath, "webtools", "walkthrough.js");
 		const args = [tool, cwd, previewUrl];
 		if (this.lastDeployUrl) args.push(this.lastDeployUrl);
-		this.runCli(process.execPath, args, cwd, { ELECTRON_RUN_AS_NODE: "1" }).then((result) => {
+		const runtime = this.resolveWalkthroughRuntime();
+		this.output.append(`[walkthrough] runtime=${runtime.source} bin=${runtime.bin}\n`);
+		this.runCli(runtime.bin, args, cwd, runtime.env).then((result) => {
 			if (result.code !== 0) throw new Error((result.stderr || result.stdout || "walkthrough failed").trim().slice(-600));
 			const parsed = JSON.parse(result.stdout);
 			const artifact = parsed.artifact;
@@ -3992,7 +4048,7 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	dispose() {
-		for (const resolve of this.pendingApprovals.values()) resolve("abort");
+		for (const pending of this.pendingApprovals.values()) pending.resolve("abort");
 		this.pendingApprovals.clear();
 		clearTimeout(this.researchDebounce);
 		if (this.researchPanel) this.researchPanel.dispose();

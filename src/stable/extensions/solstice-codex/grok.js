@@ -6,6 +6,25 @@ const path = require("path");
 const zlib = require("zlib");
 const { resolveWinSpawn, whichFull } = require("./winspawn");
 
+const GROK_TEMP_RE = /^solstice-grok-(?:agent-)?[a-z0-9-]+\.(?:txt|md)$/i;
+const GROK_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function cleanupStaleGrokTempFiles(log, now = Date.now()) {
+	let removed = 0;
+	try {
+		for (const entry of fs.readdirSync(os.tmpdir(), { withFileTypes: true })) {
+			if (!entry.isFile() || !GROK_TEMP_RE.test(entry.name)) continue;
+			const file = path.join(os.tmpdir(), entry.name);
+			let stat;
+			try { stat = fs.statSync(file); } catch { continue; }
+			if (now - stat.mtimeMs <= GROK_TEMP_MAX_AGE_MS) continue;
+			try { fs.unlinkSync(file); removed++; } catch { }
+		}
+	} catch { }
+	if (removed) log(`[grok] removed ${removed} stale temp file(s) older than 24h\n`);
+	return removed;
+}
+
 // ── Bundled grok engine ────────────────────────────────────────────────────
 // Composer 2.5 / Grok run on the @xai-official/grok engine — a native per-
 // platform binary. It was NEVER bundled (only codex was), so on a clean install
@@ -232,6 +251,8 @@ class GrokProvider {
 		this.notify = opts.notify;
 		this.threadId = "grok-" + Date.now().toString(36);
 		this.child = null;
+		this._starting = false;
+		this._interruptRequested = false;
 		this.turns = 0;
 		this.seq = 0;
 		this.tokens = { in: 0, out: 0 }; // session-cumulative (real if CLI emits usage, else estimate)
@@ -241,12 +262,16 @@ class GrokProvider {
 		// see the comment in send() for why.
 		this.history = []; // [{ role: "user"|"assistant", text }]
 		this._sys = "";    // remembered system prompt (sent every turn)
+		cleanupStaleGrokTempFiles(this.log);
 	}
 
-	get busy() { return !!this.child; }
+	get busy() { return this._starting || !!this.child; }
 
 	interrupt() {
+		const wasBusy = this.busy;
+		this._interruptRequested = true;
 		killTree(this.child);
+		return wasBusy;
 	}
 
 	// Bake the recent conversation into the prompt (stateless multi-turn). Last 8
@@ -260,7 +285,9 @@ class GrokProvider {
 	}
 
 	send(providerKey, text, preamble) {
-		if (this.child) return Promise.reject(new Error("a turn is already running"));
+		if (this.busy) return Promise.reject(new Error("a turn is already running"));
+		this._starting = true;
+		this._interruptRequested = false;
 		const model = GROK_MODELS[providerKey] || GROK_MODELS["grok-build"];
 
 		// STATELESS turn — NO `-c` resume. Root cause of "stuck after the first
@@ -309,6 +336,8 @@ class GrokProvider {
 		delete env.OPENAI_API_KEY;
 		const tid = this.threadId;
 		const turnId = "gt" + this.turns;
+		const preambleBytes = Buffer.byteLength(String(this._sys || ""), "utf8");
+		this.log(`[preamble] runner=grok bytes=${preambleBytes}${preambleBytes > 24 * 1024 ? " WARNING>24KB" : ""}\n`);
 		this.notify("turn/started", { threadId: tid, turn: { id: turnId } });
 
 		let reasoning = null; // { id, text }
@@ -469,8 +498,15 @@ class GrokProvider {
 			// anyway. See the GROUND-TRUTH note in codexClient.js:start.
 			const child = spawn(sp.cmd, sp.args, { cwd: this.cwd, env: sp.env ? { ...env, ...sp.env } : env, detached: process.platform !== "win32", windowsHide: true });
 			this.child = child;
+			this._starting = false;
+			if (this._interruptRequested) killTree(child);
 			let buf = "";
-			const cleanupFile = () => { try { fs.unlinkSync(promptFile); } catch { } };
+			const cleanupFiles = () => {
+				for (const file of [promptFile, agentFile]) {
+					if (!file) continue;
+					try { fs.unlinkSync(file); } catch { }
+				}
+			};
 			// Total-turn budget — NOT an idle watchdog. A turn is ended only if it
 			// exceeds the whole-turn wall-clock ceiling; we never kill on "silence"
 			// because real work (npm install, big edits, model thinking) is legitimately
@@ -495,9 +531,11 @@ class GrokProvider {
 			child.stderr.on("data", (d) => this.log(d.toString()));
 			child.on("error", (e) => {
 				this.child = null;
+				this._starting = false;
+				this._interruptRequested = false;
 				clearTimeout(budgetTimer);
 				tailer.stop();
-				cleanupFile();
+				cleanupFiles();
 				// EPERM diagnostic — on Windows a bare `spawn <name> EPERM` means the
 				// resolver handed CreateProcess a .cmd/.bat shim it can't launch. Log
 				// the EXACT command we tried so this is never a guessing game again:
@@ -531,9 +569,11 @@ class GrokProvider {
 			child.on("close", (code) => {
 				if (!this.child) return; // already resolved via "error"
 				this.child = null;
+				this._starting = false;
+				this._interruptRequested = false;
 				clearTimeout(budgetTimer);
 				tailer.stop();
-				cleanupFile();
+				cleanupFiles();
 				closeReasoning();
 				closeMessage();
 				// Record the exchange so the NEXT turn has context (stateless multi-turn).
@@ -554,4 +594,4 @@ class GrokProvider {
 	}
 }
 
-module.exports = { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, unifiedDiff, killTree, resolveGrokBinary, grokBundlePresent };
+module.exports = { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, unifiedDiff, killTree, resolveGrokBinary, grokBundlePresent, cleanupStaleGrokTempFiles };

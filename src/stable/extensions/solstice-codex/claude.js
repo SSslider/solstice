@@ -46,14 +46,19 @@ class ClaudeProvider {
 		this.threadId = "claude-" + Date.now().toString(36);
 		this.sessionId = null;  // claude CLI session — resumed on turn 2+
 		this.child = null;
+		this._starting = false;
+		this._interruptRequested = false;
 		this.turns = 0;
 		this.seq = 0;
 	}
 
-	get busy() { return !!this.child; }
+	get busy() { return this._starting || !!this.child; }
 
 	interrupt() {
+		const wasBusy = this.busy;
+		this._interruptRequested = true;
 		killTree(this.child);
+		return wasBusy;
 	}
 
 	relPath(p) {
@@ -132,7 +137,11 @@ class ClaudeProvider {
 	}
 
 	send(text, preamble) {
-		if (this.child) return Promise.reject(new Error("a turn is already running"));
+		if (this.busy) return Promise.reject(new Error("a turn is already running"));
+		this._starting = true;
+		this._interruptRequested = false;
+		const preambleBytes = Buffer.byteLength(String(preamble || ""), "utf8");
+		this.log(`[preamble] runner=claude bytes=${preambleBytes}${preambleBytes > 24 * 1024 ? " WARNING>24KB" : ""}\n`);
 		const prompt = this.turns === 0 && preamble ? `${preamble}\n\n## Task\n${text}` : text;
 		const args = [
 			"--print",
@@ -330,6 +339,8 @@ class ClaudeProvider {
 			// repo's browse spawn (extension.js:2720). See note in codexClient.js:start.
 			const child = spawn(sp.cmd, sp.args, { cwd: this.cwd, env: sp.env ? { ...env, ...sp.env } : env, detached: process.platform !== "win32", windowsHide: true });
 			this.child = child;
+			this._starting = false;
+			if (this._interruptRequested) killTree(child);
 			child.stdin.write(prompt);
 			child.stdin.end();
 			let buf = "";
@@ -346,6 +357,8 @@ class ClaudeProvider {
 			child.stderr.on("data", (d) => this.log(d.toString()));
 			child.on("error", (e) => {
 				this.child = null;
+				this._starting = false;
+				this._interruptRequested = false;
 				this.notify("error", {
 					threadId: tid,
 					error: { message: `Could not start the claude CLI (${this.bin}): ${e.message}. Install Claude Code and sign in once (claude auth), then retry.` },
@@ -356,6 +369,8 @@ class ClaudeProvider {
 			child.on("close", (code) => {
 				if (!this.child) return; // already resolved via "error"
 				this.child = null;
+				this._starting = false;
+				this._interruptRequested = false;
 				// close any block still streaming (interrupted turn)
 				for (const b of blocks.values()) completeBlock(b);
 				if (code !== 0 && code !== null) {

@@ -321,6 +321,92 @@ async function showcase(bin, url, outDir, maxAssets) {
 	}, { headed: false });
 }
 
+// Delivery quality gate: collect deterministic SEO, image, console, and rough
+// LCP signals in the same bundled browser used for walkthrough evidence.
+// This is intentionally not Lighthouse: it has zero external dependencies and
+// remains useful on localhost previews before a production deploy exists.
+async function audit(bin, url) {
+	await withChrome(bin, async ({ send, evalJs, goto }) => {
+		await send("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+			window.__solsticeQuality = { consoleErrors: [], runtimeErrors: [], lcp: 0 };
+			const originalError = console.error.bind(console);
+			console.error = (...args) => {
+				try { window.__solsticeQuality.consoleErrors.push(args.map(String).join(' ').slice(0, 500)); } catch {}
+				originalError(...args);
+			};
+			addEventListener('error', (event) => {
+				const message = event.message || (event.target && (event.target.src || event.target.href)) || 'resource error';
+				window.__solsticeQuality.runtimeErrors.push(String(message).slice(0, 500));
+			}, true);
+			try {
+				new PerformanceObserver((list) => {
+					const entries = list.getEntries();
+					if (entries.length) window.__solsticeQuality.lcp = entries[entries.length - 1].startTime || 0;
+				}).observe({ type: 'largest-contentful-paint', buffered: true });
+			} catch {}
+		})()` });
+		await goto(url, 2500);
+		await evalJs("window.scrollTo({top: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight), behavior: 'instant'}); ''");
+		await sleep(1200);
+		await evalJs("window.scrollTo({top: 0, behavior: 'instant'}); ''");
+		await sleep(500);
+		const result = await evalJs(`(() => {
+			const images = [...document.images].map((img) => {
+				const rect = img.getBoundingClientRect();
+				const resource = performance.getEntriesByName(img.currentSrc || img.src).slice(-1)[0];
+				const renderedWidth = Math.round(rect.width);
+				const renderedHeight = Math.round(rect.height);
+				const intrinsicRatio = renderedWidth > 0 ? img.naturalWidth / renderedWidth : 0;
+				return {
+					src: String(img.currentSrc || img.src || '').slice(0, 300), alt: img.getAttribute('alt'),
+					naturalWidth: img.naturalWidth || 0, naturalHeight: img.naturalHeight || 0,
+					renderedWidth, renderedHeight, bytes: resource ? (resource.transferSize || resource.encodedBodySize || 0) : 0,
+					oversized: (intrinsicRatio > 2.5 && img.naturalWidth > 1200) || (resource && (resource.transferSize || resource.encodedBodySize || 0) > 1000000)
+				};
+			});
+			const quality = window.__solsticeQuality || {};
+			const consoleErrors = [...new Set([...(quality.consoleErrors || []), ...(quality.runtimeErrors || [])])];
+			return {
+				url: location.href, title: document.title.trim(),
+				metaDescription: document.querySelector('meta[name="description"]')?.content?.trim() || '',
+				viewport: document.querySelector('meta[name="viewport"]')?.content?.trim() || '',
+				images, missingAlt: images.filter((img) => img.alt === null || !img.alt.trim()).length,
+				oversizedImages: images.filter((img) => img.oversized), consoleErrors,
+				lcpMs: Math.round(quality.lcp || performance.getEntriesByType('largest-contentful-paint').slice(-1)[0]?.startTime || 0)
+			};
+		})()`);
+		let score = 100;
+		const findings = [];
+		if (!result.title) { score -= 10; findings.push({ severity: "error", check: "title", message: "Missing document title" }); }
+		if (!result.metaDescription) { score -= 15; findings.push({ severity: "error", check: "meta", message: "Missing meta description" }); }
+		if (!result.viewport) { score -= 5; findings.push({ severity: "warning", check: "viewport", message: "Missing viewport meta tag" }); }
+		if (result.missingAlt) {
+			const penalty = Math.min(20, Math.ceil(20 * result.missingAlt / Math.max(1, result.images.length)));
+			score -= penalty;
+			findings.push({ severity: "error", check: "alt", message: `${result.missingAlt}/${result.images.length} images are missing alt text` });
+		}
+		if (result.oversizedImages.length) {
+			score -= Math.min(15, result.oversizedImages.length * 5);
+			findings.push({ severity: "warning", check: "images", message: `${result.oversizedImages.length} image(s) are oversized for their rendered dimensions or exceed 1 MB` });
+		}
+		if (result.consoleErrors.length) {
+			score -= Math.min(20, result.consoleErrors.length * 5);
+			findings.push({ severity: "error", check: "console", message: `${result.consoleErrors.length} console/runtime error(s) captured` });
+		}
+		if (!result.lcpMs) {
+			score -= 5;
+			findings.push({ severity: "warning", check: "lcp", message: "LCP was not observable in this browser run" });
+		} else if (result.lcpMs > 4000) {
+			score -= 15;
+			findings.push({ severity: "error", check: "lcp", message: `Rough LCP is ${result.lcpMs} ms (> 4000 ms)` });
+		} else if (result.lcpMs > 2500) {
+			score -= 7;
+			findings.push({ severity: "warning", check: "lcp", message: `Rough LCP is ${result.lcpMs} ms (> 2500 ms)` });
+		}
+		console.log(JSON.stringify({ ...result, score: Math.max(0, score), grade: score >= 90 ? "A" : score >= 80 ? "B" : score >= 70 ? "C" : score >= 60 ? "D" : "F", findings }, null, 2));
+	}, { headed: false });
+}
+
 // ---- shared Chrome + CDP session (search / read / crawl / live) ----
 // Mirrors the scrollshot/videoframes setup but exposes a tiny {send, evalJs, goto}
 // API so the text-oriented modes don't each re-implement the boilerplate.
@@ -633,7 +719,7 @@ function main() {
 		return;
 	}
 	if (!mode || !url || ((mode === "shot" || mode === "scrollshot" || mode === "videoframes" || mode === "showcase") && !out)) {
-		console.error("usage:\n  browse.js search <query> [count]            web search → ranked title/url/snippet list (no API key)\n  browse.js read <url>                        page main content as clean readable text/markdown\n  browse.js crawl <url> [depth] [maxPages]    same-site crawl → text of each page\n  browse.js live <url> [maxPages] [secPerPage] [keep]   VISIBLE browser tour the user watches (analysis text to stdout)\n  browse.js shot <url> <out.png> [WxH]        screenshot\n  browse.js scrollshot <url> <outPrefix> [stops]\n  browse.js videoframes <url> <outPrefix> [frames] [referrer]\n  browse.js showcase <url> <outDir> [maxAssets] lazy-load + download case-study media\n  browse.js dom <url>                         raw rendered HTML");
+		console.error("usage:\n  browse.js search <query> [count]            web search → ranked title/url/snippet list (no API key)\n  browse.js read <url>                        page main content as clean readable text/markdown\n  browse.js crawl <url> [depth] [maxPages]    same-site crawl → text of each page\n  browse.js live <url> [maxPages] [secPerPage] [keep]   VISIBLE browser tour the user watches (analysis text to stdout)\n  browse.js shot <url> <out.png> [WxH]        screenshot\n  browse.js scrollshot <url> <outPrefix> [stops]\n  browse.js videoframes <url> <outPrefix> [frames] [referrer]\n  browse.js showcase <url> <outDir> [maxAssets] lazy-load + download case-study media\n  browse.js audit <url>                       zero-dependency delivery quality audit (JSON)\n  browse.js dom <url>                         raw rendered HTML");
 		process.exit(2);
 	}
 	const bin = findBrowser();
@@ -655,6 +741,10 @@ function main() {
 			console.error(`showcase failed: ${err.message}`);
 			process.exit(1);
 		});
+		return;
+	}
+	if (mode === "audit") {
+		audit(bin, url).catch((err) => { console.error(`audit failed: ${err.message}`); process.exit(1); });
 		return;
 	}
 	if (mode === "scrollshot") {

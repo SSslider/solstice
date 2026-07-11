@@ -113,19 +113,27 @@
 	composerEl.insertBefore(pickBar, inputEl);
 
 	function pickLabel(p) {
+		const picks = Array.isArray(p && p.picks) && p.picks.length ? p.picks : [p];
+		if (picks.length > 1) return picks.length + " selected elements";
 		return (p.tag || "element") + (p.id ? "#" + p.id : "") +
 			(p.classes ? " ." + String(p.classes).split(" ")[0] : "");
 	}
-	function pickPrefix(p) {
+	function describePick(p) {
 		let attrs = "<" + (p.tag || "");
 		if (p.id) attrs += ' id="' + p.id + '"';
 		if (p.classes) attrs += ' class="' + p.classes + '"';
 		attrs += ">";
-		let s = "[Selected element in the live preview: " + attrs;
+		let s = attrs;
 		if (p.pathDesc) s += " inside " + p.pathDesc;
 		if (p.src) s += ', src="' + p.src + '"';
 		if (p.text) s += ', text: "' + p.text + '"';
-		return s + "] — apply the change below to THIS element only.";
+		return s;
+	}
+	function pickPrefix(p) {
+		const picks = Array.isArray(p && p.picks) && p.picks.length ? p.picks : [p];
+		if (picks.length === 1) return "[Selected element in the live preview: " + describePick(picks[0]) + "] — apply the change below to THIS element only.";
+		return "[Selected elements in the live preview — apply the same change to ALL " + picks.length + " elements:\n" +
+			picks.map(function (pick, index) { return (index + 1) + ". " + describePick(pick); }).join("\n") + "\n]";
 	}
 	function showPick(p) {
 		pendingPick = p;
@@ -1099,6 +1107,15 @@
 				break;
 			case "status":
 				if (msg.connected === false) { sysLine("Agent disconnected — " + (msg.detail || ""), "error"); setBusy(false); }
+				break;
+			case "planPending":
+				setBusy(true);
+				setActivity("Waiting for plan approval");
+				break;
+			case "interrupted":
+				setBusy(false);
+				setActivity(null);
+				sysLine(msg.stopped === false ? "Nothing active to stop." : "Stopped.", "info");
 				break;
 			case "approvalRequest":
 				approvalCard(msg.key, msg.method, msg.params);

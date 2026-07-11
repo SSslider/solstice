@@ -38,6 +38,10 @@ try { deploy = JSON.parse(fs.readFileSync(path.join(root, ".solstice", "deploy.j
 const liveUrl = liveUrlArg || deploy.liveUrl || "";
 const evidenceFiles = [...desktop, "mobile.png"];
 const evidence = Object.fromEntries(evidenceFiles.map((file) => [file, { bytes: fs.statSync(path.join(out, file)).size, sha256: sha256(path.join(out, file)) }]));
+let quality;
+try { quality = JSON.parse(run(["audit", previewUrl])); }
+catch (error) { fail(`delivery quality gate failed: ${error.message}`); }
+fs.writeFileSync(path.join(out, "quality-audit.json"), JSON.stringify(quality, null, 2) + "\n");
 const manifest = {
 	createdAt: new Date().toISOString(),
 	previewUrl,
@@ -46,6 +50,7 @@ const manifest = {
 	mobileScreenshot: "mobile.png",
 	fidelityFile: fs.existsSync(fidelityFile) ? ".solstice/FIDELITY.md" : null,
 	evidence,
+	quality: { score: quality.score, grade: quality.grade, lcpMs: quality.lcpMs, findings: quality.findings.length },
 };
 fs.writeFileSync(path.join(out, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
 fs.writeFileSync(path.join(out, "SHA256SUMS"), evidenceFiles.map((file) => `${evidence[file].sha256}  ${file}`).join("\n") + "\n");
@@ -54,6 +59,14 @@ const md = [
 	"## Links", "", `- Preview: ${previewUrl}`, `- Live production: ${liveUrl || "not deployed"}`, "",
 	"## Visual evidence", "", ...desktop.map((f, i) => `- [Desktop scroll depth ${i * 25}%](./${f})`), "- [Mobile viewport 390×844](./mobile.png)", "",
 	"## Fidelity", "", fidelity.trim(), "",
+	"## Delivery quality gate", "", `**${quality.score}/100 · Grade ${quality.grade}**`, "",
+	`- Meta: title ${quality.title ? "present" : "missing"}; description ${quality.metaDescription ? "present" : "missing"}; viewport ${quality.viewport ? "present" : "missing"}`,
+	`- Image accessibility: ${quality.missingAlt}/${quality.images.length} missing alt text`,
+	`- Image sizing: ${quality.oversizedImages.length} oversized image(s)`,
+	`- Console/runtime errors: ${quality.consoleErrors.length}`,
+	`- Rough LCP: ${quality.lcpMs ? `${quality.lcpMs} ms` : "not observed"}`, "",
+	...(quality.findings.length ? ["### Findings", "", ...quality.findings.map((finding) => `- **${finding.severity.toUpperCase()} · ${finding.check}:** ${finding.message}`), ""] : ["No quality findings in this run.", ""]),
+	"Raw audit: `quality-audit.json`", "",
 	"## Integrity", "", `- ${evidenceFiles.length} visual files captured`, "- SHA-256 checksums: `SHA256SUMS`", "- Machine-readable manifest: `manifest.json`", "",
 ].join("\n");
 fs.writeFileSync(path.join(out, "WALKTHROUGH.md"), md);
