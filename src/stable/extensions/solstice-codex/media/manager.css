@@ -19,7 +19,7 @@ body {
 .muted { opacity: 0.6; font-size: 11px; }
 .empty { opacity: 0.45; font-size: 12px; text-align: center; padding: 18px 8px; }
 
-#cols { display: grid; grid-template-columns: 240px 1fr 280px; height: 100vh; }
+#cols { display: grid; grid-template-columns: 320px 1fr 280px; height: 100vh; }
 
 .colHead {
 	display: flex; align-items: center; justify-content: space-between;
@@ -35,6 +35,22 @@ body {
 	background: var(--vscode-sideBar-background);
 }
 #threadList { flex: 1 1 auto; overflow-y: auto; padding: 4px; }
+.taskSummary { padding: 7px 12px 4px; font-size: 10px; opacity: 0.58; }
+#taskBoard { display: flex; flex-direction: column; gap: 7px; padding: 4px 8px 10px; max-height: 52vh; overflow-y: auto; }
+.subHead { padding: 7px 12px 3px; border-top: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.2)); font-size: 9px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; opacity: 0.5; }
+.taskCard { border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.25)); border-radius: 8px; padding: 8px; background: var(--vscode-editorWidget-background, rgba(128,128,128,0.07)); }
+.taskCard.sel { border-color: var(--vscode-focusBorder); box-shadow: 0 0 0 1px var(--vscode-focusBorder); }
+.taskCard.running { border-left: 3px solid #d29922; }
+.taskCard.awaiting_approval { border-left: 3px solid #f59e0b; background: rgba(245,158,11,0.08); }
+.taskCard.ready_review { border-left: 3px solid #3fb950; }
+.taskCard.error, .taskCard.missing { border-left: 3px solid #f85149; }
+.taskCard.merged, .taskCard.removed { opacity: 0.58; }
+.taskTop { display: flex; align-items: center; gap: 7px; }
+.taskName { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
+.taskStatus { flex: 0 0 auto; padding: 1px 6px; border-radius: 8px; font-size: 9px; background: rgba(128,128,128,0.16); }
+.taskMeta, .taskDiff { margin-top: 5px; font-size: 9.5px; opacity: 0.6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.taskDiff { font-family: var(--vscode-editor-font-family, monospace); }
+.taskActions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
 .threadRow {
 	display: flex; align-items: center; gap: 7px; padding: 7px 8px;
 	border-radius: 6px; cursor: pointer; font-size: 12px;
@@ -56,6 +72,11 @@ body {
 
 /* ---- work area ---- */
 #work { display: flex; flex-direction: column; min-width: 0; }
+#taskTabs { display: flex; gap: 6px; padding: 7px 10px; overflow-x: auto; border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.2)); background: var(--vscode-sideBar-background); }
+.taskTab { display: flex; align-items: center; gap: 6px; min-width: 140px; max-width: 230px; padding: 6px 9px; border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.25)); border-radius: 7px; background: var(--vscode-editorWidget-background, rgba(128,128,128,0.07)); color: inherit; cursor: pointer; }
+.taskTab.sel { border-color: var(--vscode-focusBorder); background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.taskTabName { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 650; text-align: left; }
+.taskTabPhase { flex: 0 0 auto; font-size: 9px; opacity: 0.65; }
 #workTitle { text-transform: none; letter-spacing: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #quota { font-size: 10px; opacity: 0.65; text-transform: none; letter-spacing: 0; }
 #quota.hot { color: #f85149; opacity: 1; }
@@ -140,6 +161,9 @@ details.reasoning:not(.done) summary {
 .dsum { font-size: 12px; font-weight: 600; margin-bottom: 5px; }
 .dfile { font-family: var(--vscode-editor-font-family, monospace); font-size: 10.5px; opacity: 0.8; padding: 1px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #diffBtn { margin-top: 8px; }
+#taskPreview { width: 100%; height: 210px; border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.25)); border-radius: 6px; background: #fff; }
+#mergeReviewPatch { max-height: 340px; overflow: auto; margin: 8px 0 0; padding: 8px; border-radius: 6px; background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3)); font-family: var(--vscode-editor-font-family, monospace); font-size: 9.5px; line-height: 1.4; white-space: pre; }
+#mergeReviewCard { border-color: #d29922; }
 
 .btn {
 	border: 1px solid var(--vscode-button-border, transparent); border-radius: 5px;

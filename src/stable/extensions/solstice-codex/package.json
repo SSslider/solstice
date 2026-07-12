@@ -211,15 +211,17 @@
         "solstice.codex.provider": {
           "type": "string",
           "enum": [
+            "gpt-5.6",
             "gpt-5.5",
             "claude",
             "grok-build",
             "composer-2.5"
           ],
           "enumDescriptions": [
+            "GPT-5.6 Sol via Codex CLI >=0.144 — latest flagship",
             "GPT-5.5 via the codex CLI (ChatGPT subscription) — full agent",
             "Claude Code via the claude CLI — DISABLED unless solstice.codex.allowClaude is true",
-            "Grok 4.3 Build via the grok CLI — agentic fallback",
+            "Grok 4.5 Build via the grok CLI (model id: grok-build) — agentic fallback",
             "Composer 2.5 Fast via the grok CLI — fast builder"
           ],
           "default": "composer-2.5",
@@ -323,6 +325,7 @@
             "type": "string"
           },
           "default": [
+            "gpt-5.6",
             "gpt-5.5",
             "composer-2.5",
             "grok-build"
@@ -415,6 +418,11 @@
               "wsUrl"
             ]
           }
+        },
+        "solstice.fleet.companionBridge": {
+          "type": "string",
+          "default": "orion",
+          "description": "Fleet bridge used as the outbound server relay for Companion 2.0. The phone never receives this bridge token; Vega proxies the authenticated socket server-side."
         },
         "solstice.liveness.enabled": {
           "type": "boolean",

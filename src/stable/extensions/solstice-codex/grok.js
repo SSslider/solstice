@@ -140,10 +140,14 @@ function unifiedDiff(relPath, oldText, newText) {
 // The auto-failover chain (package.json solstice.codex.failoverChain) references
 // these keys; Claude is intentionally excluded from any auto chain (gated).
 const MODEL_REGISTRY = {
-	"gpt-5.5": { label: "GPT-5.5 (Codex)", desc: "ChatGPT subscription — full agent: plans, approvals, image gen", runner: "codex", order: 0 },
-	"claude": { label: "Claude Code", desc: "claude CLI — opt-in via solstice.codex.allowClaude", runner: "claude", gated: true, order: 1 },
-	"grok-build": { label: "Grok 4.3 Build", desc: "grok CLI — agentic fallback when Codex quota runs out", runner: "grok", grokId: "grok-build", order: 2 },
-	"composer-2.5": { label: "Composer 2.5 Fast", desc: "grok CLI — fast builder", runner: "grok", grokId: "grok-composer-2.5-fast", order: 3 },
+	"gpt-5.6": { label: "GPT-5.6 Sol (Codex)", desc: "Latest flagship via Codex CLI >=0.144", runner: "codex", codexId: "gpt-5.6", order: 0 },
+	"gpt-5.5": { label: "GPT-5.5 (Codex)", desc: "ChatGPT subscription — full agent: plans, approvals, image gen", runner: "codex", codexId: "gpt-5.5", order: 1 },
+	"claude": { label: "Claude Code", desc: "claude CLI — opt-in via solstice.codex.allowClaude", runner: "claude", gated: true, order: 2 },
+	// The stable Grok CLI 0.2.93 advertises this exact id via `grok models`.
+	// Keep the stable id (rather than guessing a private/versioned slug) while
+	// presenting the current Grok Build generation in the picker.
+	"grok-build": { label: "Grok 4.5 Build", desc: "grok-build via the grok CLI — agentic fallback", runner: "grok", grokId: "grok-build", order: 3 },
+	"composer-2.5": { label: "Composer 2.5 Fast", desc: "grok CLI — fast builder", runner: "grok", grokId: "grok-composer-2.5-fast", order: 4 },
 };
 
 // Which CLI runner serves a given model key (defaults to codex).

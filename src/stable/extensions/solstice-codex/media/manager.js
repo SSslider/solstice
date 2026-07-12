@@ -5,7 +5,11 @@
 
 	let authMethod;
 	let threads = [];
+	let managerTasks = [];
+	let managerLimit = 2;
 	let selectedId = null;
+	let selectedTaskId = null;
+	let pendingMergeReview = null;
 	let activeTurnId = null;
 	let pendingSelect = null;       // thread to auto-select once it appears
 	let pendingPrompt = null;       // prompt to send once thread created (dev hook)
@@ -15,9 +19,12 @@
 		<div id="cols">
 			<div id="inbox">
 				<div class="colHead">
-					<span>Threads</span>
-					<button id="newBtn" class="btn primary small">+ New</button>
+					<span>Manager View</span>
+					<button id="newBtn" class="btn primary small">+ Build</button>
 				</div>
+				<div id="taskSummary" class="taskSummary"></div>
+				<div id="taskBoard"></div>
+				<div class="subHead">Other threads</div>
 				<div id="threadList"></div>
 			</div>
 			<div id="work">
@@ -25,6 +32,7 @@
 					<span id="workTitle">Agent Manager</span>
 					<span id="quota"></span>
 				</div>
+				<div id="taskTabs"></div>
 				<div id="messages"><div class="empty">Select a thread or start a new one.</div></div>
 				<div id="composer">
 					<textarea id="input" rows="3" placeholder="Describe a task — or steer the running turn…"></textarea>
@@ -49,6 +57,19 @@
 						<button id="previewBtn" class="btn small">Preview site</button>
 					</div>
 				</div>
+				<div id="taskPreviewCard" class="art hidden">
+					<div class="artTitle">Live preview</div>
+					<iframe id="taskPreview" title="Selected build preview"></iframe>
+				</div>
+				<div id="mergeReviewCard" class="art hidden">
+					<div class="artTitle">Merge review</div>
+					<div id="mergeReviewMeta" class="muted"></div>
+					<pre id="mergeReviewPatch"></pre>
+					<div class="btnBar">
+						<button id="confirmMergeBtn" class="btn primary small">Apply reviewed diff</button>
+						<button id="cancelMergeBtn" class="btn small">Cancel</button>
+					</div>
+				</div>
 				<div id="wtCard" class="art hidden">
 					<div class="artTitle">Walkthrough</div>
 					<div id="wtBody"></div>
@@ -66,9 +87,10 @@
 
 	const $ = (id) => document.getElementById(id);
 	const messagesEl = $("messages"), inputEl = $("input"), sendBtn = $("sendBtn"), stopBtn = $("stopBtn");
-	const threadListEl = $("threadList"), quotaEl = $("quota"), workTitleEl = $("workTitle");
+	const threadListEl = $("threadList"), taskBoardEl = $("taskBoard"), taskTabsEl = $("taskTabs"), taskSummaryEl = $("taskSummary"), quotaEl = $("quota"), workTitleEl = $("workTitle");
 	const planCard = $("planCard"), planBody = $("planBody"), diffCard = $("diffCard"), diffStat = $("diffStat"), noArt = $("noArt");
 	const wtCard = $("wtCard"), wtBody = $("wtBody");
+	const taskPreviewCard = $("taskPreviewCard"), taskPreview = $("taskPreview"), mergeReviewCard = $("mergeReviewCard"), mergeReviewPatch = $("mergeReviewPatch"), mergeReviewMeta = $("mergeReviewMeta");
 	let walk = null; // current-turn walkthrough: {commands:[], files:Set, message:""}
 
 	function el(tag, cls, text) {
@@ -83,11 +105,13 @@
 	const STATUS_LABEL = { active: "running", idle: "idle", systemError: "error", notLoaded: "" };
 	function renderThreads() {
 		threadListEl.innerHTML = "";
-		if (!threads.length) {
-			threadListEl.appendChild(el("div", "empty", "No threads yet."));
+		const taskThreads = new Set(managerTasks.map((task) => task.threadId).filter(Boolean));
+		const otherThreads = threads.filter((thread) => !taskThreads.has(thread.id));
+		if (!otherThreads.length) {
+			threadListEl.appendChild(el("div", "empty", "No other threads."));
 			return;
 		}
-		for (const t of threads) {
+		for (const t of otherThreads) {
 			const row = el("div", "threadRow" + (t.id === selectedId ? " sel" : ""));
 			const dot = el("span", "tdot " + (t.status || ""));
 			row.appendChild(dot);
@@ -108,9 +132,92 @@
 		}
 	}
 
+	const TASK_LABEL = {
+		creating: "Creating", idle: "Ready", running: "Running", awaiting_approval: "Needs approval",
+		ready_review: "Review", merged: "Merged", error: "Error", missing: "Missing", removed: "Removed",
+	};
+	function selectedTask() {
+		return managerTasks.find((task) => task.id === selectedTaskId || task.threadId === selectedId) || null;
+	}
+	function selectManagerTask(task) {
+		selectedTaskId = task.id;
+		if (task.threadId) selectThread(task.threadId);
+		else renderManagerTasks();
+	}
+	function renderTaskTabs() {
+		taskTabsEl.innerHTML = "";
+		managerTasks.filter((task) => !["removed"].includes(task.status)).forEach((task, index) => {
+			const tab = el("button", "taskTab" + (task.id === selectedTaskId || task.threadId === selectedId ? " sel" : ""));
+			tab.appendChild(el("span", "tdot " + (task.status === "running" ? "active" : task.status === "error" ? "systemError" : "idle")));
+			tab.appendChild(el("span", "taskTabName", task.label || `Agent ${index + 1}`));
+			tab.appendChild(el("span", "taskTabPhase", TASK_LABEL[task.status] || task.status));
+			tab.addEventListener("click", () => selectManagerTask(task));
+			taskTabsEl.appendChild(tab);
+		});
+	}
+	function renderSelectedTaskArtifacts() {
+		const task = selectedTask();
+		if (!task) { taskPreviewCard.classList.add("hidden"); return; }
+		selectedTaskId = task.id;
+		if (task.plan && task.plan.length) renderPlan(task.plan);
+		if (task.previewUrl) {
+			taskPreviewCard.classList.remove("hidden");
+			if (taskPreview.dataset.url !== task.previewUrl) { taskPreview.dataset.url = task.previewUrl; taskPreview.src = task.previewUrl; }
+		} else taskPreviewCard.classList.add("hidden");
+		updateNoArt();
+	}
+	function renderManagerTasks() {
+		taskBoardEl.innerHTML = "";
+		const active = managerTasks.filter((task) => ["creating", "idle", "running", "awaiting_approval", "ready_review"].includes(task.status)).length;
+		taskSummaryEl.textContent = `${active}/${managerLimit} slots · isolated worktrees`;
+		for (const task of managerTasks) {
+			const card = el("div", "taskCard " + (task.status || "") + (task.threadId === selectedId ? " sel" : ""));
+			const top = el("div", "taskTop");
+			top.appendChild(el("span", "tdot " + (task.status === "running" ? "active" : task.status === "error" ? "systemError" : "idle")));
+			top.appendChild(el("span", "taskName", task.label || task.id));
+			top.appendChild(el("span", "taskStatus", TASK_LABEL[task.status] || task.status));
+			card.appendChild(top);
+			card.appendChild(el("div", "taskMeta", `${task.phase || "workspace"} · ${task.changedFiles || 0} changed`));
+			if (task.diffStat) card.appendChild(el("div", "taskDiff", task.diffStat.split("\n").slice(-1)[0]));
+			const actions = el("div", "taskActions");
+			if (task.threadId) {
+				const open = el("button", "btn small", "Open");
+				open.addEventListener("click", () => selectManagerTask(task));
+				actions.appendChild(open);
+				const preview = el("button", "btn small", "Preview");
+				preview.addEventListener("click", () => vscode.postMessage({ type: "openManagerTaskPreview", taskId: task.id }));
+				actions.appendChild(preview);
+			}
+			if (task.status === "running" || task.status === "awaiting_approval") {
+				const stop = el("button", "btn danger small", "Stop");
+				stop.addEventListener("click", () => vscode.postMessage({ type: "interrupt", threadId: task.threadId }));
+				actions.appendChild(stop);
+			}
+			if (["idle", "ready_review"].includes(task.status)) {
+				const inspect = el("button", "btn small", "Refresh diff");
+				inspect.addEventListener("click", () => vscode.postMessage({ type: "inspectManagerTask", taskId: task.id }));
+				actions.appendChild(inspect);
+			}
+			if (task.status === "ready_review" && (task.changedFiles || 0) > 0) {
+				const merge = el("button", "btn primary small", "Review merge diff");
+				merge.addEventListener("click", () => { selectManagerTask(task); vscode.postMessage({ type: "reviewManagerTask", taskId: task.id }); });
+				actions.appendChild(merge);
+			}
+			card.appendChild(actions);
+			card.addEventListener("click", (event) => { if (!event.target.closest("button")) selectManagerTask(task); });
+			taskBoardEl.appendChild(card);
+		}
+		if (!managerTasks.length) taskBoardEl.appendChild(el("div", "empty", "Start up to two isolated builds."));
+		renderTaskTabs();
+		renderSelectedTaskArtifacts();
+		renderThreads();
+	}
+
 	function selectThread(id) {
 		selectedId = id;
-		renderThreads();
+		const task = managerTasks.find((row) => row.threadId === id);
+		if (task) selectedTaskId = task.id;
+		renderManagerTasks();
 		messagesEl.innerHTML = "";
 		messagesEl.appendChild(el("div", "empty", "Loading thread…"));
 		vscode.postMessage({ type: "selectThread", threadId: id });
@@ -118,6 +225,7 @@
 
 	function clearWork() {
 		selectedId = null;
+		selectedTaskId = null;
 		activeTurnId = null;
 		live.clear();
 		messagesEl.innerHTML = "";
@@ -126,14 +234,26 @@
 		diffCard.classList.add("hidden");
 		resetWalkthrough();
 		noArt.classList.remove("hidden");
+		taskPreviewCard.classList.add("hidden");
+		mergeReviewCard.classList.add("hidden");
 		setBusy(false);
 	}
 
 	// ---------- composer ----------
-	$("newBtn").addEventListener("click", () => vscode.postMessage({ type: "newThread" }));
+	$("newBtn").addEventListener("click", () => {
+		const prompt = window.prompt("Describe the build task");
+		if (!prompt || !prompt.trim()) return;
+		vscode.postMessage({ type: "createManagerTask", label: prompt.trim().split("\n")[0].slice(0, 80), prompt: prompt.trim() });
+	});
 	$("loginBtn").addEventListener("click", () => vscode.postMessage({ type: "login" }));
 	$("diffBtn").addEventListener("click", () => vscode.postMessage({ type: "openDiff", threadId: selectedId }));
 	$("previewBtn").addEventListener("click", () => vscode.postMessage({ type: "openPreview" }));
+	$("confirmMergeBtn").addEventListener("click", () => {
+		if (!pendingMergeReview) return;
+		vscode.postMessage({ type: "mergeManagerTask", taskId: pendingMergeReview.taskId, patchHash: pendingMergeReview.patchHash });
+		$("confirmMergeBtn").disabled = true;
+	});
+	$("cancelMergeBtn").addEventListener("click", () => { pendingMergeReview = null; mergeReviewCard.classList.add("hidden"); updateNoArt(); });
 	stopBtn.addEventListener("click", () => vscode.postMessage({ type: "interrupt", threadId: selectedId }));
 	sendBtn.addEventListener("click", send);
 	inputEl.addEventListener("keydown", (e) => {
@@ -380,7 +500,7 @@
 	}
 
 	function updateNoArt() {
-		const any = !planCard.classList.contains("hidden") || !diffCard.classList.contains("hidden") || !wtCard.classList.contains("hidden");
+		const any = !planCard.classList.contains("hidden") || !diffCard.classList.contains("hidden") || !wtCard.classList.contains("hidden") || !taskPreviewCard.classList.contains("hidden") || !mergeReviewCard.classList.contains("hidden");
 		noArt.classList.toggle("hidden", any);
 	}
 
@@ -496,6 +616,33 @@
 				} else {
 					renderThreads();
 				}
+				break;
+			case "managerTasks":
+				managerTasks = msg.tasks || [];
+				managerLimit = msg.limit || 2;
+				renderManagerTasks();
+				break;
+			case "managerPreview": {
+				const task = managerTasks.find((row) => row.id === msg.taskId);
+				if (task) task.previewUrl = msg.url;
+				if (msg.taskId === selectedTaskId) renderSelectedTaskArtifacts();
+				break;
+			}
+			case "managerMergeReview":
+				pendingMergeReview = { taskId: msg.taskId, patchHash: msg.patchHash };
+				mergeReviewMeta.textContent = `${msg.patchBytes || 0} bytes · SHA-256 ${String(msg.patchHash || "").slice(0, 12)}… · git apply --check runs again on merge`;
+				mergeReviewPatch.textContent = msg.patch || "";
+				$("confirmMergeBtn").disabled = false;
+				mergeReviewCard.classList.remove("hidden");
+				updateNoArt();
+				break;
+			case "managerMerged":
+				pendingMergeReview = null;
+				mergeReviewCard.classList.add("hidden");
+				updateNoArt();
+				break;
+			case "managerTaskCreated":
+				if (msg.task && msg.task.threadId) selectThread(msg.task.threadId);
 				break;
 			case "threadCreated":
 				selectedId = msg.threadId;

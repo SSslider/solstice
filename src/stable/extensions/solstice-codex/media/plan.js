@@ -8,12 +8,13 @@
 			<header id="pHero">
 				<div class="pHeroRing"><div id="pRing"></div><span id="pRingTxt">0%</span></div>
 				<div class="pHeroText">
-					<div class="pKicker"><span class="pIcon">🗺</span> תוכנית בנייה <span id="pLive" class="pLive"><span class="pPulse"></span>LIVE</span></div>
+				<div class="pKicker"><span class="pIcon">🗺</span> תוכנית זורמת <span id="pLive" class="pLive"><span class="pPulse"></span>LIVE</span></div>
 					<h1 id="pTitle">ממתין לתוכנית מהסוכן…</h1>
 					<div id="pStatus" class="pStatus"></div>
 					<div id="pChips" class="pChips"></div>
 				</div>
 			</header>
+			<div id="pFlowMeta" class="pApprovalNote">הביצוע מתחיל מיד. אפשר לכוון מחדש דרך הערה — בלי לעצור או לפתוח פרויקט מחדש.</div>
 			<section id="pApproval" hidden>
 				<label for="pPrompt">ערוך את המשימה לפני ביצוע</label>
 				<textarea id="pPrompt" rows="6"></textarea>
@@ -24,7 +25,7 @@
 			</section>
 			<section id="pAnnotations">
 				<div class="pAnnotationTitle">📝 הערה על ה-artifact</div>
-				<div class="pAnnotationRow"><select id="pArtifact"><option value="PLAN.md">Plan</option><option value="WALKTHROUGH.md">Walkthrough</option></select><input id="pAnnotation" placeholder="כתוב שינוי או תיקון — הוא ייכנס לתור הפעיל בלי restart"><button id="pAnnotate">הוסף לתור</button></div>
+				<div class="pAnnotationRow"><select id="pArtifact"><option value="PLAN.md">Plan</option><option value="WALKTHROUGH.md">Walkthrough</option></select><input id="pAnnotation" placeholder="כתוב שינוי או תיקון — הוא ייכנס ל-turn הפעיל בלי restart"><button id="pAnnotate">עדכן תוך כדי</button></div>
 				<div id="pAnnotationMeta" class="pApprovalNote"></div>
 			</section>
 			<div id="pBody"><div id="pEmpty">הסוכן יפרק את העבודה לשלבים — הם יופיעו כאן בזמן אמת.</div></div>
@@ -152,6 +153,9 @@
 			for (const q of questions) { const wrap = el("label", "pQuestion"); wrap.appendChild(el("span", "pQuestionLabel", q.label + (q.required ? " *" : ""))); const input = el("input", "pQuestionInput"); input.dataset.q = q.id; input.placeholder = q.placeholder || ""; input.value = (m.answers || {})[q.id] || ""; input.addEventListener("input", scheduleReplan); wrap.appendChild(input); questionsEl.appendChild(wrap); }
 			approvalMetaEl.textContent = (m.researched ? "המחקר המקדים הושלם · " : "") + "תבנית " + (m.projectType || "project") + " · גרסה " + revision + ". שינוי נוסף דורש re-plan לפני ביצוע.";
 			dirty = false; approvalEl.hidden = false; promptEl.focus();
+		} else if (m.type === "planFlowing") {
+			approvalEl.hidden = true;
+			document.getElementById("pFlowMeta").textContent = "הביצוע רץ עכשיו. כל הערה נשלחת ל-turn הפעיל ומעדכנת את התוכנית בלי לעצור אותו.";
 		}
 	});
 

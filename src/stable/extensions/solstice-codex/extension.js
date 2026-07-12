@@ -6,12 +6,18 @@ const path = require("path");
 const os = require("os");
 const { spawn } = require("child_process");
 const { CodexClient, resolveCodexBinary } = require("./codexClient");
+const { checkCodexModelCompatibility } = require("./codexCompatibility");
+const { isPureLaunchIntent } = require("./intent");
 const { PreviewServer, DevServer, detectDevServerUrl, hasFramework } = require("./preview");
 const { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, resolveGrokBinary, grokBundlePresent, killTree } = require("./grok");
 const { ClaudeProvider, CLAUDE_LABEL } = require("./claude");
 const { FleetBridge } = require("./fleetBridge");
 const { FelixSkills, skillProgress } = require("./felixSkills");
 const { captureBuild, projectContext, captureAnnotation, ensureScheduledCheck, dueScheduledChecks } = require("./projectBrain");
+const { ManagerWorktrees } = require("./managerWorktrees");
+const { createReviewHandler } = require("./reviewShare");
+const { runBugbot } = require("./bugbot");
+const { listenOnFirstAvailable } = require("./companionPort");
 
 // Resolve a bare CLI name against PATH the same way child_process.spawn would,
 // so we can tell BEFORE spawning whether the model binary actually exists on
@@ -343,11 +349,22 @@ class AgentController {
 		this.activeFleetAgent = null;  // fleet agent the live build is attributed to
 		this._pendingRecovery = null;  // unfinished build read from .solstice/BUILD.json on activation
 		this._verifyTaskId = null;     // taskId already given its one auto self-verify pass
+		this._bugbotTaskId = null;     // taskId already reviewed after self-verify
+		this._bugbotRunning = false;
 		this.output = vscode.window.createOutputChannel("Felix");
 		this.skills = null;            // Felix's private self-improvement store (Phase 6)
 		this.scheduledCheckTimer = null;
 		this._scheduledCheckRunning = false;
 		this.activeCliChildren = new Set(); // walkthrough/deploy/helper processes stopped by global Stop
+		this.managerTasks = null;       // CP-7: isolated build task/worktree registry
+		this.managerPreviews = new Map(); // taskId -> PreviewServer
+		this.managerDevServers = new Map(); // taskId -> DevServer
+		this._companionRelayTimer = null;
+		this._companionPreviewImage = "";
+		try {
+			const root = workspaceCwd();
+			if (root && fs.existsSync(path.join(root, ".git"))) this.managerTasks = new ManagerWorktrees(root, { limit: 2, log: (m) => this.output.append(m) });
+		} catch (e) { this.output.append("[manager] init failed: " + (e && e.message || e) + "\n"); }
 		try {
 			this.skills = new FelixSkills({
 				dir: path.join(context.globalStorageUri.fsPath, "felix-skills"),
@@ -384,6 +401,7 @@ class AgentController {
 		this.announceAgentMessage("📝 הערת artifact נקלטה לתור: " + String(note).slice(0, 120));
 		if (this.threadId) await this.steer(this.threadId, saved.prompt);
 		else { this._planApprovalBypass = true; await this.send(saved.prompt); }
+		return saved;
 	}
 
 	// ---- stuck-agent watchdog ----------------------------------------------
@@ -574,7 +592,73 @@ class AgentController {
 	}
 
 	// ---- Phone Companion (PWA): drive Felix + watch the build live from a phone ----
-	_companion() { return (this.companionState = this.companionState || { messages: [], plan: [], files: [], previewUrl: "", liveUrl: "", building: false, model: "", ts: 0 }); }
+	_companion() { return (this.companionState = this.companionState || { messages: [], plan: [], files: [], previewUrl: "", liveUrl: "", building: false, model: "", managerTasks: [], ts: 0 }); }
+	companionInstanceId() {
+		const root = workspaceCwd() || "no-workspace";
+		return "solstice:" + crypto.createHash("sha256").update(root).digest("hex").slice(0, 20);
+	}
+	companionBridgeId() {
+		const configured = String(this.fleetCfg().get("companionBridge") || "orion").trim();
+		return configured || "orion";
+	}
+	companionReviewLinks() {
+		const root = workspaceCwd(); if (!root) return [];
+		try {
+			const registry = JSON.parse(fs.readFileSync(path.join(root, ".solstice", "review-shares.json"), "utf8"));
+			return Object.values(registry || {}).filter((x) => x && !x.revoked).slice(-12).map((x) => ({ shareId: x.shareId, path: `/review/${x.shareId}/`, createdAt: x.createdAt || "" }));
+		} catch { return []; }
+	}
+	companionRelayState() {
+		const s = this._companion();
+		const root = workspaceCwd() || "";
+		return {
+			...s,
+			project: root ? path.basename(root) : "No workspace",
+			workspace: root,
+			connected: true,
+			planMode: this.pendingPlanApproval ? "approval" : ((s.building || (s.plan && s.plan.length)) ? "flowing" : "idle"),
+			planPending: !!this.pendingPlanApproval,
+			planDraft: this.pendingPlanApproval ? {
+				prompt: this.pendingPlanApproval.prompt || "",
+				questions: this.pendingPlanApproval.questions || [],
+				answers: this.pendingPlanApproval.answers || {},
+				revision: this.pendingPlanApproval.revision || 0,
+			} : null,
+			reviewLinks: this.companionReviewLinks(),
+			previewImage: this._companionPreviewImage || "",
+		};
+	}
+	scheduleCompanionRelay() {
+		if (this._companionRelayTimer) return;
+		this._companionRelayTimer = setTimeout(() => {
+			this._companionRelayTimer = null;
+			this.publishCompanionState();
+		}, 120);
+	}
+	publishCompanionState() {
+		const id = this.companionBridgeId();
+		const rec = this.fleetBridges.get(id);
+		if (!rec || !rec.ws || !rec.ws.connected || !rec.companionReady) return false;
+		try {
+			rec.ws.send({ type: "companion_state", instanceId: this.companionInstanceId(), state: this.companionRelayState() });
+			return true;
+		} catch (e) { this.output.append("[companion relay] " + (e && e.message || e) + "\n"); return false; }
+	}
+	ensureCompanionRelay() {
+		const id = this.companionBridgeId();
+		const ws = this.ensureFleetBridge(id);
+		return !!ws;
+	}
+	syncCompanionManagerTasks() {
+		const s = this._companion();
+		s.managerTasks = this.managerTaskList().map((task) => ({
+			id: task.id, label: task.label, threadId: task.threadId, status: task.status,
+			phase: task.phase, plan: task.plan || [], changedFiles: task.changedFiles || 0,
+			previewUrl: task.previewUrl || "", updatedAt: task.updatedAt,
+		}));
+		s.ts = Date.now();
+		this.scheduleCompanionRelay();
+	}
 	captureCompanionState(method, params) {
 		const s = this._companion();
 		try { s.model = (this.cfg().get("provider") || "composer-2.5"); } catch (e) {}
@@ -590,15 +674,69 @@ class AgentController {
 		s.messages = s.messages.slice(-40);
 		s.files = s.files.slice(0, 24);
 		s.ts = Date.now();
+		this.scheduleCompanionRelay();
 	}
-	companionUserMessage(text) { const s = this._companion(); s.messages.push({ role: "user", text: String(text).slice(0, 2000) }); s.ts = Date.now(); }
+	companionUserMessage(text) { const s = this._companion(); s.messages.push({ role: "user", text: String(text).slice(0, 2000) }); s.ts = Date.now(); this.scheduleCompanionRelay(); }
+	async handleCompanionAction(frame) {
+		if (String(frame.instanceId || "") !== this.companionInstanceId()) return;
+		const requestId = String(frame.requestId || "");
+		const action = String(frame.action || "");
+		const payload = frame.payload && typeof frame.payload === "object" ? frame.payload : {};
+		let ok = false, error = "";
+		try {
+			if (action === "prompt") {
+				const text = String(payload.text || "").trim().slice(0, 8000);
+				if (!text) throw new Error("Prompt is empty");
+				this.companionUserMessage(text);
+				if (this._companion().building && this.threadId) await this.steer(this.threadId, text); else await this.send(text);
+			} else if (action === "update_plan") {
+				if (this.pendingPlanApproval) this.replanPendingBuild(payload.prompt, payload.answers);
+				else {
+					const note = String(payload.prompt || "").trim().slice(0, 4000);
+					if (!note) throw new Error("Plan update is empty");
+					await this.queueArtifactAnnotation("PLAN.md", note);
+				}
+			} else if (action === "approve_plan") {
+				if (this.pendingPlanApproval) {
+					this.replanPendingBuild(payload.prompt, payload.answers, { final: true });
+					const prompt = this.approvedBuildPrompt(this.pendingPlanApproval);
+					this.pendingPlanApproval = null;
+					this._planApprovalBypass = true;
+					this._walkthroughPending = true;
+					await this.send(prompt);
+				}
+			} else if (action === "annotate_plan") {
+				const note = String(payload.note || payload.prompt || "").trim().slice(0, 4000);
+				if (!note) throw new Error("Plan note is empty");
+				await this.queueArtifactAnnotation("PLAN.md", note);
+			} else if (action === "stop") {
+				const taskId = String(payload.taskId || "");
+				const task = taskId && this.managerTasks && this.managerTasks.get(taskId);
+				await this.interrupt(task && task.threadId ? task.threadId : this.threadId);
+			} else if (action === "refresh_preview") {
+				if (!this.previewUrl) throw new Error("No live preview yet");
+				const shot = await this.capturePreviewShot(this.previewUrl, "companion", "390x844");
+				if (!shot) throw new Error("Preview capture failed");
+				const data = fs.readFileSync(shot);
+				if (data.length > 1_400_000) throw new Error("Preview capture is too large to relay");
+				this._companionPreviewImage = "data:image/png;base64," + data.toString("base64");
+			}
+			ok = true;
+		} catch (e) { error = String(e && e.message || e); }
+		this.scheduleCompanionRelay();
+		const rec = this.fleetBridges.get(this.companionBridgeId());
+		try { if (rec && rec.ws) rec.ws.send({ type: "companion_ack", instanceId: this.companionInstanceId(), requestId, ok, error }); } catch { }
+	}
 	async startCompanion() {
-		if (this._companionServer) { vscode.window.showInformationMessage(`Solstice Companion רץ על http://127.0.0.1:${this._companionPort} — חבר tunnel כדי לגשת מהפלאפון.`); return this._companionPort; }
+		this.ensureCompanionRelay();
+		if (this._companionServer) { vscode.window.showInformationMessage(`📱 Companion 2.0 מחובר ל-Vega. אבחון מקומי: 127.0.0.1:${this._companionPort}`); return this._companionPort; }
 		const http = require("http");
-		const port = 8794;
-		const srv = http.createServer((req, res) => {
+		const ports = [8794, 8795, 8796, 8797, 8798, 8799];
+		const reviewHandler = createReviewHandler(workspaceCwd(), (_root, artifact, note) => this.queueArtifactAnnotation(artifact, note));
+		const srv = http.createServer(async (req, res) => {
 			const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type" };
 			if (req.method === "OPTIONS") { res.writeHead(204, cors); res.end(); return; }
+			if (await reviewHandler(req, res)) return;
 			const u = (req.url || "/").split("?")[0];
 			if (u === "/" || u === "/index.html") { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...cors }); res.end(companionHtml()); return; }
 			if (u === "/state") { res.writeHead(200, { "Content-Type": "application/json", ...cors }); res.end(JSON.stringify(this.companionState || {})); return; }
@@ -613,11 +751,34 @@ class AgentController {
 				});
 				return;
 			}
+			if (u === "/manager/stop" && req.method === "POST") {
+				let body = ""; req.on("data", (d) => { body += d; if (body.length > 10000) req.destroy(); });
+				req.on("end", async () => {
+					let ok = false;
+					try {
+						const task = this.managerTasks && this.managerTasks.get((JSON.parse(body || "{}").taskId || "").trim());
+						if (task && task.threadId) { await this.interrupt(task.threadId); ok = true; }
+					} catch (e) {}
+					res.writeHead(ok ? 200 : 404, { "Content-Type": "application/json", ...cors }); res.end(JSON.stringify({ ok }));
+				});
+				return;
+			}
 			res.writeHead(404, cors); res.end("not found");
 		});
-		srv.on("error", (e) => { try { this.output.append("companion server: " + e.message + "\n"); } catch (x) {} });
-		try { srv.listen(port, "127.0.0.1"); this._companionServer = srv; this._companionPort = port; vscode.window.showInformationMessage(`📱 Solstice Companion חי על http://127.0.0.1:${port}. הרץ tunnel (cloudflared) לכתובת הזו כדי לפתוח מהפלאפון.`); } catch (e) {}
-		return port;
+		try {
+			const port = await listenOnFirstAvailable(srv, ports);
+			this._companionServer = srv;
+			this._companionPort = port;
+			srv.on("error", (e) => { try { this.output.append("companion server: " + e.message + "\n"); } catch (x) {} });
+			vscode.window.showInformationMessage(`📱 Companion 2.0 מחובר ל-Vega. אבחון מקומי: 127.0.0.1:${port}`);
+			return port;
+		} catch (e) {
+			try { srv.close(); } catch (x) {}
+			const detail = String(e && e.message || e);
+			try { this.output.append("companion server failed: " + detail + "\n"); } catch (x) {}
+			vscode.window.showErrorMessage(`Companion 2.0 relay מחובר, אבל שרת האבחון המקומי לא נפתח: ${detail}`);
+			return null;
+		}
 	}
 
 	// ---- production deploy -------------------------------------------------
@@ -1362,8 +1523,10 @@ self.addEventListener("fetch", (e) => {
 		const approveLabel = "Approve once";
 		return new Promise((resolve) => {
 			const key = crypto.randomUUID();
-			this.pendingApprovals.set(key, { resolve, creditGate: true });
+			this.pendingApprovals.set(key, { resolve, creditGate: true, threadId: guarded && guarded.threadId });
 			const tid = guarded && guarded.threadId;
+			const task = this.managerTasks && tid ? this.managerTasks.forThread(tid) : null;
+			if (task) { this.managerTasks.setStatus(task.id, "awaiting_approval"); this.pushManagerTasks(); }
 			if (!tid || tid === this.threadId) this.post({ type: "approvalRequest", key, method, params: guarded });
 			this.postManager({ type: "approvalRequest", key, method, params: guarded });
 			if (!this.webview && !this.manager) {
@@ -1463,6 +1626,12 @@ self.addEventListener("fetch", (e) => {
 		}
 		return binOnPath(this.runnerBin(runner));
 	}
+	modelAvailable(key) {
+		const runner = runnerFor(key);
+		if (!this.runnerAvailable(runner)) return false;
+		if (key === "gpt-5.6") return checkCodexModelCompatibility(key, this.runnerBin("codex")).ok;
+		return true;
+	}
 
 	// The provider we can ACTUALLY run on this machine. If the configured
 	// provider's CLI isn't installed (the desktop case — codex/grok/claude are
@@ -1471,9 +1640,9 @@ self.addEventListener("fetch", (e) => {
 	// setup card instead of spawning straight into ENOENT.
 	effectiveProvider() {
 		const want = this.providerKey();
-		if (this.runnerAvailable(runnerFor(want))) return want;
+		if (this.modelAvailable(want)) return want;
 		for (const k of this.failoverChain()) {
-			if (k !== want && this.runnerAvailable(runnerFor(k))) return k;
+			if (k !== want && this.modelAvailable(k)) return k;
 		}
 		// last resort: a gated-but-allowed claude that happens to be installed
 		if (this.claudeAllowed() && this.runnerAvailable("claude")) return "claude";
@@ -1485,6 +1654,15 @@ self.addEventListener("fetch", (e) => {
 	// Returns true when the agent can proceed, false when it cannot.
 	ensureRunnableProvider() {
 		const want = this.providerKey();
+		if (want === "gpt-5.6") {
+			const compatibility = checkCodexModelCompatibility(want, this.runnerBin("codex"));
+			if (!compatibility.ok) {
+				this.output.append(`\n[codex] ${compatibility.message}\n`);
+				this.onNotification("error", { threadId: this.threadId, error: { message: compatibility.message } });
+				vscode.window.showErrorMessage(`Solstice: GPT-5.6 needs Codex CLI >=${compatibility.required}; installed ${compatibility.installed}. Run npm i -g @openai/codex@latest, then set solstice.codex.path to the new binary.`);
+				return false;
+			}
+		}
 		const eff = this.effectiveProvider();
 		if (eff === null) {
 			const runner = runnerFor(want);
@@ -1550,7 +1728,7 @@ self.addEventListener("fetch", (e) => {
 		const k = this.providerKey();
 		if (k === "claude") return CLAUDE_LABEL;
 		const m = MODEL_REGISTRY[k];
-		return k === "gpt-5.5" ? "gpt-5.5" : (m ? m.label : k);
+		return m ? m.label : k;
 	}
 
 	// Single source of truth for the model list — shared by the command-palette
@@ -1676,7 +1854,7 @@ self.addEventListener("fetch", (e) => {
 	// freshest non-Claude models. Config-driven so newer/stronger models can be
 	// slotted in without code changes.
 	failoverChain() {
-		const def = ["gpt-5.5", "composer-2.5", "grok-build"];
+		const def = ["gpt-5.6", "gpt-5.5", "composer-2.5", "grok-build"];
 		let chain = this.cfg().get("failoverChain");
 		if (!Array.isArray(chain) || !chain.length) chain = def;
 		// hard guard: claude can never enter the automatic chain
@@ -1692,14 +1870,14 @@ self.addEventListener("fetch", (e) => {
 		if (!this._failoverTried) this._failoverTried = new Set();
 		this._failoverTried.add(cur);
 		// only fail over to a model whose CLI is actually installed here
-		const next = chain.find((k) => !this._failoverTried.has(k) && this.runnerAvailable(runnerFor(k)));
+		const next = chain.find((k) => !this._failoverTried.has(k) && this.modelAvailable(k));
 		if (!next) {
 			// chain exhausted — fall back to the manual prompt (may include Claude
 			// if the user opted in) so the build isn't silently stuck.
 			this.suggestFallback();
 			return;
 		}
-		const label = (k) => k === "gpt-5.5" ? "GPT-5.5" : (GROK_MODELS[k] ? GROK_MODELS[k].label : k);
+		const label = (k) => MODEL_REGISTRY[k] ? MODEL_REGISTRY[k].label : k;
 		this.output.append(`\n[failover] ${label(cur)} hit ${reason}; switching to ${label(next)} and retrying.\n`);
 		vscode.window.setStatusBarMessage(`Solstice: ${label(cur)} → ${label(next)} (auto-failover)`, 6000);
 		await this.cfg().update("provider", next, this.cfgTarget());
@@ -1718,13 +1896,13 @@ self.addEventListener("fetch", (e) => {
 	suggestFallback() {
 		if (this.fallbackPrompted) return;
 		this.fallbackPrompted = true;
-		const choices = ["Grok 4.3 Build", "Composer 2.5 Fast", "Stay"];
+		const choices = ["GPT-5.6 Sol (Codex)", "GPT-5.5 (Codex)", "Grok 4.5 Build", "Composer 2.5 Fast", "Stay"];
 		if (this.claudeAllowed()) choices.unshift("Claude Code");
 		vscode.window.showWarningMessage(
 			"All auto-failover models hit their limit. Switch the Solstice agent manually?",
 			...choices
 		).then(async (pick) => {
-			const key = pick === "Claude Code" ? "claude" : pick === "Grok 4.3 Build" ? "grok-build" : pick === "Composer 2.5 Fast" ? "composer-2.5" : null;
+			const key = pick === "Claude Code" ? "claude" : pick === "GPT-5.6 Sol (Codex)" ? "gpt-5.6" : pick === "GPT-5.5 (Codex)" ? "gpt-5.5" : pick === "Grok 4.5 Build" ? "grok-build" : pick === "Composer 2.5 Fast" ? "composer-2.5" : null;
 			if (!key) return;
 			await this.cfg().update("provider", key, this.cfgTarget());
 			this.applyProviderToWebviews();
@@ -2021,6 +2199,71 @@ self.addEventListener("fetch", (e) => {
 		if (this.manager) this.manager.postMessage(msg);
 	}
 
+	managerTaskList() { return this.managerTasks ? this.managerTasks.list() : []; }
+	pushManagerTasks() {
+		this.syncCompanionManagerTasks();
+		this.postManager({ type: "managerTasks", tasks: this.managerTaskList(), limit: this.managerTasks ? this.managerTasks.limit : 0 });
+	}
+
+	async createManagerTask(label = "New build") {
+		if (!this.managerTasks) throw new Error("Manager View requires an open Git workspace.");
+		const task = await this.managerTasks.create(label);
+		this.pushManagerTasks();
+		const { id } = await this.startThread(label, task.worktree);
+		this.managerTasks.attachThread(task.id, id);
+		this.pushManagerTasks();
+		this.postManager({ type: "managerTaskCreated", task: this.managerTasks.get(task.id) });
+		return this.managerTasks.get(task.id);
+	}
+
+	async inspectManagerTask(taskId) {
+		if (!this.managerTasks) throw new Error("Manager View is unavailable.");
+		await this.managerTasks.inspect(taskId);
+		this.pushManagerTasks();
+		return this.managerTasks.get(taskId);
+	}
+
+	async reviewManagerTask(taskId) {
+		if (!this.managerTasks) throw new Error("Manager View is unavailable.");
+		const review = await this.managerTasks.review(taskId);
+		this.pushManagerTasks();
+		this.postManager({ type: "managerMergeReview", taskId, patch: review.patch, patchHash: review.patchHash, patchBytes: review.patchBytes });
+		return review;
+	}
+
+	async mergeManagerTask(taskId, expectedPatchHash) {
+		if (!this.managerTasks) throw new Error("Manager View is unavailable.");
+		const result = await this.managerTasks.merge(taskId, expectedPatchHash);
+		this.pushManagerTasks();
+		this.postManager({ type: "managerMerged", taskId, patchHash: result.patchHash });
+		vscode.window.showInformationMessage(`Solstice: merged ${result.task.label} after git apply --check (${result.patchBytes} bytes).`);
+		return result;
+	}
+
+	async openManagerTaskPreview(taskId) {
+		if (!this.managerTasks) throw new Error("Manager View is unavailable.");
+		const task = this.managerTasks.get(taskId);
+		if (!task) throw new Error(`Unknown manager task: ${taskId}`);
+		const root = task.worktree;
+		let url = await detectDevServerUrl(root).catch(() => null);
+		if (!url && hasFramework(root)) {
+			let server = this.managerDevServers.get(taskId);
+			if (!server) { server = new DevServer(root, { onLog: (s) => this.output.append(`[manager:${taskId}] ${s}`) }); this.managerDevServers.set(taskId, server); }
+			url = await server.ensure();
+		} else if (!url) {
+			let server = this.managerPreviews.get(taskId);
+			if (!server) { server = new PreviewServer(root, { onSelect: (pick) => this.postManager({ type: "elementSelected", taskId, pick }) }); this.managerPreviews.set(taskId, server); }
+			const port = await server.ensure();
+			const rel = fs.existsSync(path.join(root, "index.html")) ? "index.html" : "";
+			url = `http://127.0.0.1:${port}/${rel}`;
+		}
+		this.managerTasks.setStatus(taskId, task.status, { previewUrl: url });
+		this.pushManagerTasks();
+		this.openPreviewPanel(url, "desktop");
+		this.postManager({ type: "managerPreview", taskId, url });
+		return url;
+	}
+
 	upsertThread(t) {
 		if (!t || !t.id) return null;
 		const cur = this.threads.get(t.id) || { id: t.id, status: "idle", activeTurnId: null, plan: null, diff: "" };
@@ -2102,6 +2345,8 @@ self.addEventListener("fetch", (e) => {
 			this.planFileOpened = false;
 			this.turnDidResearch = false;
 			if (!String(tid).startsWith("grok-") && !String(tid).startsWith("claude-")) this.activeCodexThreadId = tid;
+			const managerTask = this.managerTasks && this.managerTasks.forThread(tid);
+			if (managerTask) { this.managerTasks.setStatus(managerTask.id, "running", { phase: "execution" }); this.pushManagerTasks(); }
 			if (tid === this.threadId) { this.markBusy("_builder", true); this.notePulse("_builder", "state"); this.postPreview({ type: "building", on: true }); this.fleetFlow("building"); this.injectMercuryClient().catch(() => { }); }
 			this.pushThreads();
 		} else if (method === "turn/completed" && tid) {
@@ -2109,6 +2354,11 @@ self.addEventListener("fetch", (e) => {
 			th.activeTurnId = null;
 			th.status = "idle";
 			if (this.activeCodexThreadId === tid) this.activeCodexThreadId = null;
+			const managerTask = this.managerTasks && this.managerTasks.forThread(tid);
+			if (managerTask) {
+				this.managerTasks.setStatus(managerTask.id, "ready_review", { phase: "review" });
+				this.managerTasks.inspect(managerTask.id).then(() => this.pushManagerTasks()).catch((e) => this.output.append("[manager] inspect failed: " + e.message + "\n"));
+			}
 			if (tid === this.threadId) { this.markBusy("_builder", false); this.postPreview({ type: "building", on: false }); this.fleetFlow("done"); this._failoverTried = null; this.refreshPreview(); }
 			if (tid === this.threadId) this.learnFromFidelityFile();
 			if (tid === this.threadId) {
@@ -2127,6 +2377,8 @@ self.addEventListener("fetch", (e) => {
 			th.plan = this.normalizePlan(params.plan);
 			this.writePlanFile(th);
 			this.pushPlanPanel(th);
+			const managerTask = this.managerTasks && this.managerTasks.forThread(tid);
+			if (managerTask) { this.managerTasks.setStatus(managerTask.id, "running", { phase: "planning", plan: th.plan }); this.pushManagerTasks(); }
 		}
 		if (method === "usage" && params && params.total) {
 			this.recordTokenUsage(params);
@@ -2204,8 +2456,10 @@ self.addEventListener("fetch", (e) => {
 		}
 		return new Promise((resolve) => {
 			const key = crypto.randomUUID();
-			this.pendingApprovals.set(key, { resolve, creditGate: false });
+			this.pendingApprovals.set(key, { resolve, creditGate: false, threadId: params && params.threadId });
 			const tid = params && params.threadId;
+			const task = this.managerTasks && tid ? this.managerTasks.forThread(tid) : null;
+			if (task) { this.managerTasks.setStatus(task.id, "awaiting_approval"); this.pushManagerTasks(); }
 			if (!tid || tid === this.threadId) this.post({ type: "approvalRequest", key, method, params });
 			this.postManager({ type: "approvalRequest", key, method, params });
 			// headless E2E hook (xvfb, no pointer): approve after the card rendered
@@ -2224,6 +2478,8 @@ self.addEventListener("fetch", (e) => {
 				decision = "accept";
 			}
 			pending.resolve(decision);
+			const task = this.managerTasks && pending.threadId ? this.managerTasks.forThread(pending.threadId) : null;
+			if (task) { this.managerTasks.setStatus(task.id, "running"); this.pushManagerTasks(); }
 		}
 	}
 
@@ -2303,13 +2559,13 @@ self.addEventListener("fetch", (e) => {
 			].join("\n");
 		}
 
-	async startThread(text = "") {
+	async startThread(text = "", cwd = workspaceCwd()) {
 		const developerInstructions = this.developerInstructions(text);
 		this.logPreambleSize("codex", developerInstructions);
 		const client = await this.ensureClient();
 		const th = await client.request("thread/start", {
-			cwd: workspaceCwd(),
-			model: this.cfg().get("model") || undefined,
+			cwd,
+			model: (MODEL_REGISTRY[this.providerKey()] && MODEL_REGISTRY[this.providerKey()].codexId) || this.cfg().get("model") || undefined,
 			approvalPolicy: this.cfg().get("approvalPolicy"),
 			sandbox: this.cfg().get("sandbox"),
 			developerInstructions,
@@ -2352,9 +2608,12 @@ self.addEventListener("fetch", (e) => {
 
 	// sidebar send: lazily creates the sidebar thread
 	async send(text) {
-		if (this._planApprovalBypass) this._planApprovalBypass = false;
-		else if (this.isBuildIntent(text)) { this.requestPlanApproval(text); return; }
 		const rawText = text;
+		if (this._planApprovalBypass) this._planApprovalBypass = false;
+		else if (this.isBuildIntent(text)) {
+			this.beginFlowingPlan(text);
+			text = this.flowingBuildPrompt(text);
+		}
 		if (text && !String(text).includes("[FELIX_PROJECT_BRAIN]")) {
 			const memory = projectContext(workspaceCwd());
 			if (memory) text = memory + text;
@@ -2436,7 +2695,7 @@ self.addEventListener("fetch", (e) => {
 
 	async interrupt(threadId) {
 		let stopped = false;
-		if (this.pendingPlanApproval) {
+		if (!threadId && this.pendingPlanApproval) {
 			this.pendingPlanApproval = null;
 			this._planApprovalBypass = false;
 			this._walkthroughPending = false;
@@ -2444,6 +2703,7 @@ self.addEventListener("fetch", (e) => {
 			this.announceAgentMessage("🛑 התוכנית בוטלה לפני ביצוע.");
 		}
 		for (const [key, pending] of this.pendingApprovals) {
+			if (threadId && pending.threadId && pending.threadId !== threadId) continue;
 			this.pendingApprovals.delete(key);
 			try { pending.resolve("decline"); } catch { }
 			stopped = true;
@@ -2451,9 +2711,10 @@ self.addEventListener("fetch", (e) => {
 		this.steerQueue = [];
 		if (this.claude && (!threadId || threadId === this.claude.threadId)) stopped = this.claude.interrupt() || stopped;
 		if (this.grok && (!threadId || threadId === this.grok.threadId)) stopped = this.grok.interrupt() || stopped;
-		for (const child of this.activeCliChildren) { killTree(child); stopped = true; }
+		if (!threadId) for (const child of this.activeCliChildren) { killTree(child); stopped = true; }
 		const active = [...this.threads.values()].filter((th) => th && th.activeTurnId).map((th) => th.id);
-		const tids = [...new Set([threadId, this.activeCodexThreadId, ...active, this.threadId].filter((tid) =>
+		const requested = threadId ? [threadId] : [this.activeCodexThreadId, ...active, this.threadId];
+		const tids = [...new Set(requested.filter((tid) =>
 			tid && !String(tid).startsWith("grok-") && !String(tid).startsWith("claude-")))];
 		if (this.client && this.client.running && tids.length) {
 			stopped = true;
@@ -2467,10 +2728,14 @@ self.addEventListener("fetch", (e) => {
 			});
 			await Promise.all(tids.map(interruptOne));
 		}
-		this.activeCodexThreadId = null;
-		this.markBusy("_builder", false);
-		this.postPreview({ type: "building", on: false });
-		const companion = this._companion(); companion.building = false; companion.ts = Date.now();
+		if (!threadId || threadId === this.activeCodexThreadId) this.activeCodexThreadId = null;
+		if (!threadId || threadId === this.threadId) {
+			this.markBusy("_builder", false);
+			this.postPreview({ type: "building", on: false });
+			const companion = this._companion(); companion.building = false; companion.ts = Date.now();
+		}
+		const managerTask = this.managerTasks && threadId ? this.managerTasks.forThread(threadId) : null;
+		if (managerTask) { this.managerTasks.setStatus(managerTask.id, "idle", { phase: "stopped" }); this.pushManagerTasks(); }
 		this.post({ type: "interrupted", stopped });
 		this.postManager({ type: "interrupted", stopped });
 		this.output.append(`[stop] completed stopped=${stopped} codexThreads=${tids.length} cliChildren=${this.activeCliChildren.size}\n`);
@@ -2751,6 +3016,7 @@ self.addEventListener("fetch", (e) => {
 		const th = { id: this.threadId || "pending-build", preview: p.prompt, plan };
 		this.planThread = th;
 		const companion = this._companion(); companion.plan = plan; companion.ts = Date.now();
+		this.scheduleCompanionRelay();
 		this.pushPlanPanel(th);
 		this.pushPlanApproval();
 	}
@@ -2775,8 +3041,30 @@ self.addEventListener("fetch", (e) => {
 		return `${p.prompt}\n\n[FELIX_APPROVED_PLAN_CONTRACT]\nProject template: ${p.projectType}.\nClarifications:\n${answers}\nExecute the approved evolving .solstice/PLAN.md. Keep exactly one step [~] current and mark every finished step [x] immediately so the live timeline stays synchronized. Preserve the quality order: research → design direction → implementation stages → risks → verification → delivery.`;
 	}
 
+	flowingBuildPrompt(prompt) {
+		return `${String(prompt || "").trim()}\n\n[FELIX_FLOWING_PLAN_CONTRACT]\nStart executing now; do not wait for a separate plan approval. Before changing application source, create or update the evolving .solstice/PLAN.md, keep exactly one step [~] current, and mark completed steps [x] as work advances. Treat later [FELIX_ARTIFACT_ANNOTATION] messages as in-flight plan corrections: merge them into the active plan and continue the same turn without restarting the project. Ask only when a genuinely irreversible or externally gated decision is missing.`;
+	}
+
+	beginFlowingPlan(prompt) {
+		const cleanPrompt = String(prompt || "").trim();
+		const plan = this.planTemplate(cleanPrompt, {}, {});
+		plan[0].status = "inProgress";
+		this.pendingPlanApproval = null;
+		const th = { id: this.threadId || "flowing-build", preview: cleanPrompt, plan };
+		this.planThread = th;
+		const companion = this._companion();
+		companion.plan = plan;
+		companion.ts = Date.now();
+		this.scheduleCompanionRelay();
+		this.openPlanPanel();
+		this.pushPlanPanel(th);
+		if (this.planPanel) this.planPanel.webview.postMessage({ type: "planFlowing" });
+		this.post({ type: "systemNote", text: "🗺 התוכנית נפתחה במצב זורם — הביצוע התחיל, ואפשר להוסיף תיקונים תוך כדי." });
+	}
+
 	isBuildIntent(text) {
 		const t = String(text || "");
+		if (isPureLaunchIntent(t)) return false;
 		return /\b(build|create|make|implement|develop|scaffold|redesign|rebuild|clone|ship|code|fix)\b[\s\S]{0,180}\b(site|website|app|application|page|dashboard|project|feature|frontend|backend|api|component|flow)\b/i.test(t) ||
 			/(?:ת?בנה|לבנות|ת?צור|ליצור|תפתח|פתח|יישם|תקן|עצב מחדש)[\s\S]{0,180}(?:אתר|אפליקצי|עמוד|דשבורד|פרויקט|פיצ'ר|בקאנד|פרונט|API|קומפוננט|מערכת)/i.test(t);
 	}
@@ -2790,6 +3078,7 @@ self.addEventListener("fetch", (e) => {
 		const th = { id: this.threadId || "pending-build", preview: this.pendingPlanApproval.prompt, plan };
 		this.planThread = th;
 		const companion = this._companion(); companion.plan = plan; companion.ts = Date.now();
+		this.scheduleCompanionRelay();
 		this.openPlanPanel();
 		this.post({ type: "planPending" });
 		this.pushPlanPanel(th);
@@ -3162,6 +3451,11 @@ self.addEventListener("fetch", (e) => {
 		ws.on("frame", (f) => {
 			if (f.type === "hello") {
 				rec.status = "online";
+				if (id === this.companionBridgeId()) {
+					rec.companionReady = true;
+					try { ws.send({ type: "client_hello", role: "ide", instanceId: this.companionInstanceId() }); } catch { }
+					setTimeout(() => this.publishCompanionState(), 50);
+				}
 				post({ type: "roster", agents: this.fleetAgents() });
 				this.postFleetActivity(id, "online", "מחובר");
 				this.flushBuildRecovery(id);
@@ -3177,6 +3471,8 @@ self.addEventListener("fetch", (e) => {
 			} else if (f.type === "action") {
 				// agent-driven IDE action (see runFleetAction); echo to the activity feed too
 				this.runFleetAction(id, f).catch(() => { });
+			} else if (f.type === "companion_action") {
+				this.handleCompanionAction(f).catch((e) => this.output.append("[companion action] " + (e && e.message || e) + "\n"));
 			} else if (f.type === "error") {
 				post({ type: "fleetError", agent: id, error: String(f.error || "agent error") });
 				this.postFleetActivity(id, "error", String(f.error || "שגיאה").slice(0, 80));
@@ -3231,6 +3527,11 @@ self.addEventListener("fetch", (e) => {
 		if (stage === "done" && this.shouldSelfVerify()) {
 			this.startSelfVerify();
 			if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "flowStage", stage: "building", from: (extra && extra.from) || this.builderAgent(), ts: Date.now(), note: "self-verify" });
+			return;
+		}
+		if (stage === "done" && this.shouldRunBugbot()) {
+			this.startBugbot();
+			if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "flowStage", stage: "building", from: (extra && extra.from) || this.builderAgent(), ts: Date.now(), note: "Bugbot review" });
 			return;
 		}
 		// Phase 6 write-back: a "done" reaching here is past the self-verify gate
@@ -3328,6 +3629,28 @@ self.addEventListener("fetch", (e) => {
 		}
 		this.post({ type: "injectPrompt", text: lines.join("\n") });
 	}
+	shouldRunBugbot() {
+		const b = this._activeBuild;
+		return !!(b && b.taskId && this._verifyTaskId === b.taskId && this._bugbotTaskId !== b.taskId && !this._bugbotRunning && this.cfg().get("bugbot") !== false);
+	}
+	async startBugbot() {
+		const b = this._activeBuild;
+		if (!b) return;
+		this._bugbotTaskId = b.taskId;
+		this._bugbotRunning = true;
+		this.output.append(`[bugbot] reviewing ${b.taskId} with composer-2.5\n`);
+		try {
+			const result = await runBugbot(workspaceCwd(), { extensionPath: this.context.extensionPath, bin: resolveGrokBinary(this.context.extensionPath, this.cfg().get("grokPath")), log: (line) => this.output.append("[bugbot] " + line) });
+			if (!result.findings.length) { this.output.append("[bugbot] no concrete findings\n"); this.fleetFlow("done"); return; }
+			const saved = result.findings.map((finding) => captureAnnotation(workspaceCwd(), `bugbot:${finding.file}:${finding.line}`, `[${finding.severity}] ${finding.message}`));
+			const prompt = `[FELIX_BUGBOT_FINDINGS]\nBugbot found ${saved.length} concrete issue(s) after self-verify. Read .solstice/ANNOTATIONS.md, fix each open bugbot annotation, run focused tests, and only then finish delivery.\n[/FELIX_BUGBOT_FINDINGS]`;
+			this.announceAgentMessage(`🐛 Bugbot מצא ${saved.length} ממצאים והעביר אותם לתיקון לפני המסירה.`);
+			await this.steer(this.threadId, prompt);
+		} catch (error) {
+			this.output.append("[bugbot] review unavailable: " + (error && error.message || error) + "\n");
+			this.fleetFlow("done");
+		} finally { this._bugbotRunning = false; }
+	}
 	// Reference material the fidelity loop converges against: explicit reference
 	// image, deconstruction frames, or scrollshots of the source site — whatever
 	// the analysis phase left in .solstice/.
@@ -3352,7 +3675,7 @@ self.addEventListener("fetch", (e) => {
 	// Headless screenshot of the live preview into .solstice/verify-<taskId>.png.
 	// Spawns browse.js via the same ELECTRON_RUN_AS_NODE path the agent itself
 	// uses; group-spawned so a wedged Chrome is reaped on timeout.
-	capturePreviewShot(url, taskId) {
+	capturePreviewShot(url, taskId, viewport = "1440x2200") {
 		return new Promise((resolve) => {
 			const cwd = workspaceCwd();
 			if (!cwd || !url) return resolve(null);
@@ -3365,7 +3688,7 @@ self.addEventListener("fetch", (e) => {
 			// detached only on *nix (Windows DETACHED_PROCESS pops console windows + we
 			// can't POSIX-group-kill it anyway — see the engine spawns).
 			const detached = process.platform !== "win32";
-			try { child = require("child_process").spawn(process.execPath, [browseJs, "shot", url, out, "1440x2200"], { env, detached, stdio: "ignore", windowsHide: true }); }
+			try { child = require("child_process").spawn(process.execPath, [browseJs, "shot", url, out, viewport], { env, detached, stdio: "ignore", windowsHide: true }); }
 			catch (e) { this.output.append("[self-verify] spawn failed: " + (e && e.message || e) + "\n"); return resolve(null); }
 			const timer = setTimeout(() => {
 				// Windows has no POSIX process groups: process.kill(-pid) throws EPERM and
@@ -3832,7 +4155,7 @@ self.addEventListener("fetch", (e) => {
 				// report lifecycle + the live preview/deploy URL back over the bridge.
 				const taskId = String(f.taskId || "").trim();
 				this._activeBuild = taskId ? { agentId, taskId, task } : null;
-				if (taskId) this._verifyTaskId = null; // a new build is eligible for one auto-verify pass
+				if (taskId) { this._verifyTaskId = null; this._bugbotTaskId = null; } // a new build gets one verify + Bugbot pass
 				if (this._activeBuild) this.writeJournal({ taskId, agentId, prompt: task, provider: this.providerKey(), phase: "dispatch", startedAt: Date.now() });
 				await vscode.commands.executeCommand("solstice.agentPanel.focus").then(undefined, () => { });
 				this.activeFleetAgent = agentId;
@@ -4173,7 +4496,18 @@ function openManager(controller, extensionUri) {
 				case "ready":
 					await controller.refreshAccount("manager");
 					await controller.listThreads();
+					controller.pushManagerTasks();
 					break;
+				case "createManagerTask": {
+					const task = await controller.createManagerTask(msg.label || msg.prompt || "New build");
+					if (msg.prompt) await controller.startTurn(task.threadId, msg.prompt);
+					break;
+				}
+				case "listManagerTasks": controller.pushManagerTasks(); break;
+				case "inspectManagerTask": await controller.inspectManagerTask(msg.taskId); break;
+				case "reviewManagerTask": await controller.reviewManagerTask(msg.taskId); break;
+				case "mergeManagerTask": await controller.mergeManagerTask(msg.taskId, msg.patchHash); break;
+				case "openManagerTaskPreview": await controller.openManagerTaskPreview(msg.taskId); break;
 				case "listThreads": await controller.listThreads(); break;
 				case "selectThread": await controller.readThread(msg.threadId); break;
 				case "newThread": {
@@ -4526,6 +4860,7 @@ function companionHtml() {
 		'@keyframes pl{50%{opacity:.4}}',
 		'#preview{display:none;width:100%;height:160px;border:0;border-bottom:1px solid #161b22;background:#0d0f14}',
 		'#live{display:none;margin:8px 14px 0;padding:9px 12px;border:1px solid #2e7d55;border-radius:12px;color:#8ce8b4;text-decoration:none;font-size:12px;font-weight:800;background:#102219}',
+		'#tasks{display:none;padding:8px 14px 0;gap:7px;overflow-x:auto}.task{min-width:210px;border:1px solid #282d38;border-radius:12px;background:#0d1016;padding:9px 10px}.tt{display:flex;align-items:center;gap:7px}.tn{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;font-weight:800}.ts{font-size:9px;color:#8792a2}.tp{font-size:10px;color:#8792a2;margin-top:5px}.td{width:7px;height:7px;border-radius:50%;background:#3fb950}.td.run{background:#f59e0b;animation:pl 1.2s infinite}.tstop{margin-top:7px;border:1px solid #713239;border-radius:8px;background:#251216;color:#ff8f98;padding:4px 10px;font-weight:700}',
 		'#plan{display:none;margin:8px 14px 0;padding:10px 12px;border:1px solid #282d38;border-radius:12px;background:#0d1016;font-size:12px}.pl{display:flex;gap:7px;padding:3px 0;color:#8792a2}.pl.run{color:#f5b84b}.pl.done{color:#6ee7a8}',
 		'#chat{flex:1;overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:9px}',
 		'.msg{display:flex}.msg.user{justify-content:flex-end}.b{max-width:82%;padding:8px 11px;border-radius:14px;font-size:14px;line-height:1.45;white-space:pre-wrap;word-break:break-word}',
@@ -4538,7 +4873,7 @@ function companionHtml() {
 		'</style></head><body>',
 		'<div id="hd"><div class="fx"></div><div><div class="nm">Felix <span style="color:#5b6573;font-size:11px">· Solstice</span></div>',
 		'<div class="sub"><span id="statusdot" class="dot idle"></span><span id="status">מוכן</span><span style="color:#5b6573">· <span id="model"></span></span></div></div></div>',
-		'<a id="live" target="_blank" rel="noopener">▲ פתח אתר חי</a><div id="plan"></div><iframe id="preview"></iframe>',
+		'<a id="live" target="_blank" rel="noopener">▲ פתח אתר חי</a><div id="tasks"></div><div id="plan"></div><iframe id="preview"></iframe>',
 		'<div id="chat"></div><div id="files"></div>',
 		'<div id="cmp"><input id="inp" placeholder="שלח ל-Felix משימה או שינוי…" enterkeyhint="send"><button id="snd">שלח</button></div>',
 		'<script>',
@@ -4548,7 +4883,8 @@ function companionHtml() {
 		'document.getElementById("status").textContent=s.building?"פליקס בונה…":"מוכן";',
 		'document.getElementById("statusdot").className="dot "+(s.building?"busy":"idle");',
 		'var l=document.getElementById("live");if(s.liveUrl){l.style.display="block";l.href=s.liveUrl;l.textContent="▲ פתח אתר חי · "+s.liveUrl.replace(/^https?:\\/\\//,"")}else{l.style.display="none"}',
-		'var q=document.getElementById("plan"),ps=s.plan||[];q.style.display=ps.length?"block":"none";q.innerHTML=ps.map(function(x){var z=x.status==="completed"?"done":x.status==="inProgress"?"run":"";var m=z==="done"?"✓":z==="run"?"▸":"·";return "<div class=\"pl "+z+"\"><span>"+m+"</span><span>"+esc(x.step)+"</span></div>"}).join("");',
+		'var ts=document.getElementById("tasks"),mt=s.managerTasks||[];ts.style.display=mt.length?"flex":"none";ts.innerHTML=mt.map(function(t){var run=t.status==="running"||t.status==="awaiting_approval";return "<div class=\\"task\\"><div class=\\"tt\\"><span class=\\"td "+(run?"run":"")+"\\"></span><span class=\\"tn\\">"+esc(t.label||t.id)+"</span><span class=\\"ts\\">"+esc(t.status)+"</span></div><div class=\\"tp\\">"+esc(t.phase||"workspace")+" · "+(t.changedFiles||0)+" קבצים</div>"+(run?"<button class=\\"tstop\\" data-id=\\""+esc(t.id)+"\\">עצור</button>":"")+"</div>"}).join("");Array.prototype.forEach.call(document.querySelectorAll(".tstop"),function(b){b.onclick=function(){fetch("/manager/stop",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({taskId:b.dataset.id})}).then(poll)}});',
+		'var q=document.getElementById("plan"),ps=s.plan||[];q.style.display=ps.length?"block":"none";q.innerHTML=ps.map(function(x){var z=x.status==="completed"?"done":x.status==="inProgress"?"run":"";var m=z==="done"?"✓":z==="run"?"▸":"·";return "<div class=\\"pl "+z+"\\"><span>"+m+"</span><span>"+esc(x.step)+"</span></div>"}).join("");',
 		'var p=document.getElementById("preview");if(s.previewUrl){p.style.display="block";var b=(s.previewUrl);if((p.dataset.u||"")!==b){p.dataset.u=b;p.src=b}}',
 		'var c=document.getElementById("chat");c.innerHTML=(s.messages||[]).map(function(m){return "<div class=\\"msg "+m.role+"\\"><div class=\\"b\\">"+esc(m.text)+"</div></div>"}).join("");c.scrollTop=c.scrollHeight;',
 		'document.getElementById("files").innerHTML=(s.files||[]).slice(0,8).map(function(f){return "<div class=\\"f\\">+ "+esc(f.path)+"</div>"}).join("");',
@@ -4749,8 +5085,10 @@ function activate(context) {
 	// "Exploring…") past the threshold with no fresh progress event.
 	controller.startWatchdog();
 	controller.startScheduledChecks();
+	setTimeout(() => controller.ensureCompanionRelay(), 800);
 	context.subscriptions.push({ dispose: () => { if (controller.watchTimer) { clearInterval(controller.watchTimer); controller.watchTimer = null; } } });
 	context.subscriptions.push({ dispose: () => { if (controller.scheduledCheckTimer) { clearInterval(controller.scheduledCheckTimer); controller.scheduledCheckTimer = null; } } });
+	context.subscriptions.push({ dispose: () => { if (controller._companionRelayTimer) { clearTimeout(controller._companionRelayTimer); controller._companionRelayTimer = null; } } });
 	// relaunch recovery: if a build was interrupted by an IDE restart, report a
 	// terminal frame to the dispatching agent the moment its bridge reconnects.
 	try { controller.recoverBuildJournal(); } catch { }
