@@ -210,27 +210,13 @@
       "properties": {
         "solstice.codex.provider": {
           "type": "string",
-          "enum": [
-            "gpt-5.6",
-            "gpt-5.5",
-            "claude",
-            "grok-build",
-            "composer-2.5"
-          ],
-          "enumDescriptions": [
-            "GPT-5.6 Sol via Codex CLI >=0.144 — latest flagship",
-            "GPT-5.5 via the codex CLI (ChatGPT subscription) — full agent",
-            "Claude Code via the claude CLI — DISABLED unless solstice.codex.allowClaude is true",
-            "Grok 4.5 Build via the grok CLI (model id: grok-build) — agentic fallback",
-            "Composer 2.5 Fast via the grok CLI — fast builder"
-          ],
           "default": "composer-2.5",
-          "description": "Which model drives the Solstice agent. Default is composer-2.5 (Thomas's directive). Claude is gated behind solstice.codex.allowClaude and will not run unless that flag is explicitly enabled."
+          "description": "Which model drives the Solstice agent. The picker discovers installed CLI tiers at runtime. Claude is gated and manual-only; it is never a default or failover target."
         },
         "solstice.codex.allowClaude": {
           "type": "boolean",
           "default": false,
-          "description": "Explicit opt-in gate for the Claude provider. OFF by default so Claude never runs unattended. When false, selecting 'claude' falls back to gpt-5.5 and the Claude option is hidden from the model picker. Set to true only when you deliberately want Claude to drive the agent."
+          "description": "Explicit opt-in gate for Thomas's manual Claude tests. Even when enabled, Claude can only be activated manually from the staged model picker and is never used by defaults, Felix automation, or failover."
         },
         "solstice.codex.groqApiKey": {
           "type": "string",

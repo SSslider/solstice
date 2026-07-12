@@ -38,7 +38,7 @@ function codexVersion(bin) {
 }
 
 function checkCodexModelCompatibility(model, bin, versionReader = codexVersion) {
-	if (model !== "gpt-5.6") return { ok: true, model };
+	if (!/^gpt-5\.6(?:-|$)/.test(String(model || ""))) return { ok: true, model };
 	const current = versionReader(bin);
 	const installed = current && current.parsed ? current.parsed.join(".") : "unknown";
 	const comparison = current && current.parsed ? compareVersions(current.parsed, GPT_56_MIN_CODEX_VERSION) : null;

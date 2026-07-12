@@ -22,6 +22,8 @@ assert.equal(oldCli.ok, false);
 assert.match(oldCli.message, />=0\.144\.0/);
 assert.match(oldCli.message, /npm i -g @openai\/codex@latest/);
 assert.equal(checkCodexModelCompatibility("gpt-5.6", "codex", () => ({ ok: true, parsed: [0, 144, 0] })).ok, true);
+assert.equal(checkCodexModelCompatibility("gpt-5.6-sol", "codex", () => ({ ok: true, parsed: [0, 143, 9] })).ok, false);
+assert.equal(checkCodexModelCompatibility("gpt-5.6-terra", "codex", () => ({ ok: true, parsed: [0, 144, 0] })).ok, true);
 assert.equal(isPureLaunchIntent("פתח את האתר"), true);
 assert.equal(isPureLaunchIntent("הרץ את האפליקציה"), true);
 assert.equal(isPureLaunchIntent("open the website"), true);
@@ -35,4 +37,4 @@ assert.match(grok, /"grok-build"[\s\S]{0,180}label:\s*"Grok 4\.5 Build"[\s\S]{0,
 assert.match(extension, /isPureLaunchIntent/);
 assert.equal(pkg.contributes.configuration.properties["solstice.codex.failoverChain"].default[0], "gpt-5.6");
 
-console.log("modelCompatibility.test.js: 17/17 checks passed");
+console.log("modelCompatibility.test.js: 19/19 checks passed");

@@ -330,6 +330,8 @@ details.reasoning.done summary { opacity: 0.5; }
 }
 .pickItem:hover { background: var(--vscode-list-hoverBackground, rgba(140,140,140,0.12)); }
 .pickItem.active { background: rgba(245,158,11,0.12); }
+.pickItem.provider .pickText { flex: 1; }
+.pickItem.back { border-bottom: 1px solid var(--sol-line); border-radius: 6px 6px 0 0; margin-bottom: 3px; }
 .pickCheck { width: 12px; flex: 0 0 auto; color: var(--sol-accent); font-size: 11px; line-height: 1.5; }
 .pickText { min-width: 0; }
 .pickLabel { font-size: 12px; font-weight: 600; line-height: 1.4; }

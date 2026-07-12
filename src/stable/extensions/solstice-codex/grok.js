@@ -8,6 +8,17 @@ const { resolveWinSpawn, whichFull } = require("./winspawn");
 
 const GROK_TEMP_RE = /^solstice-grok-(?:agent-)?[a-z0-9-]+\.(?:txt|md)$/i;
 const GROK_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const GROK_STARTUP_HEARTBEAT_MS = 20 * 1000;
+
+// A Grok process may legitimately go quiet later while it thinks or runs a long
+// command. The dangerous silence is at startup: until the first stdout/stderr or
+// tool update, the user cannot tell a healthy engine from a missing/wedged one.
+// Warn once without killing the turn; a late engine can still recover normally.
+function createStartupHeartbeat(onSilent, delayMs = GROK_STARTUP_HEARTBEAT_MS) {
+	let timer = setTimeout(() => { timer = null; onSilent(); }, delayMs);
+	const clear = () => { if (timer) { clearTimeout(timer); timer = null; } };
+	return { pulse: clear, clear };
+}
 
 function cleanupStaleGrokTempFiles(log, now = Date.now()) {
 	let removed = 0;
@@ -140,14 +151,15 @@ function unifiedDiff(relPath, oldText, newText) {
 // The auto-failover chain (package.json solstice.codex.failoverChain) references
 // these keys; Claude is intentionally excluded from any auto chain (gated).
 const MODEL_REGISTRY = {
-	"gpt-5.6": { label: "GPT-5.6 Sol (Codex)", desc: "Latest flagship via Codex CLI >=0.144", runner: "codex", codexId: "gpt-5.6", order: 0 },
+	"gpt-5.6": { label: "GPT-5.6 Sol (Codex)", desc: "Compatibility alias via Codex CLI >=0.144", runner: "codex", codexId: "gpt-5.6", provider: "gpt", order: 0 },
 	"gpt-5.5": { label: "GPT-5.5 (Codex)", desc: "ChatGPT subscription — full agent: plans, approvals, image gen", runner: "codex", codexId: "gpt-5.5", order: 1 },
-	"claude": { label: "Claude Code", desc: "claude CLI — opt-in via solstice.codex.allowClaude", runner: "claude", gated: true, order: 2 },
+	"claude-opus": { label: "Opus", desc: "Manual Thomas testing only", runner: "claude", claudeId: "opus", provider: "claude", gated: true, manualOnly: true, order: 2 },
+	"claude-sonnet": { label: "Sonnet", desc: "Manual Thomas testing only", runner: "claude", claudeId: "sonnet", provider: "claude", gated: true, manualOnly: true, order: 3 },
 	// The stable Grok CLI 0.2.93 advertises this exact id via `grok models`.
 	// Keep the stable id (rather than guessing a private/versioned slug) while
 	// presenting the current Grok Build generation in the picker.
-	"grok-build": { label: "Grok 4.5 Build", desc: "grok-build via the grok CLI — agentic fallback", runner: "grok", grokId: "grok-build", order: 3 },
-	"composer-2.5": { label: "Composer 2.5 Fast", desc: "grok CLI — fast builder", runner: "grok", grokId: "grok-composer-2.5-fast", order: 4 },
+	"grok-build": { label: "Grok 4.5 Build", desc: "grok-build via the grok CLI — agentic fallback", runner: "grok", grokId: "grok-build", provider: "grok", order: 4 },
+	"composer-2.5": { label: "Composer 2.5 Fast", desc: "grok CLI — fast builder", runner: "grok", grokId: "grok-composer-2.5-fast", provider: "composer", order: 5 },
 };
 
 // Which CLI runner serves a given model key (defaults to codex).
@@ -347,6 +359,8 @@ class GrokProvider {
 		let reasoning = null; // { id, text }
 		let message = null;   // { id, text }
 		let assistantOut = ""; // full assistant text this turn → saved to history
+		let startupActivitySeen = false;
+		let noteStartupActivity = () => { startupActivitySeen = true; };
 		const closeReasoning = () => {
 			if (!reasoning) return;
 			this.notify("item/completed", { threadId: tid, item: { id: reasoning.id, type: "reasoning", text: reasoning.text } });
@@ -358,6 +372,7 @@ class GrokProvider {
 			message = null;
 		};
 		const onEvent = (e) => {
+			noteStartupActivity();
 			if (e.type === "thought") {
 				closeMessage();
 				if (!reasoning) {
@@ -402,6 +417,7 @@ class GrokProvider {
 			return [...new Set(out)];
 		};
 		const onUpdate = (u) => {
+			noteStartupActivity();
 			if (u.sessionUpdate !== "tool_call" && u.sessionUpdate !== "tool_call_update") return;
 			const tcId = u.toolCallId;
 			if (!tcId) return;
@@ -500,6 +516,16 @@ class GrokProvider {
 			// red herring: detached:true + no windowsHide STILL EPERM'd on grok.)
 			// last build that ran on Thomas's PC; it's ignored under DETACHED_PROCESS
 			// anyway. See the GROUND-TRUTH note in codexClient.js:start.
+			const startupHeartbeat = createStartupHeartbeat(() => {
+				const id = "gh" + this.seq++;
+				const warning = "⚠️ המנוע לא מגיב עדיין — בדוק Solstice: Check Model Engines או החלף מודל. הריצה נשארת פתוחה ותמשיך אם המנוע יתאושש.";
+				this.log(`[grok] no engine output or tool activity after ${GROK_STARTUP_HEARTBEAT_MS / 1000}s\n`);
+				this.notify("item/started", { threadId: tid, item: { id, type: "agentMessage" } });
+				this.notify("item/agentMessage/delta", { threadId: tid, itemId: id, delta: warning });
+				this.notify("item/completed", { threadId: tid, item: { id, type: "agentMessage", text: warning } });
+			});
+			noteStartupActivity = startupHeartbeat.pulse;
+			if (startupActivitySeen) startupHeartbeat.pulse();
 			const child = spawn(sp.cmd, sp.args, { cwd: this.cwd, env: sp.env ? { ...env, ...sp.env } : env, detached: process.platform !== "win32", windowsHide: true });
 			this.child = child;
 			this._starting = false;
@@ -523,6 +549,7 @@ class GrokProvider {
 				killTree(this.child);
 			}, TURN_BUDGET_MS);
 			child.stdout.on("data", (d) => {
+				noteStartupActivity();
 				buf += d.toString();
 				let i;
 				while ((i = buf.indexOf("\n")) !== -1) {
@@ -532,12 +559,13 @@ class GrokProvider {
 					try { onEvent(JSON.parse(line)); } catch { this.log(line + "\n"); }
 				}
 			});
-			child.stderr.on("data", (d) => this.log(d.toString()));
+			child.stderr.on("data", (d) => { noteStartupActivity(); this.log(d.toString()); });
 			child.on("error", (e) => {
 				this.child = null;
 				this._starting = false;
 				this._interruptRequested = false;
 				clearTimeout(budgetTimer);
+				startupHeartbeat.clear();
 				tailer.stop();
 				cleanupFiles();
 				// EPERM diagnostic — on Windows a bare `spawn <name> EPERM` means the
@@ -576,6 +604,7 @@ class GrokProvider {
 				this._starting = false;
 				this._interruptRequested = false;
 				clearTimeout(budgetTimer);
+				startupHeartbeat.clear();
 				tailer.stop();
 				cleanupFiles();
 				closeReasoning();
@@ -598,4 +627,4 @@ class GrokProvider {
 	}
 }
 
-module.exports = { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, unifiedDiff, killTree, resolveGrokBinary, grokBundlePresent, cleanupStaleGrokTempFiles };
+module.exports = { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, unifiedDiff, killTree, resolveGrokBinary, grokBundlePresent, cleanupStaleGrokTempFiles, createStartupHeartbeat, GROK_STARTUP_HEARTBEAT_MS };

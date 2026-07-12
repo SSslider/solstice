@@ -166,6 +166,8 @@
 
 	// ---------- inline model picker (opens upward from the composer) ----------
 	let modelChoices = [];
+	let modelProviders = [];
+	let modelProviderKey = "";
 	let currentModelKey = "";
 	const modelMenuEl = el("div", "pickMenu hidden");
 	modelMenuEl.id = "modelMenu";
@@ -173,7 +175,27 @@
 
 	function renderModelMenu() {
 		modelMenuEl.innerHTML = "";
-		for (const c of modelChoices) {
+		if (!modelProviderKey) {
+			for (const provider of modelProviders) {
+				const active = provider.models.some((model) => model.key === currentModelKey);
+				const row = el("div", "pickItem provider" + (active ? " active" : ""));
+				row.appendChild(el("span", "pickCheck", active ? "✓" : "›"));
+				const txt = el("div", "pickText");
+				txt.appendChild(el("div", "pickLabel", provider.label));
+				txt.appendChild(el("div", "pickDesc", provider.models.length + " available tier" + (provider.models.length === 1 ? "" : "s")));
+				row.appendChild(txt);
+				row.addEventListener("click", (e) => { e.stopPropagation(); modelProviderKey = provider.key; renderModelMenu(); });
+				modelMenuEl.appendChild(row);
+			}
+			return;
+		}
+		const provider = modelProviders.find((item) => item.key === modelProviderKey);
+		const back = el("div", "pickItem back");
+		back.appendChild(el("span", "pickCheck", "‹"));
+		back.appendChild(el("div", "pickLabel", "Providers"));
+		back.addEventListener("click", (e) => { e.stopPropagation(); modelProviderKey = ""; renderModelMenu(); });
+		modelMenuEl.appendChild(back);
+		for (const c of (provider ? provider.models : modelChoices)) {
 			const row = el("div", "pickItem" + (c.key === currentModelKey ? " active" : ""));
 			row.appendChild(el("span", "pickCheck", c.key === currentModelKey ? "✓" : ""));
 			const txt = el("div", "pickText");
@@ -190,6 +212,7 @@
 	}
 	function openModelMenu() {
 		if (!modelChoices.length) { vscode.postMessage({ type: "selectModel" }); return; }
+		modelProviderKey = "";
 		renderModelMenu();
 		modelMenuEl.classList.remove("hidden");
 		modelBtn.classList.add("open");
@@ -1089,6 +1112,7 @@
 			}
 			case "models":
 				modelChoices = Array.isArray(msg.list) ? msg.list : [];
+				modelProviders = Array.isArray(msg.providers) ? msg.providers : [];
 				currentModelKey = msg.current || "";
 				if (!modelMenuEl.classList.contains("hidden")) renderModelMenu();
 				break;

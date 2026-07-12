@@ -52,10 +52,10 @@ function registryPathDirs() {
 // then the global bin dir is neither %APPDATA%\npm nor anything we can guess.
 // npm itself reads .npmrc, so we do too.
 function npmrcPrefixDirs() {
-	if (process.platform !== "win32") return [];
 	const out = [];
+	const home = (process.platform === "win32" ? process.env.USERPROFILE : process.env.HOME) || osHome();
 	const rcs = [
-		process.env.USERPROFILE && path.join(process.env.USERPROFILE, ".npmrc"),
+		home && path.join(home, ".npmrc"),
 		process.env.NPM_CONFIG_USERCONFIG,
 	].filter(Boolean);
 	for (const rc of rcs) {
@@ -63,12 +63,48 @@ function npmrcPrefixDirs() {
 			const text = fs.readFileSync(rc, "utf8");
 			const m = text.match(/^\s*prefix\s*=\s*(.+)\s*$/mi);
 			if (m) {
-				const prefix = m[1].trim().replace(/%([^%]+)%/g, (_, n) => process.env[n] || "");
+				const prefix = m[1].trim()
+					.replace(/^~(?=$|[\\/])/, home)
+					.replace(/%([^%]+)%/g, (_, n) => process.env[n] || "")
+					.replace(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_, a, b) => process.env[a || b] || "");
 				if (prefix) { out.push(prefix); out.push(path.join(prefix, "bin")); }
 			}
 		} catch { /* no .npmrc — fine */ }
 	}
 	return out;
+}
+
+// macOS GUI apps inherit launchd's deliberately small PATH (often only
+// /usr/bin:/bin), not the shell PATH where Homebrew/npm/nvm put user CLIs.
+// Linux desktop launchers can have the same gap. Search the standard user CLI
+// locations without mutating process.env; whichFull() de-dupes them against PATH.
+function extraUnixDirs() {
+	if (process.platform === "win32") return [];
+	const home = process.env.HOME || osHome();
+	const candidates = [
+		"/usr/local/bin",
+		"/opt/homebrew/bin",
+		"/opt/homebrew/sbin",
+		home && path.join(home, ".npm-global", "bin"),
+		home && path.join(home, ".npm", "bin"),
+		"/usr/local/opt/node/bin",
+		...npmrcPrefixDirs(),
+	];
+	// nvm has no stable "current" symlink on every installation. Prefer the
+	// newest installed version while retaining older bins as fallbacks.
+	const versions = home && path.join(home, ".nvm", "versions", "node");
+	try {
+		const bins = fs.readdirSync(versions, { withFileTypes: true })
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => path.join(versions, entry.name, "bin"))
+			.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+		candidates.push(...bins);
+	} catch { /* nvm is optional */ }
+	return [...new Set(candidates.filter(Boolean))];
+}
+
+function osHome() {
+	try { return require("os").homedir(); } catch { return ""; }
 }
 
 // Dirs a Windows GUI process (Electron launched from the Start Menu / desktop)
@@ -127,8 +163,9 @@ function whichFull(bin) {
 	const exts = isWin
 		? [...new Set(["", ...(process.env.PATHEXT || "").split(";"), ".COM", ".EXE", ".BAT", ".CMD"])]
 		: [""];
-	const dirs = (process.env.PATH || "").split(isWin ? ";" : ":").filter(Boolean);
-	if (isWin) dirs.push(...extraWinDirs());
+	const pathDirs = (process.env.PATH || "").split(isWin ? ";" : ":").filter(Boolean);
+	const extras = isWin ? extraWinDirs() : extraUnixDirs();
+	const dirs = [...new Set([...pathDirs, ...extras])];
 	for (const dir of dirs) {
 		for (const ext of exts) {
 			const p = path.join(dir, bin + ext);
@@ -234,4 +271,4 @@ function resolveWinSpawn(bin, args) {
 	return { cmd: full, args: args.slice(), env: null };
 }
 
-module.exports = { resolveWinSpawn, whichFull, jsEntryFromShim, jsEntryFromNodeModules, extraWinDirs, registryPathDirs, npmrcPrefixDirs };
+module.exports = { resolveWinSpawn, whichFull, jsEntryFromShim, jsEntryFromNodeModules, extraWinDirs, extraUnixDirs, registryPathDirs, npmrcPrefixDirs };

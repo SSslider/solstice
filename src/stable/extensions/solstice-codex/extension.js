@@ -10,7 +10,7 @@ const { checkCodexModelCompatibility } = require("./codexCompatibility");
 const { isPureLaunchIntent } = require("./intent");
 const { PreviewServer, DevServer, detectDevServerUrl, hasFramework } = require("./preview");
 const { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, resolveGrokBinary, grokBundlePresent, killTree } = require("./grok");
-const { ClaudeProvider, CLAUDE_LABEL } = require("./claude");
+const { ClaudeProvider } = require("./claude");
 const { FleetBridge } = require("./fleetBridge");
 const { FelixSkills, skillProgress } = require("./felixSkills");
 const { captureBuild, projectContext, captureAnnotation, ensureScheduledCheck, dueScheduledChecks } = require("./projectBrain");
@@ -18,6 +18,7 @@ const { ManagerWorktrees } = require("./managerWorktrees");
 const { createReviewHandler } = require("./reviewShare");
 const { runBugbot } = require("./bugbot");
 const { listenOnFirstAvailable } = require("./companionPort");
+const { discoverCodexModels, discoverGrokModels, groupModels } = require("./modelDiscovery");
 
 // Resolve a bare CLI name against PATH the same way child_process.spawn would,
 // so we can tell BEFORE spawning whether the model binary actually exists on
@@ -361,6 +362,9 @@ class AgentController {
 		this.managerDevServers = new Map(); // taskId -> DevServer
 		this._companionRelayTimer = null;
 		this._companionPreviewImage = "";
+		this._discoveredModelChoices = null;
+		this._modelDiscoveryPromise = null;
+		this._manualClaudeSelected = false;
 		try {
 			const root = workspaceCwd();
 			if (root && fs.existsSync(path.join(root, ".git"))) this.managerTasks = new ManagerWorktrees(root, { limit: 2, log: (m) => this.output.append(m) });
@@ -1542,9 +1546,10 @@ self.addEventListener("fetch", (e) => {
 
 	providerKey() {
 		const k = this.cfg().get("provider") || "composer-2.5";
-		// Claude is gated: never run it unless explicitly opted in. A stale
-		// provider="claude" setting falls back to the safe default instead.
-		if (k === "claude" && !this.claudeAllowed()) return "gpt-5.5";
+		// Claude is Thomas-test-only: a persisted/stale setting must never activate
+		// it on startup. It becomes live only after a manual picker selection in
+		// this window, and only while the explicit allowClaude gate is open.
+		if (runnerFor(k) === "claude" && (!this.claudeAllowed() || !this._manualClaudeSelected)) return "gpt-5.5";
 		return k;
 	}
 
@@ -1629,7 +1634,7 @@ self.addEventListener("fetch", (e) => {
 	modelAvailable(key) {
 		const runner = runnerFor(key);
 		if (!this.runnerAvailable(runner)) return false;
-		if (key === "gpt-5.6") return checkCodexModelCompatibility(key, this.runnerBin("codex")).ok;
+		if (/^gpt-5\.6(?:-|$)/.test(key)) return checkCodexModelCompatibility(key, this.runnerBin("codex")).ok;
 		return true;
 	}
 
@@ -1644,8 +1649,6 @@ self.addEventListener("fetch", (e) => {
 		for (const k of this.failoverChain()) {
 			if (k !== want && this.modelAvailable(k)) return k;
 		}
-		// last resort: a gated-but-allowed claude that happens to be installed
-		if (this.claudeAllowed() && this.runnerAvailable("claude")) return "claude";
 		return null;
 	}
 
@@ -1654,7 +1657,7 @@ self.addEventListener("fetch", (e) => {
 	// Returns true when the agent can proceed, false when it cannot.
 	ensureRunnableProvider() {
 		const want = this.providerKey();
-		if (want === "gpt-5.6") {
+		if (/^gpt-5\.6(?:-|$)/.test(want)) {
 			const compatibility = checkCodexModelCompatibility(want, this.runnerBin("codex"));
 			if (!compatibility.ok) {
 				this.output.append(`\n[codex] ${compatibility.message}\n`);
@@ -1726,9 +1729,38 @@ self.addEventListener("fetch", (e) => {
 
 	providerLabel() {
 		const k = this.providerKey();
-		if (k === "claude") return CLAUDE_LABEL;
 		const m = MODEL_REGISTRY[k];
 		return m ? m.label : k;
+	}
+
+	async refreshModelCatalog(force = false) {
+		if (this._modelDiscoveryPromise && !force) return this._modelDiscoveryPromise;
+		this._modelDiscoveryPromise = Promise.all([
+			discoverCodexModels(this.runnerBin("codex")),
+			discoverGrokModels(this.runnerBin("grok")),
+		]).then(([codexModels, grokModels]) => {
+			const discovered = [...codexModels, ...grokModels];
+			for (const item of discovered) {
+				MODEL_REGISTRY[item.key] = {
+					label: item.label, desc: item.description, runner: item.runner,
+					provider: item.provider,
+					codexId: item.runner === "codex" ? item.modelId : undefined,
+					grokId: item.runner === "grok" ? item.modelId : undefined,
+				};
+				if (item.runner === "grok") GROK_MODELS[item.key] = { id: item.modelId, label: item.label };
+			}
+			this._discoveredModelChoices = discovered;
+			this.postModelChoices();
+			return discovered;
+		}).catch((error) => {
+			this.output.append(`[models] CLI discovery failed: ${error && error.message || error}\n`);
+			return [];
+		});
+		return this._modelDiscoveryPromise;
+	}
+
+	modelProviders() {
+		return groupModels(this.modelChoices(), this.claudeAllowed());
 	}
 
 	// Single source of truth for the model list — shared by the command-palette
@@ -1736,24 +1768,36 @@ self.addEventListener("fetch", (e) => {
 	// Derived from MODEL_REGISTRY (grok.js): a new model is one entry there.
 	// Gated models (claude) only appear when explicitly opted in.
 	modelChoices() {
+		if (this._discoveredModelChoices) {
+			const list = [...this._discoveredModelChoices];
+			if (this.claudeAllowed()) {
+				for (const key of ["claude-opus", "claude-sonnet"]) {
+					const m = MODEL_REGISTRY[key];
+					list.push({ key, modelId: m.claudeId, label: m.label, description: m.desc, runner: m.runner, provider: "claude", manualOnly: true });
+				}
+			}
+			return list;
+		}
 		return Object.entries(MODEL_REGISTRY)
 			.filter(([, m]) => !m.gated || this.claudeAllowed())
 			.sort((a, b) => (a[1].order || 0) - (b[1].order || 0))
-			.map(([key, m]) => ({ key, label: m.label, description: m.desc }));
+			.map(([key, m]) => ({ key, label: m.label, description: m.desc, provider: m.provider || (m.runner === "claude" ? "claude" : m.runner === "grok" ? "grok" : "gpt"), manualOnly: !!m.manualOnly }));
 	}
 
 	async selectModel() {
 		const cur = this.providerKey();
-		const items = this.modelChoices().map((it) => (it.key === cur ? { ...it, label: "$(check) " + it.label } : it));
-		const pick = await vscode.window.showQuickPick(items, { placeHolder: "Solstice agent model" });
+		await this.refreshModelCatalog();
+		const provider = await vscode.window.showQuickPick(this.modelProviders().map((group) => ({ key: group.key, label: group.label, description: `${group.models.length} available` })), { placeHolder: "1/2 — Choose provider" });
+		if (!provider) return;
+		const group = this.modelProviders().find((item) => item.key === provider.key);
+		const items = (group ? group.models : []).map((it) => (it.key === cur ? { ...it, label: "$(check) " + it.label } : it));
+		const pick = await vscode.window.showQuickPick(items, { placeHolder: `2/2 — Choose ${provider.label} tier` });
 		if (!pick || pick.key === cur) return;
 		if (this.agentBusy()) {
 			vscode.window.showWarningMessage("Solstice: finish or stop the current build before switching the model.");
 			return;
 		}
-		await this.cfg().update("provider", pick.key, this.cfgTarget());
-		this.resetAgentSession();
-		this.applyProviderToWebviews();
+		await this.setModel(pick.key);
 	}
 
 	// Tear down the running agent session so the NEXT prompt spawns the freshly
@@ -1802,6 +1846,7 @@ self.addEventListener("fetch", (e) => {
 			this.applyProviderToWebviews(); // snap the picker back to the real provider
 			return;
 		}
+		this._manualClaudeSelected = runnerFor(key) === "claude";
 		await this.cfg().update("provider", key, this.cfgTarget());
 		this.resetAgentSession();
 		this.applyProviderToWebviews();
@@ -1835,9 +1880,8 @@ self.addEventListener("fetch", (e) => {
 		const mt = { type: "thread", model: this.providerLabel() };
 		this.post(mt);
 		this.postManager(mt);
-		const models = { type: "models", list: this.modelChoices(), current: this.providerKey() };
-		this.post(models);
-		this.postManager(models);
+		this.postModelChoices();
+		this.refreshModelCatalog().catch(() => { });
 		this.postEngineStatus();
 		if (runnerFor(this.providerKey()) !== "codex") {
 			const auth = { type: "auth", authMethod: runnerFor(this.providerKey()) === "claude" ? "claude-cli" : "grok-cli" };
@@ -1849,6 +1893,12 @@ self.addEventListener("fetch", (e) => {
 		}
 	}
 
+	postModelChoices() {
+		const models = { type: "models", list: this.modelChoices(), providers: this.modelProviders(), current: this.providerKey() };
+		this.post(models);
+		this.postManager(models);
+	}
+
 	// Ordered auto-failover chain. Claude is intentionally NEVER here — it is
 	// manual-only (solstice.codex.allowClaude), per Thomas: the IDE runs on the
 	// freshest non-Claude models. Config-driven so newer/stronger models can be
@@ -1858,7 +1908,7 @@ self.addEventListener("fetch", (e) => {
 		let chain = this.cfg().get("failoverChain");
 		if (!Array.isArray(chain) || !chain.length) chain = def;
 		// hard guard: claude can never enter the automatic chain
-		return chain.map((s) => String(s)).filter((k) => k && k !== "claude");
+		return chain.map((s) => String(s)).filter((k) => k && runnerFor(k) !== "claude");
 	}
 
 	// Auto-failover: on a quota/rate-limit error, transparently advance to the
@@ -1872,8 +1922,8 @@ self.addEventListener("fetch", (e) => {
 		// only fail over to a model whose CLI is actually installed here
 		const next = chain.find((k) => !this._failoverTried.has(k) && this.modelAvailable(k));
 		if (!next) {
-			// chain exhausted — fall back to the manual prompt (may include Claude
-			// if the user opted in) so the build isn't silently stuck.
+			// Chain exhausted — offer only non-Claude choices. Claude remains
+			// exclusively reachable through the explicit two-stage model picker.
 			this.suggestFallback();
 			return;
 		}
@@ -1897,12 +1947,11 @@ self.addEventListener("fetch", (e) => {
 		if (this.fallbackPrompted) return;
 		this.fallbackPrompted = true;
 		const choices = ["GPT-5.6 Sol (Codex)", "GPT-5.5 (Codex)", "Grok 4.5 Build", "Composer 2.5 Fast", "Stay"];
-		if (this.claudeAllowed()) choices.unshift("Claude Code");
 		vscode.window.showWarningMessage(
 			"All auto-failover models hit their limit. Switch the Solstice agent manually?",
 			...choices
 		).then(async (pick) => {
-			const key = pick === "Claude Code" ? "claude" : pick === "GPT-5.6 Sol (Codex)" ? "gpt-5.6" : pick === "GPT-5.5 (Codex)" ? "gpt-5.5" : pick === "Grok 4.5 Build" ? "grok-build" : pick === "Composer 2.5 Fast" ? "composer-2.5" : null;
+			const key = pick === "GPT-5.6 Sol (Codex)" ? "gpt-5.6" : pick === "GPT-5.5 (Codex)" ? "gpt-5.5" : pick === "Grok 4.5 Build" ? "grok-build" : pick === "Composer 2.5 Fast" ? "composer-2.5" : null;
 			if (!key) return;
 			await this.cfg().update("provider", key, this.cfgTarget());
 			this.applyProviderToWebviews();
@@ -2154,9 +2203,11 @@ self.addEventListener("fetch", (e) => {
 		const cwd = workspaceCwd();
 		if (!cwd) { vscode.window.showWarningMessage("Solstice: open a folder first."); return; }
 		if (!this.claude) {
+			const selected = MODEL_REGISTRY[this.providerKey()] || {};
 			this.claude = new ClaudeProvider({
 				cwd,
 				bin: this.cfg().get("claudePath") || undefined,
+				model: selected.claudeId || undefined,
 				permissionMode: this.cfg().get("claudePermissionMode") || undefined,
 				log: (s) => this.output.append(s),
 				notify: (m, p) => this.onNotification(m, p),
