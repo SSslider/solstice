@@ -7,7 +7,7 @@ const os = require("os");
 const { spawn } = require("child_process");
 const { CodexClient, resolveCodexBinary } = require("./codexClient");
 const { checkCodexModelCompatibility } = require("./codexCompatibility");
-const { isPureLaunchIntent } = require("./intent");
+const { isPureLaunchIntent, isPureStopRuntimeIntent } = require("./intent");
 const { PreviewServer, DevServer, detectDevServerUrl, hasFramework } = require("./preview");
 const { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, resolveGrokBinary, grokBundlePresent, killTree } = require("./grok");
 const { ClaudeProvider } = require("./claude");
@@ -372,6 +372,10 @@ class AgentController {
 		try {
 			this.skills = new FelixSkills({
 				dir: path.join(context.globalStorageUri.fsPath, "felix-skills"),
+				legacyDirs: [
+					path.join(context.extensionPath, "felix-skills"),
+					...(context.storageUri ? [path.join(context.storageUri.fsPath, "felix-skills")] : []),
+				],
 				embedderUrl: this.cfg().get("skillEmbedderUrl") || "",
 				log: (m) => this.output.append(m + "\n"),
 			});
@@ -579,20 +583,6 @@ class AgentController {
 		if (this.previewPanel && this.previewReady && this.previewUrl) {
 			this.postPreview({ type: "load", url: this.previewUrl, device: this.defaultDevice() });
 		}
-	}
-
-	// Keep the CENTER live preview in sync after EVERY turn — not just the first.
-	// If a site is being served, open the preview if it was closed, else reload it
-	// so the user always sees the latest build per prompt. (Thomas #1, 22/06.)
-	refreshPreview() {
-		// No URL yet (or it got cleared) → re-detect/serve the preview from the current
-		// workspace, so subsequent prompts re-open it instead of staying blank. (Thomas:
-		// "preview only shows on the first build.")
-		if (!this.previewUrl) { this.openPreview("").catch(() => { }); return; }
-		// Panel was closed → re-open it. Otherwise just (re)load — queue the load even if
-		// the webview isn't "ready" yet; its ready handler re-loads previewUrl anyway.
-		if (!this.previewPanel) { this.openPreviewPanel(this.previewUrl, this.defaultDevice()); return; }
-		this.postPreview({ type: "load", url: this.previewUrl, device: this.defaultDevice() });
 	}
 
 	// ---- Phone Companion (PWA): drive Felix + watch the build live from a phone ----
@@ -1211,6 +1201,34 @@ self.addEventListener("fetch", (e) => {
 		else { this.post({ type: "systemNote", text: "⚠️ לא הצלחתי להריץ את שרת הפיתוח — בדוק את הטרמינל." }); }
 	}
 
+	// Deterministic runtime commands should not spend a model turn rediscovering
+	// the workspace. Launch/reveal is handled by the IDE; an owned dev server can
+	// also be stopped directly. External servers are left to the agent because we
+	// do not own their PID and must not kill an unrelated process by port alone.
+	async handleRuntimeIntent(text) {
+		if (isPureLaunchIntent(text)) {
+			const root = workspaceCwd();
+			if (!root) { vscode.window.showWarningMessage("Solstice: open a folder first."); return true; }
+			const live = await detectDevServerUrl(root).catch(() => null);
+			if (live) await this.openPreview(live).catch(() => { });
+			else if (hasFramework(root)) await this.ensureDevServer();
+			else await this.openPreview("").catch(() => { });
+			if (this.previewUrl) this.refreshPreview();
+			this.post({ type: "systemNote", text: this.previewUrl ? "🚀 האתר פתוח ב־Live Preview." : "⚠️ לא נמצא שרת או קובץ שניתן להציג." });
+			return true;
+		}
+		if (isPureStopRuntimeIntent(text) && this.devServer && this.devServer.hasOwnedProcess()) {
+			const result = this.devServer.stop();
+			if (result.stopped) {
+				this.previewUrl = "";
+				this.postPreview({ type: "load", url: "", device: this.defaultDevice() });
+				this.post({ type: "systemNote", text: `🛑 שרת הפיתוח של Solstice נעצר (PID ${result.pid}).` });
+				return true;
+			}
+		}
+		return false;
+	}
+
 	stopPreviewWatch() {
 		if (this._previewWatch) { clearInterval(this._previewWatch); this._previewWatch = null; }
 	}
@@ -1253,9 +1271,10 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	refreshPreview() {
-		if (!this.previewUrl || !this.previewPanel) return;
-		// pulse the "building" shimmer + reload the iframe so the agent's edits
-		// stream into the frame like an image rendering in.
+		// This is intentionally the only refreshPreview implementation. A duplicate
+		// method used to override the reopen path, so turn 2+ silently lost Preview.
+		if (!this.previewUrl) { this.openPreview("").catch(() => { }); return; }
+		if (!this.previewPanel) { this.openPreviewPanel(this.previewUrl, this.defaultDevice()); return; }
 		this.postPreview({ type: "reload", holdMs: 900 });
 	}
 
@@ -2220,7 +2239,7 @@ self.addEventListener("fetch", (e) => {
 		await this.claude.send(prompt, this.claudePreamble(text));
 	}
 
-	async sendGrok(text) {
+	async sendGrok(text, rawText = text) {
 		const prompt = appendResearchContract(text);
 		const cwd = workspaceCwd();
 		if (!cwd) { vscode.window.showWarningMessage("Solstice: open a folder first."); return; }
@@ -2238,7 +2257,7 @@ self.addEventListener("fetch", (e) => {
 			this.post({ type: "thread", threadId: this.threadId, model: this.providerLabel() });
 		}
 		this.startGrokWatcher();
-		await this.grok.send(this.providerKey(), prompt, this.grokPreamble(text));
+		await this.grok.send(this.providerKey(), prompt, this.grokPreamble(rawText), { userText: rawText });
 		this.flushGrokChanges();
 	}
 
@@ -2660,6 +2679,10 @@ self.addEventListener("fetch", (e) => {
 	// sidebar send: lazily creates the sidebar thread
 	async send(text) {
 		const rawText = text;
+		if (await this.handleRuntimeIntent(rawText)) {
+			if (rawText) this._lastUserPrompt = rawText;
+			return;
+		}
 		if (this._planApprovalBypass) this._planApprovalBypass = false;
 		else if (this.isBuildIntent(text)) {
 			this.beginFlowingPlan(text);
@@ -2690,7 +2713,7 @@ self.addEventListener("fetch", (e) => {
 			if (prov && prov.busy) return this.steer(this.threadId, text);
 		}
 		if (runner === "claude") return this.sendClaude(text);
-		if (runner === "grok") return this.sendGrok(text);
+		if (runner === "grok") return this.sendGrok(text, rawText);
 		if (!this.threadId) {
 			const { id, model } = await this.startThread(text);
 			this.threadId = id;

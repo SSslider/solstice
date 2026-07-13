@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const https = require("https");
+const SKILL_STORE_MIGRATION = ".storage-migration-v1.json";
 
 // Felix's PRIVATE self-improvement store (Phase 6). Skills are reusable
 // playbooks distilled from VERIFIED-good builds; memory holds lessons. Both
@@ -19,6 +20,42 @@ function slug(s) {
 // tokens include latin + hebrew so retrieval works on bilingual task prompts.
 function tokenize(s) {
 	return (String(s || "").toLowerCase().match(/[a-z0-9\u0590-\u05ff]+/g)) || [];
+}
+
+// One-time import into VS Code globalStorage. Older/dev builds could leave the
+// mutable store beside the extension bundle or in workspaceStorage; both are
+// replaced during an update. Existing global files always win, so migration is
+// idempotent and never rolls XP/version metadata backwards.
+function migrateLegacyStores(targetDir, legacyDirs, log = () => { }) {
+	fs.mkdirSync(targetDir, { recursive: true });
+	const marker = path.join(targetDir, SKILL_STORE_MIGRATION);
+	try {
+		if (fs.existsSync(marker)) return JSON.parse(fs.readFileSync(marker, "utf8"));
+	} catch { }
+	let copied = 0;
+	const sources = [];
+	for (const legacy of [...new Set((legacyDirs || []).filter(Boolean).map((p) => path.resolve(p)))]) {
+		if (legacy === path.resolve(targetDir) || !fs.existsSync(legacy)) continue;
+		let sourceCopied = 0;
+		for (const bucket of ["skills", "memory"]) {
+			const from = path.join(legacy, bucket);
+			const to = path.join(targetDir, bucket);
+			let files = [];
+			try { files = fs.readdirSync(from, { withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")); } catch { }
+			if (!files.length) continue;
+			fs.mkdirSync(to, { recursive: true });
+			for (const entry of files) {
+				const dest = path.join(to, entry.name);
+				if (fs.existsSync(dest)) continue;
+				try { fs.copyFileSync(path.join(from, entry.name), dest); copied++; sourceCopied++; } catch { }
+			}
+		}
+		if (sourceCopied) sources.push({ path: legacy, copied: sourceCopied });
+	}
+	const result = { version: 1, migratedAt: new Date().toISOString(), copied, sources };
+	try { fs.writeFileSync(marker, JSON.stringify(result, null, 2) + "\n"); } catch { }
+	if (copied) log(`[skills] migrated ${copied} durable file(s) into globalStorage`);
+	return result;
 }
 
 const SKILL_LEVELS = [
@@ -46,6 +83,7 @@ function skillProgress(meta = {}) {
 class FelixSkills {
 	constructor(opts) {
 		this.dir = opts.dir;
+		this.migration = migrateLegacyStores(this.dir, opts.legacyDirs, opts.log);
 		this.skillsDir = path.join(this.dir, "skills");
 		this.memoryDir = path.join(this.dir, "memory");
 		this.log = opts.log || (() => { });
@@ -244,4 +282,4 @@ class FelixSkills {
 	}
 }
 
-module.exports = { FelixSkills, slug, tokenize, skillProgress, SKILL_LEVELS };
+module.exports = { FelixSkills, slug, tokenize, skillProgress, SKILL_LEVELS, migrateLegacyStores, SKILL_STORE_MIGRATION };

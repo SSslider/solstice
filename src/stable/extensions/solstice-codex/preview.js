@@ -465,6 +465,7 @@ class DevServer {
 	}
 
 	log(s) { try { this.onLog(s); } catch { } }
+	hasOwnedProcess() { return !!(this.proc && this.proc.pid && this.proc.exitCode === null); }
 
 	// Resolve to a live dev-server URL, starting the server if needed. Returns
 	// null only if the project has no dev script or the server never came up.
@@ -523,11 +524,17 @@ class DevServer {
 		});
 	}
 
+	stop() {
+		if (!this.hasOwnedProcess()) return { stopped: false, pid: null };
+		const pid = this.proc.pid;
+		try { process.platform === "win32" ? spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true }) : this.proc.kill("SIGTERM"); } catch { return { stopped: false, pid }; }
+		this.proc = null;
+		this.url = null;
+		return { stopped: true, pid };
+	}
+
 	dispose() {
-		if (this.proc) {
-			try { process.platform === "win32" ? spawn("taskkill", ["/pid", String(this.proc.pid), "/T", "/F"], { windowsHide: true }) : this.proc.kill("SIGTERM"); } catch { }
-			this.proc = null;
-		}
+		this.stop();
 		this.url = null;
 	}
 }

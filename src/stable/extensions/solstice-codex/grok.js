@@ -9,6 +9,7 @@ const { resolveWinSpawn, whichFull } = require("./winspawn");
 const GROK_TEMP_RE = /^solstice-grok-(?:agent-)?[a-z0-9-]+\.(?:txt|md)$/i;
 const GROK_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const GROK_STARTUP_HEARTBEAT_MS = 20 * 1000;
+const GROK_HISTORY_TEXT_LIMIT = 4000;
 
 // A Grok process may legitimately go quiet later while it thinks or runs a long
 // command. The dangerous silence is at startup: until the first stdout/stderr or
@@ -265,6 +266,7 @@ class GrokProvider {
 		this.extensionPath = opts.extensionPath || "";
 		this.log = opts.log || (() => { });
 		this.notify = opts.notify;
+		this.spawn = opts.spawn || spawn;
 		this.threadId = "grok-" + Date.now().toString(36);
 		this.child = null;
 		this._starting = false;
@@ -290,17 +292,37 @@ class GrokProvider {
 		return wasBusy;
 	}
 
-	// Bake the recent conversation into the prompt (stateless multi-turn). Last 8
-	// entries (~4 exchanges) is enough context to continue without re-sending the
-	// whole transcript every turn.
-	_composePrompt(text) {
-		const recent = this.history.slice(-8);
-		if (!recent.length) return text;
-		const block = recent.map((h) => (h.role === "user" ? "User: " : "Assistant: ") + h.text).join("\n\n");
-		return `══ recent conversation so far (context only — continue from it, don't repeat it) ══\n${block}\n\n══ current request ══\n${text}`;
+	// Bake concise continuity into each stateless turn. History deliberately stores
+	// only the user's clean request and a bounded assistant summary — never the
+	// injected Project Brain / Skills / research contracts. Re-storing those blocks
+	// made prompt 2+ grow geometrically and pushed the real request behind stale
+	// inventory context, which looked exactly like Felix ignoring follow-ups.
+	_composePrompt(text, cleanRequest) {
+		const current = String(cleanRequest || text || "").trim();
+		const recent = this.history.slice(-6);
+		const block = recent.length
+			? recent.map((h) => (h.role === "user" ? "User request: " : "Assistant outcome: ") + h.text).join("\n\n")
+			: "(first turn in this runtime)";
+		return [
+			"[FELIX_CURRENT_REQUEST]",
+			current,
+			"[/FELIX_CURRENT_REQUEST]",
+			"",
+			"Execute the exact current request now. Existing files are continuity, not a request to restart discovery. Do not replace the requested action with a workspace inventory or a skills summary.",
+			"",
+			"[FELIX_RECENT_CONTINUITY]",
+			block,
+			"[/FELIX_RECENT_CONTINUITY]",
+			"",
+			"[FELIX_CURRENT_TURN_CONTEXT]",
+			String(text || "").trim(),
+			"[/FELIX_CURRENT_TURN_CONTEXT]",
+			"",
+			"Current request (execute before narrating): " + current,
+		].join("\n");
 	}
 
-	send(providerKey, text, preamble) {
+	send(providerKey, text, preamble, opts = {}) {
 		if (this.busy) return Promise.reject(new Error("a turn is already running"));
 		this._starting = true;
 		this._interruptRequested = false;
@@ -315,7 +337,8 @@ class GrokProvider {
 		// prompt from the user prompt, and uses a generous total-time budget with no
 		// idle kill. We mirror that proven pattern here.
 		if (preamble) this._sys = preamble;            // remember system prompt across turns
-		const userPrompt = this._composePrompt(text);
+		const cleanRequest = String(opts.userText || text || "").trim();
+		const userPrompt = this._composePrompt(text, cleanRequest);
 		// History+prompt can be large → pass via --prompt-file (avoids ARG_MAX).
 		// The SYSTEM prompt must ride in the file too once it outgrows argv: on
 		// Windows an oversized --system-prompt-override blows the CreateProcess /
@@ -526,7 +549,7 @@ class GrokProvider {
 			});
 			noteStartupActivity = startupHeartbeat.pulse;
 			if (startupActivitySeen) startupHeartbeat.pulse();
-			const child = spawn(sp.cmd, sp.args, { cwd: this.cwd, env: sp.env ? { ...env, ...sp.env } : env, detached: process.platform !== "win32", windowsHide: true });
+			const child = this.spawn(sp.cmd, sp.args, { cwd: this.cwd, env: sp.env ? { ...env, ...sp.env } : env, detached: process.platform !== "win32", windowsHide: true });
 			this.child = child;
 			this._starting = false;
 			if (this._interruptRequested) killTree(child);
@@ -609,10 +632,12 @@ class GrokProvider {
 				cleanupFiles();
 				closeReasoning();
 				closeMessage();
-				// Record the exchange so the NEXT turn has context (stateless multi-turn).
-				this.history.push({ role: "user", text });
-				this.history.push({ role: "assistant", text: assistantOut.trim() || "(no text response)" });
-				if (this.history.length > 16) this.history = this.history.slice(-16);
+				// Record only bounded, clean continuity for the NEXT stateless turn.
+				// Tool-only turns do not add a fake assistant message — the filesystem is
+				// already their source of truth.
+				this.history.push({ role: "user", text: cleanRequest.slice(0, GROK_HISTORY_TEXT_LIMIT) });
+				if (assistantOut.trim()) this.history.push({ role: "assistant", text: assistantOut.trim().slice(-GROK_HISTORY_TEXT_LIMIT) });
+				if (this.history.length > 12) this.history = this.history.slice(-12);
 				if (timedOut) {
 					this.notify("error", { threadId: tid, error: { message: `grok turn exceeded the ${Math.round(TURN_BUDGET_MS / 60000)}-minute budget and was ended. Anything already produced is kept — your next message continues from here.` } });
 				} else if (code !== 0 && code !== null) {
@@ -627,4 +652,4 @@ class GrokProvider {
 	}
 }
 
-module.exports = { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, unifiedDiff, killTree, resolveGrokBinary, grokBundlePresent, cleanupStaleGrokTempFiles, createStartupHeartbeat, GROK_STARTUP_HEARTBEAT_MS };
+module.exports = { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, unifiedDiff, killTree, resolveGrokBinary, grokBundlePresent, cleanupStaleGrokTempFiles, createStartupHeartbeat, GROK_STARTUP_HEARTBEAT_MS, GROK_HISTORY_TEXT_LIMIT };
