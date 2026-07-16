@@ -584,7 +584,7 @@
 			return b;
 		};
 		bar.appendChild(mk("Approve", "accept", "primary"));
-		if (!isCredit) bar.appendChild(mk("Approve for session", "acceptForSession", ""));
+		if (!isCredit && !(params && params.oneShotOnly)) bar.appendChild(mk("Approve for session", "acceptForSession", ""));
 		bar.appendChild(mk("Deny", "decline", "danger"));
 		card.appendChild(bar);
 		messagesEl.appendChild(card);

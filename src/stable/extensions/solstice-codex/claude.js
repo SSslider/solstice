@@ -41,6 +41,8 @@ class ClaudeProvider {
 		this.bin = opts.bin || "claude";
 		this.model = opts.model || "";                          // "" = CLI default
 		this.permissionMode = opts.permissionMode || "acceptEdits";
+		this.env = opts.env || {};
+		this.allowedTools = Array.isArray(opts.allowedTools) ? opts.allowedTools : [];
 		this.log = opts.log || (() => { });
 		this.notify = opts.notify;
 		this.threadId = "claude-" + Date.now().toString(36);
@@ -150,10 +152,11 @@ class ClaudeProvider {
 			"--include-partial-messages",
 			"--permission-mode", this.permissionMode,
 		];
+		if (this.allowedTools.length) args.push("--allowedTools", this.allowedTools.join(","));
 		if (this.sessionId) args.push("--resume", this.sessionId);
 		if (this.model) args.push("--model", this.model);
 		this.turns++;
-		const env = { ...process.env };
+		const env = { ...process.env, ...this.env };
 		delete env.ANTHROPIC_API_KEY;   // force Claude Max OAuth, never API-key billing
 		delete env.ANTHROPIC_BASE_URL;
 		const tid = this.threadId;

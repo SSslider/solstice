@@ -29,6 +29,7 @@
     read: "📖 קורא",
     crawl: "🕸 סורק",
     search: "🔎 מחפש",
+    videosearch: "🎬 מחפש וידאו חינמי",
     live: "👁 גולש חי",
     act: "🖱 מפעיל אתר",
     videoframes: "🎞 דוגם וידאו",

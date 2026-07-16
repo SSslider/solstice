@@ -21,7 +21,7 @@ class CodexClient {
 
 	start() {
 		if (this.running) return;
-		const env = { ...process.env };
+		const env = { ...process.env, ...(this.opts.env || {}) };
 		if (this.opts.codexHome) env.CODEX_HOME = this.opts.codexHome;
 		// Same Windows npm-shim EPERM guard as the grok provider: a bare codex
 		// resolves to codex.cmd, which CreateProcess refuses to run. No-op on *nix.

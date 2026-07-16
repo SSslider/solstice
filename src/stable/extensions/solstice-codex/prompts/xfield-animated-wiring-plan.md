@@ -2,6 +2,8 @@
 
 This document defines the premium route boundary. It does not call X-Field, Seedance, or any paid provider.
 
+Felix may present this route as an optional proposal when premium generated footage has a clear advantage over free Pexels/Pixabay stock or the local image-sequence route. The proposal must include a free-vs-premium comparison, intended scene/duration/aspect ratio, estimated creation time, and expected credit/cost range. A proposal is not execution and must say that the bridge below is still unimplemented.
+
 1. The interactive build requests a short premium clip through a typed `animated/video-request` action containing the scene brief, duration, aspect ratio, provider, and estimated credits.
 2. `creditRiskSignal()` must evaluate that action before autonomy or dev-autoapprove. The approval card must remain Approve-once/Deny and show the provider, intended creation, and credit estimate.
 3. Only an `accept` decision from Thomas may issue one ephemeral request ID. Never persist session-wide approval and never convert `acceptForSession` into permission for this action.
@@ -9,4 +11,4 @@ This document defines the premium route boundary. It does not call X-Field, Seed
 5. The bridge then runs `animated-assets.js from-video <workspace> <clip> --thomas-approved`. This local step only extracts WebP frames and writes the scrub manifest; it does not generate or spend credits.
 6. Failed, canceled, or expired jobs stop. They never fall back to another paid provider and never retry a billable request without a new approval card.
 
-Implementation gate: Orion and Thomas must approve the provider/bridge contract, credential location, estimate source, cancellation behavior, and one-job approval token before any provider call is added.
+Implementation gate: Orion and Thomas must approve the provider/bridge contract, credential location, estimate source, cancellation behavior, and one-job approval token before any provider call is added. Even after that separate approval, each billable job still requires the existing one-time Thomas approval card; Autonomous never bypasses it.

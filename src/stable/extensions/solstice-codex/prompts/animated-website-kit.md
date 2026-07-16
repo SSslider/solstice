@@ -20,14 +20,22 @@ Every animated site must include at least one substantial motion system:
 
 ## Asset Pipeline (required for canvas/video scrollytelling)
 
-Use the free path by default:
+Images remain the default when the user did not ask for video. When the user explicitly asks for video, footage, clips, or a video background, use the free stock-video path before generating image sequences:
+
+1. Run `browse.js videosearch "<specific visual query>" 8`. It searches Pexels and, when `PIXABAY_API_KEY` is configured, Pixabay. This is stock-media retrieval, not paid generation, so it does not open the credit gate.
+2. Review `pageUrl`, duration, dimensions, creator, and license metadata. Download the selected `videoUrl` into `public/media/`; never hotlink a provider URL in the delivered site when a local copy is practical. Preserve the source page, attribution, and license URL in `.solstice/stock-video-manifest.json`.
+3. Create a local poster from the selected clip with ffmpeg when `posterUrl` is empty. Trim to the strongest 6-12 second section, compress for web delivery, and keep an MP4 source plus WebM when the installed ffmpeg supports it.
+4. Embed a real `<video muted playsInline preload="metadata" poster="...">` with a static `<img>` fallback. Lazy-assign its source with `IntersectionObserver`; start at `trimStart`, wrap at `trimEnd`, and pause when off-screen. Decorative video is `aria-hidden="true"`; meaningful video needs an accessible label/transcript.
+5. Verify the clip loads from a clean browser session, the poster is visible before playback, reduced-motion keeps the poster still, and mobile does not eagerly download off-screen video.
+
+Use the free image-sequence path for canvas scrub scenes and for requests that do not explicitly ask for video:
 
 1. Run `node <extension>/webtools/animated-assets.js init <workspace>`.
 2. Edit `.solstice/animated/brief.json`: define one coherent world, 4-8 chapter scenes, continuity lock, duration, fps, and output dimensions.
 3. Run `node <extension>/webtools/animated-assets.js free <workspace>`. It asks Codex image generation for coherent chapter keyframes, verifies exact files, uses ffmpeg motion interpolation/preparation, writes `public/frames/frame_001.webp ...`, a manifest, and a ready `src/components/CanvasScrub.jsx` scaffold.
 4. Import `CanvasScrub`, pass the chapter copy from the manifest/brief, and keep text in crisp DOM layers above the canvas.
 
-Do not invoke X-Field/Seedance or any paid provider from this kit. The premium route is only designed in `xfield-animated-wiring-plan.md`; it remains behind the Solstice credit gate and requires a one-time Thomas approval before a future bridge can create a clip. After an approved clip exists locally, only the non-billable extraction step is allowed: `animated-assets.js from-video <workspace> <approved-clip> --thomas-approved`.
+Felix may propose X-Field/Seedance as an optional premium route when it would materially improve a cinematic/video-heavy site. The proposal must compare the free stock/image route against the premium route, state the intended scene, estimated time, and expected credit/cost range, and say clearly that no provider bridge is implemented in this checkpoint. It must not invoke a provider. Any future execution remains blocked by the existing one-time Thomas approval card, even in Autonomous, plus separate Thomas+Orion approval of the bridge contract. After an approved clip exists locally, only the non-billable extraction step is allowed: `animated-assets.js from-video <workspace> <approved-clip> --thomas-approved`.
 
 Never silently fall back from the free route to a paid provider.
 
@@ -125,7 +133,7 @@ export function ScrollScene() {
 - Read `public/frames/manifest.json` for frame count, fps, chapters, and route provenance.
 - Preload frames in chunks; on mobile, use fewer/lower-resolution frames.
 - Use a sticky canvas stage and map scroll progress to frame index.
-- If using a video, keep it muted/inline and drive `video.currentTime` from scroll progress after metadata loads.
+- If using a scroll-scrub video, keep it muted/inline and drive `video.currentTime` from scroll progress only after metadata loads. For ambient loops, use explicit `trimStart`/`trimEnd` bounds and pause off-screen; do not rely on an unbounded `loop` over a long source clip.
 
 ## World in Chapters
 

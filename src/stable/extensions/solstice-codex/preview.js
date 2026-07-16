@@ -1,5 +1,6 @@
 "use strict";
 const http = require("http");
+const net = require("net");
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
@@ -238,6 +239,85 @@ function injectSelect(html) {
 // only plain-HTML projects fall back to the static PreviewServer.
 
 const COMMON_DEV_PORTS = [5173, 3000, 4173, 5174, 8080, 4321, 3001, 8000, 5500];
+const DEV_SERVER_REGISTRY = path.join(".solstice", "dev-server.json");
+const WORKSPACE_PORT_MIN = 12000;
+const WORKSPACE_PORT_SPAN = 2000;
+
+function canonicalRoot(root) {
+	let resolved = path.resolve(String(root || ""));
+	try { resolved = fs.realpathSync.native(resolved); } catch { }
+	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function sameRoot(a, b) { return canonicalRoot(a) === canonicalRoot(b); }
+
+function registryPath(root) { return path.join(root, DEV_SERVER_REGISTRY); }
+
+function processIsAlive(pid) {
+	if (!Number.isInteger(Number(pid)) || Number(pid) <= 0) return false;
+	try { process.kill(Number(pid), 0); return true; }
+	catch (error) { return !!(error && error.code === "EPERM"); }
+}
+
+function readDevServerRegistration(root) {
+	try {
+		const record = JSON.parse(fs.readFileSync(registryPath(root), "utf8"));
+		if (!record || !sameRoot(record.root, root)) return null;
+		const port = Number(record.port), pid = Number(record.pid);
+		if (!Number.isInteger(port) || port < 1 || port > 65535 || !Number.isInteger(pid) || pid < 1) return null;
+		return { port, pid, root: canonicalRoot(record.root), ts: String(record.ts || "") };
+	} catch { return null; }
+}
+
+function writeDevServerRegistration(root, record) {
+	const dir = path.join(root, ".solstice");
+	fs.mkdirSync(dir, { recursive: true });
+	const file = registryPath(root);
+	const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+	const value = {
+		port: Number(record.port),
+		pid: Number(record.pid),
+		root: canonicalRoot(root),
+		ts: record.ts || new Date().toISOString(),
+	};
+	fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", "utf8");
+	try { fs.renameSync(tmp, file); }
+	catch {
+		try { fs.unlinkSync(file); } catch { }
+		fs.renameSync(tmp, file);
+	}
+	return value;
+}
+
+function clearDevServerRegistration(root, expectedPid) {
+	const current = readDevServerRegistration(root);
+	if (!current || (expectedPid && current.pid !== Number(expectedPid))) return false;
+	try { fs.unlinkSync(registryPath(root)); return true; } catch { return false; }
+}
+
+function workspacePortStart(root) {
+	let hash = 2166136261;
+	for (const ch of canonicalRoot(root)) { hash ^= ch.charCodeAt(0); hash = Math.imul(hash, 16777619); }
+	return WORKSPACE_PORT_MIN + ((hash >>> 0) % WORKSPACE_PORT_SPAN);
+}
+
+function canListen(port) {
+	return new Promise((resolve) => {
+		const server = net.createServer();
+		server.unref();
+		server.once("error", () => resolve(false));
+		server.listen(port, "127.0.0.1", () => server.close(() => resolve(true)));
+	});
+}
+
+async function allocateWorkspacePort(root) {
+	const first = workspacePortStart(root);
+	for (let i = 0; i < WORKSPACE_PORT_SPAN; i++) {
+		const port = WORKSPACE_PORT_MIN + ((first - WORKSPACE_PORT_MIN + i) % WORKSPACE_PORT_SPAN);
+		if (await canListen(port)) return port;
+	}
+	return null;
+}
 
 // Does this project need a dev server (vs. plain static HTML)?
 function hasFramework(root) {
@@ -277,11 +357,29 @@ function httpProbe(port, timeout = 700) {
 	});
 }
 
-// Returns http://127.0.0.1:<port>/ of a live dev server for this project, or null.
-async function detectDevServerUrl(root) {
-	const order = portOrder(root);
+// Returns only a dev server registered to this exact workspace. A live process
+// on a familiar port is not ownership proof: another Solstice window may own it.
+async function detectDevServerUrl(root, opts) {
+	let registered = readDevServerRegistration(root);
+	if (registered) {
+		if (processIsAlive(registered.pid)) {
+			if (await httpProbe(registered.port)) return `http://127.0.0.1:${registered.port}/`;
+			// The registration is written at spawn time, before a cold Vite/Next boot
+			// begins listening. Keep recent ownership records while startup is in flight.
+			const ageMs = Date.now() - Date.parse(registered.ts || "");
+			if (Number.isFinite(ageMs) && ageMs < 2 * 60 * 1000) return null;
+		}
+		clearDevServerRegistration(root, registered.pid);
+	}
+
+	// Last-resort probe exists only for a registry that appears while probing
+	// (for example another window finishing startup). Never adopt an unregistered
+	// server merely because it answered on a common port.
+	const order = (opts && Array.isArray(opts.ports)) ? opts.ports : portOrder(root);
 	const hits = await Promise.all(order.map((p) => httpProbe(p).then((ok) => (ok ? p : null))));
-	const live = order.find((_p, i) => hits[i]);
+	registered = readDevServerRegistration(root);
+	if (!registered || !processIsAlive(registered.pid)) return null;
+	const live = order.find((p, i) => hits[i] && p === registered.port);
 	return live ? `http://127.0.0.1:${live}/` : null;
 }
 
@@ -462,6 +560,7 @@ class DevServer {
 		this.proc = null;
 		this.starting = null;     // in-flight start() promise (dedupe)
 		this.url = null;
+		this.port = null;
 	}
 
 	log(s) { try { this.onLog(s); } catch { } }
@@ -488,17 +587,48 @@ class DevServer {
 			if (!ok) { this.log("[dev] npm install failed — preview unavailable\n"); return null; }
 		}
 
-		this.log(`[dev] starting dev server (npm run ${script})…\n`);
+		const port = await allocateWorkspacePort(this.root);
+		if (!port) { this.log("[dev] no free workspace port available — preview unavailable\n"); return null; }
+		this.log(`[dev] starting dev server (npm run ${script}) on workspace port ${port}…\n`);
 		const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-		this.proc = spawn(npm, ["run", script], {
+		const args = ["run", script];
+		const command = (() => {
+			try { return String((JSON.parse(fs.readFileSync(path.join(this.root, "package.json"), "utf8")).scripts || {})[script] || ""); }
+			catch { return ""; }
+		})();
+		if (/\b(vite|next|astro|nuxt|svelte-kit)\b/i.test(command)) {
+			args.push("--", "--port", String(port));
+			if (/\b(vite|svelte-kit)\b/i.test(command)) args.push("--strictPort");
+		}
+		const proc = spawn(npm, args, {
 			cwd: this.root,
 			shell: process.platform === "win32",
 			windowsHide: true,
-			env: { ...process.env, BROWSER: "none", FORCE_COLOR: "0" },
+			env: { ...process.env, PORT: String(port), SOLSTICE_WORKSPACE_ROOT: canonicalRoot(this.root), BROWSER: "none", FORCE_COLOR: "0" },
 		});
-		this.proc.stdout.on("data", (d) => this.log(String(d)));
-		this.proc.stderr.on("data", (d) => this.log(String(d)));
-		this.proc.on("exit", (code) => { this.log(`[dev] dev server exited (${code})\n`); this.proc = null; this.url = null; });
+		this.proc = proc;
+		this.port = port;
+		proc.stdout.on("data", (d) => this.log(String(d)));
+		proc.stderr.on("data", (d) => this.log(String(d)));
+		const ownedPid = proc.pid;
+		proc.on("error", (error) => {
+			this.log(`[dev] failed to start dev server: ${error && error.message || error}\n`);
+			clearDevServerRegistration(this.root, ownedPid);
+			if (this.proc === proc) { this.proc = null; this.url = null; this.port = null; }
+		});
+		proc.on("exit", (code) => {
+			this.log(`[dev] dev server exited (${code})\n`);
+			clearDevServerRegistration(this.root, ownedPid);
+			if (this.proc === proc) { this.proc = null; this.url = null; this.port = null; }
+		});
+		if (!ownedPid) return null; // the error handler will surface the spawn failure
+		try { writeDevServerRegistration(this.root, { port, pid: ownedPid }); }
+		catch (error) {
+			this.log(`[dev] cannot write .solstice/dev-server.json: ${error && error.message || error}\n`);
+			try { proc.kill("SIGTERM"); } catch { }
+			if (this.proc === proc) { this.proc = null; this.port = null; }
+			return null;
+		}
 
 		// Poll for the port to come up (Vite/Next cold-start can take a while).
 		const DEADLINE = Date.now() + 90 * 1000;
@@ -528,8 +658,10 @@ class DevServer {
 		if (!this.hasOwnedProcess()) return { stopped: false, pid: null };
 		const pid = this.proc.pid;
 		try { process.platform === "win32" ? spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true }) : this.proc.kill("SIGTERM"); } catch { return { stopped: false, pid }; }
+		clearDevServerRegistration(this.root, pid);
 		this.proc = null;
 		this.url = null;
+		this.port = null;
 		return { stopped: true, pid };
 	}
 
@@ -539,4 +671,13 @@ class DevServer {
 	}
 }
 
-module.exports = { PreviewServer, DevServer, detectDevServerUrl, hasFramework };
+module.exports = {
+	PreviewServer,
+	DevServer,
+	detectDevServerUrl,
+	hasFramework,
+	allocateWorkspacePort,
+	readDevServerRegistration,
+	writeDevServerRegistration,
+	clearDevServerRegistration,
+};

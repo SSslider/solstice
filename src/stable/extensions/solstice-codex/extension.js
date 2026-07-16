@@ -13,12 +13,20 @@ const { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, resolveGrokBinary,
 const { ClaudeProvider } = require("./claude");
 const { FleetBridge } = require("./fleetBridge");
 const { FelixSkills, skillProgress } = require("./felixSkills");
-const { captureBuild, projectContext, captureAnnotation, ensureScheduledCheck, dueScheduledChecks } = require("./projectBrain");
+const { captureBuild, projectContext, workspaceContext, captureAnnotation, ensureScheduledCheck, dueScheduledChecks } = require("./projectBrain");
 const { ManagerWorktrees } = require("./managerWorktrees");
 const { createReviewHandler } = require("./reviewShare");
 const { runBugbot } = require("./bugbot");
 const { listenOnFirstAvailable } = require("./companionPort");
 const { discoverCodexModels, discoverGrokModels, groupModels } = require("./modelDiscovery");
+const { grokApprovalDescriptor, isSafeGrokTool } = require("./grokApprovalBridge");
+const {
+	DevServerToolBridge,
+	agentToolCommand,
+	isSafeDevServerToolApproval,
+	listOwnedDevServers,
+	stopOwnedDevServer,
+} = require("./devServerTools");
 
 // Resolve a bare CLI name against PATH the same way child_process.spawn would,
 // so we can tell BEFORE spawning whether the model binary actually exists on
@@ -282,7 +290,7 @@ function appendResearchContract(text) {
 			"[SOLSTICE_ANIMATED_WEBSITE_KIT]",
 			kit || "Build a real animated website with GSAP ScrollTrigger or React Three Fiber, include scroll-depth verification, and keep paid video/3D providers behind the credit gate.",
 			"[SOLSTICE_XFIELD_WIRING_PLAN_ONLY]",
-			premiumPlan || "Do not implement or call a paid provider. Present the provider bridge and one-time approval boundary for review first.",
+			premiumPlan || "You may propose X-Field with a free-vs-premium cost/time trade-off, but do not implement or call a paid provider. Present the unimplemented bridge and one-time approval boundary for review first.",
 			"[/SOLSTICE_XFIELD_WIRING_PLAN_ONLY]",
 			"[/SOLSTICE_ANIMATED_WEBSITE_KIT]",
 		].join("\n");
@@ -369,6 +377,18 @@ class AgentController {
 			const root = workspaceCwd();
 			if (root && fs.existsSync(path.join(root, ".git"))) this.managerTasks = new ManagerWorktrees(root, { limit: 2, log: (m) => this.output.append(m) });
 		} catch (e) { this.output.append("[manager] init failed: " + (e && e.message || e) + "\n"); }
+		// A loopback, token-authenticated bridge lets all three engine runtimes call
+		// the same IDE-owned dev-server controls. The bridge never accepts a PID or
+		// root from the model; it can only list/stop DevServer objects this window owns.
+		this.devServerToolBridge = new DevServerToolBridge({
+			list: () => this.listDevServersForAgent(),
+			stop: (id) => this.stopDevServerForAgent(id),
+			log: (m) => this.output.append(m),
+		});
+		this._devServerToolReady = this.devServerToolBridge.start().catch((error) => {
+			this.output.append(`[dev-tools] bridge unavailable: ${error && error.message || error}\n`);
+			return {};
+		});
 		try {
 			this.skills = new FelixSkills({
 				dir: path.join(context.globalStorageUri.fsPath, "felix-skills"),
@@ -1199,6 +1219,54 @@ self.addEventListener("fetch", (e) => {
 		const url = await this.devServer.ensure().catch(() => null);
 		if (url) { await this.openPreview(url).catch(() => { }); }
 		else { this.post({ type: "systemNote", text: "⚠️ לא הצלחתי להריץ את שרת הפיתוח — בדוק את הטרמינל." }); }
+	}
+
+	listDevServersForAgent() {
+		return listOwnedDevServers(this.devServer, this.managerDevServers);
+	}
+
+	stopDevServerForAgent(id) {
+		const result = stopOwnedDevServer(this.devServer, this.managerDevServers, id);
+		if (!result.ok) return result;
+		if (result.scope === "workspace") {
+			this.previewUrl = "";
+			this.postPreview({ type: "load", url: "", device: this.defaultDevice() });
+		} else if (result.taskId) {
+			this.managerDevServers.delete(result.taskId);
+			const task = this.managerTasks && this.managerTasks.get(result.taskId);
+			if (task) this.managerTasks.setStatus(result.taskId, task.status, { previewUrl: "" });
+			this.pushManagerTasks();
+			this.postManager({ type: "managerPreview", taskId: result.taskId, url: "" });
+		}
+		this.output.append(`[dev-tools] stopped ${result.id} PID ${result.pid}\n`);
+		return result;
+	}
+
+	async devServerToolEnv() {
+		await this._devServerToolReady;
+		return this.devServerToolBridge ? this.devServerToolBridge.env() : {};
+	}
+
+	devServerToolCommand(operation, id) {
+		return agentToolCommand(process.execPath, path.join(this.context.extensionPath, "devServerTools.js"), operation, id);
+	}
+
+	devServerToolInstructions() {
+		return [
+			"- solstice/dev-server-list — list only dev servers owned by this Solstice window: " + this.devServerToolCommand("list"),
+			"- solstice/dev-server-stop — stop an IDE-owned server without an approval card. First list, then run: " + this.devServerToolCommand("stop", "workspace") + " (replace workspace with a returned manager:<task-id> when needed). Never kill a process by port or PID yourself.",
+		].join("\n");
+	}
+
+	claudeDevServerAllowedTools() {
+		const commands = [
+			this.devServerToolCommand("list"),
+			this.devServerToolCommand("stop", "workspace"),
+			...this.listDevServersForAgent()
+				.filter((item) => item.scope === "manager")
+				.map((item) => this.devServerToolCommand("stop", item.id)),
+		];
+		return [...new Set(commands)].map((command) => `Bash(${command})`);
 	}
 
 	// Deterministic runtime commands should not spend a model turn rediscovering
@@ -2144,6 +2212,7 @@ self.addEventListener("fetch", (e) => {
 		return [
 			"You are the Solstice IDE agent. Work directly on files in this workspace.",
 			"Capabilities beyond your normal tools (run these as shell commands):",
+			this.devServerToolInstructions(),
 			`- Search the web — discover URLs for any topic / design references (Awwwards, Behance, Dribbble): ${shot.replace(" shot <url> <out.png>", ' search "<query>" [count]')}`,
 			`- Read any web page as clean readable text/markdown (use this to actually research a page — much better than raw HTML): ${shot.replace(" shot <url> <out.png>", ' read <url>')}`,
 			`- Crawl a site — walk same-domain pages and read each (e.g. browse an Awwwards/Behance gallery): ${shot.replace(" shot <url> <out.png>", ' crawl <url> [depth] [maxPages]')}`,
@@ -2152,6 +2221,7 @@ self.addEventListener("fetch", (e) => {
 			`- Screenshot any website: ${shot}`,
 			`- Dump a website's raw rendered HTML (prefer 'read' above unless you need exact markup): ${dom}`,
 			`- Sample frames from a video on any page (case-study scroll videos, domain-locked Vimeo embeds): ${shot.replace(" shot <url> <out.png>", ' videoframes <url> <outPrefix> [frames] [referrer]')}`,
+			`- Search FREE stock video from Pexels/Pixabay whenever the user explicitly asks for video/footage (this does not spend generation credits): ${shot.replace(" shot <url> <out.png>", ' videosearch "<query>" [count]')}. Download the chosen clip and poster into the workspace, preserve attribution/license metadata, and embed a lazy muted playsInline <video>.`,
 			`- Extract a Behance/Dribbble showcase as structured evidence (forces lazy-load, downloads best image variants, inventories players): ${shot.replace(" shot <url> <out.png>", ' showcase <url> <outDir> [maxAssets]')}`,
 			"- Research workflow: when the user asks you to imitate/take inspiration from a site or find references, SEARCH for it, READ or CRAWL the top results, and SCROLLSHOT the best ones before designing — don't guess from memory.",
 			`- VIEW ANY IMAGE (you cannot see images yourself — this gives you a detailed text read of one): ${shot.replace(" shot <url> <out.png>", ' describe <image.png> ["what to focus on"]')}`,
@@ -2185,6 +2255,7 @@ self.addEventListener("fetch", (e) => {
 		return [
 			"You are the Solstice IDE agent. Work directly on files in this workspace.",
 			"Capabilities beyond your normal tools (run these as shell commands):",
+			this.devServerToolInstructions(),
 			`- Search the web — discover URLs for any topic / design references (Awwwards, Behance, Dribbble): ${shot.replace(" shot <url> <out.png>", ' search "<query>" [count]')}`,
 			`- Read any web page as clean readable text/markdown (use this to actually research a page — much better than raw HTML): ${shot.replace(" shot <url> <out.png>", ' read <url>')}`,
 			`- Crawl a site — walk same-domain pages and read each (e.g. browse an Awwwards/Behance gallery): ${shot.replace(" shot <url> <out.png>", ' crawl <url> [depth] [maxPages]')}`,
@@ -2193,6 +2264,7 @@ self.addEventListener("fetch", (e) => {
 			`- Screenshot any website: ${shot}`,
 			`- Dump a website's raw rendered HTML (prefer 'read' above unless you need exact markup): ${dom}`,
 			`- Sample frames from a video on any page (case-study scroll videos, domain-locked Vimeo embeds): ${shot.replace(" shot <url> <out.png>", ' videoframes <url> <outPrefix> [frames] [referrer]')}`,
+			`- Search FREE stock video from Pexels/Pixabay whenever the user explicitly asks for video/footage (this does not spend generation credits): ${shot.replace(" shot <url> <out.png>", ' videosearch "<query>" [count]')}. Download the chosen clip and poster into the workspace, preserve attribution/license metadata, and embed a lazy muted playsInline <video>.`,
 			`- Extract a Behance/Dribbble showcase as structured evidence (forces lazy-load, downloads best image variants, inventories players): ${shot.replace(" shot <url> <out.png>", ' showcase <url> <outDir> [maxAssets]')}`,
 			"- Research workflow: when the user asks you to imitate/take inspiration from a site or find references, SEARCH for it, READ or CRAWL the top results, and SCROLLSHOT the best ones before designing — don't guess from memory.",
 			"- You CAN view images: open any screenshot/reference image with your Read tool and study it in exhaustive detail (layout, sections, colors with hex, typography, imagery style, spacing, mood). Always do this for every reference screenshot before designing, and for your own verification screenshots before declaring done.",
@@ -2223,11 +2295,14 @@ self.addEventListener("fetch", (e) => {
 		if (!cwd) { vscode.window.showWarningMessage("Solstice: open a folder first."); return; }
 		if (!this.claude) {
 			const selected = MODEL_REGISTRY[this.providerKey()] || {};
+			const devServerToolEnv = await this.devServerToolEnv();
 			this.claude = new ClaudeProvider({
 				cwd,
 				bin: this.cfg().get("claudePath") || undefined,
 				model: selected.claudeId || undefined,
 				permissionMode: this.cfg().get("claudePermissionMode") || undefined,
+				env: devServerToolEnv,
+				allowedTools: this.claudeDevServerAllowedTools(),
 				log: (s) => this.output.append(s),
 				notify: (m, p) => this.onNotification(m, p),
 			});
@@ -2244,10 +2319,13 @@ self.addEventListener("fetch", (e) => {
 		const cwd = workspaceCwd();
 		if (!cwd) { vscode.window.showWarningMessage("Solstice: open a folder first."); return; }
 		if (!this.grok) {
+			const devServerToolEnv = await this.devServerToolEnv();
 			this.grok = new GrokProvider({
 				cwd,
 				bin: resolveGrokBinary(this.context.extensionPath, this.cfg().get("grokPath")),
 				extensionPath: this.context.extensionPath,
+				env: devServerToolEnv,
+				authorizeTool: (input) => this.authorizeGrokTool(input),
 				log: (s) => this.output.append(s),
 				notify: (m, p) => this.onNotification(m, p),
 			});
@@ -2259,6 +2337,17 @@ self.addEventListener("fetch", (e) => {
 		this.startGrokWatcher();
 		await this.grok.send(this.providerKey(), prompt, this.grokPreamble(rawText), { userText: rawText });
 		this.flushGrokChanges();
+	}
+
+	async authorizeGrokTool(input) {
+		if (isSafeGrokTool(input)) return { decision: "allow" };
+		const descriptor = grokApprovalDescriptor(input, this.grok && this.grok.threadId || this.threadId);
+		const result = await this.handleServerRequest(descriptor.method, descriptor.params);
+		const decision = result && (result.decision || result.action);
+		return {
+			decision: ["accept", "approved", "approved_for_session"].includes(decision) ? "allow" : "deny",
+			reason: decision === "decline" || decision === "denied" ? "Denied by Thomas in Felix." : undefined,
+		};
 	}
 
 	post(msg) {
@@ -2355,9 +2444,11 @@ self.addEventListener("fetch", (e) => {
 	async ensureClient() {
 		if (this.client && this.client.running) return this.client;
 		const binPath = resolveCodexBinary(this.context.extensionPath, this.cfg().get("path"));
+		const devServerToolEnv = await this.devServerToolEnv();
 		this.client = new CodexClient({
 			binPath,
 			codexHome: this.cfg().get("home") || undefined,
+			env: devServerToolEnv,
 			log: (s) => this.output.append(s),
 			onExit: (code) => {
 				this.threadId = null;
@@ -2460,7 +2551,7 @@ self.addEventListener("fetch", (e) => {
 		// so we only surface a research dashboard for genuine analysis/clone work.
 		if ((method === "item/started" || method === "item/completed") && params.item && params.item.type === "commandExecution") {
 			const cmd = String(params.item.command || params.item.title || "");
-			if (/browse\.js["']?\s+(read|crawl|search|shot|scrollshot|live|act|videoframes|showcase|describe|dom)\b/i.test(cmd)) this.turnDidResearch = true;
+			if (/browse\.js["']?\s+(read|crawl|search|videosearch|shot|scrollshot|live|act|videoframes|showcase|describe|dom)\b/i.test(cmd)) this.turnDidResearch = true;
 		}
 		// Composer/grok narrate the plan and the site analysis as CHAT TEXT instead of
 		// writing .solstice/PLAN.md / RESEARCH.md or calling a plan tool — so the center
@@ -2514,7 +2605,20 @@ self.addEventListener("fetch", (e) => {
 		const toResult = (decision) => elicitation
 			? { action: decision === "decline" ? "decline" : "accept" }
 			: { decision: map[decision] || map.decline };
-		const creditRisk = creditRiskSignal(method, params);
+		// The two dev-server controls can only reach in-memory DevServer instances
+		// owned by this IDE window. Auto-approve their exact generated command even
+		// in Supervised mode; arbitrary commands, PIDs, ports and chained shell text
+		// do not match and continue through the normal approval flow.
+		const devServerToolPath = path.join(this.context.extensionPath, "devServerTools.js");
+		if (!elicitation && isSafeDevServerToolApproval(params, process.execPath, devServerToolPath)) {
+			this.output.append("[dev-tools] approved IDE-owned dev-server tool without card\n");
+			return Promise.resolve(toResult("accept"));
+		}
+		// A local source edit cannot spend provider credits by itself. Grok's
+		// PreToolUse bridge marks those edits so proposal copy such as "X-Field"
+		// does not create a false credit card; the later shell/MCP/provider call is
+		// intercepted separately and still hits the mandatory credit gate.
+		const creditRisk = params && params.localFileEdit ? null : creditRiskSignal(method, params);
 		if (creditRisk) {
 			return this.requestCreditApproval(method, params, creditRisk).then(toResult);
 		}
@@ -2610,8 +2714,9 @@ self.addEventListener("fetch", (e) => {
 		const playbook = this.designPlaybook(text);
 		return [
 			"You are the Solstice IDE agent. Capabilities beyond your normal tools:",
+			this.devServerToolInstructions(),
 			`- Web browsing & research: ${run}`,
-			"  Replace mode 'shot' with: 'search \"<query>\" [count]' to discover URLs; 'read <url>' for readable text; 'crawl <url> [depth] [maxPages]' for same-site research; 'live <url> [maxPages] [secPerPage] [keep]' for a VISIBLE tour; 'showcase <url> <outDir> [maxAssets]' to force lazy-load and extract Behance/Dribbble images plus video/player URLs; 'dom <url>' for raw HTML; 'videoframes <url> <outPrefix> [frames] [referrer]' to sample video. For every interactive site/design research request, run `live` first; keep background engine research headless.",
+			"  Replace mode 'shot' with: 'search \"<query>\" [count]' to discover URLs; 'videosearch \"<query>\" [count]' for FREE Pexels/Pixabay stock clips whenever video is explicitly requested; 'read <url>' for readable text; 'crawl <url> [depth] [maxPages]' for same-site research; 'live <url> [maxPages] [secPerPage] [keep]' for a VISIBLE tour; 'showcase <url> <outDir> [maxAssets]' to force lazy-load and extract Behance/Dribbble images plus video/player URLs; 'dom <url>' for raw HTML; 'videoframes <url> <outPrefix> [frames] [referrer]' to sample video. Download the chosen stock clip/poster locally, retain attribution/license metadata, and use a lazy muted playsInline <video>. For every interactive site/design research request, run `live` first; keep background engine research headless.",
 			"  Research workflow: when asked to imitate/take inspiration from a site or find references, SEARCH, then READ or CRAWL the top results, and screenshot the best before designing — don't guess from memory.",
 			"  After taking a screenshot, ALWAYS open it with your view_image tool to study layout, colors, typography and content. Use this whenever the user asks to inspect, analyze or imitate a website or design (e.g. Behance/Dribbble references).",
 				"  Capture designs TOP-TO-BOTTOM in DESKTOP and MOBILE: desktop full-page via 'scrollshot <url> <outPrefix> [stops]', mobile full-page via 'shot <url> <out.png> 390x3000'; open each with view_image to study both viewports.",
@@ -2679,6 +2784,9 @@ self.addEventListener("fetch", (e) => {
 	// sidebar send: lazily creates the sidebar thread
 	async send(text) {
 		const rawText = text;
+		// Runtime-only continuation actions are resolved before any model context is
+		// assembled. With a workspace-owned dev-server registration, "open the site"
+		// therefore opens the exact live URL without a discovery or inventory turn.
 		if (await this.handleRuntimeIntent(rawText)) {
 			if (rawText) this._lastUserPrompt = rawText;
 			return;
@@ -2687,6 +2795,10 @@ self.addEventListener("fetch", (e) => {
 		else if (this.isBuildIntent(text)) {
 			this.beginFlowingPlan(text);
 			text = this.flowingBuildPrompt(text);
+		}
+		if (text && !String(text).includes("[FELIX_WORKSPACE_STATE]")) {
+			const state = workspaceContext(workspaceCwd());
+			if (state) text = state + text;
 		}
 		if (text && !String(text).includes("[FELIX_PROJECT_BRAIN]")) {
 			const memory = projectContext(workspaceCwd());
@@ -2941,13 +3053,13 @@ self.addEventListener("fetch", (e) => {
 		else if (item.type === "commandExecution") {
 			const cmd = String(item.command || (item.changes && item.changes[0] && item.changes[0].command) || "");
 			if (!/browse\.js/.test(cmd)) return;
-			const m = cmd.match(/browse\.js["']?\s+(shot|read|crawl|search|dom|scrollshot|live|act|videoframes|showcase|describe)\s+((?:"[^"]+"|'[^']+'|[^\s]+))(?:\s+((?:"[^"]+"|'[^']+'|[^\s]+)))?/i);
+			const m = cmd.match(/browse\.js["']?\s+(shot|read|crawl|search|videosearch|dom|scrollshot|live|act|videoframes|showcase|describe)\s+((?:"[^"]+"|'[^']+'|[^\s]+))(?:\s+((?:"[^"]+"|'[^']+'|[^\s]+)))?/i);
 			if (!m) return;
 			action = m[1].toLowerCase();
 			const arg1 = String(m[2] || "").replace(/^["']|["']$/g, "");
 			const arg2 = String(m[3] || "").replace(/^["']|["']$/g, "");
 			out = action === "shot" ? arg2 : (action === "describe" ? arg1 : null);
-			url = action === "search" ? ("חיפוש: " + arg1) : arg1;
+			url = (action === "search" || action === "videosearch") ? ("חיפוש: " + arg1) : arg1;
 		} else return;
 		this.openBrowserPanel();
 		if (!this.browserPanel) return;
@@ -4452,6 +4564,9 @@ self.addEventListener("fetch", (e) => {
 		if (this.galleryPanel) this.galleryPanel.dispose();
 		if (this.preview) this.preview.dispose();
 		if (this.devServer) this.devServer.dispose();
+		for (const server of this.managerDevServers.values()) server.dispose();
+		this.managerDevServers.clear();
+		if (this.devServerToolBridge) this.devServerToolBridge.close();
 		if (this.grokWatcher) this.grokWatcher.dispose();
 		if (this.grok) this.grok.interrupt();
 		if (this.claude) this.claude.interrupt();

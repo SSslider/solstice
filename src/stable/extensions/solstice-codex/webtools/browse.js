@@ -20,6 +20,7 @@ const { execFileSync, spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { searchStockVideo } = require("./stockVideo");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -719,8 +720,18 @@ function main() {
 		return;
 	}
 	if (!mode || !url || ((mode === "shot" || mode === "scrollshot" || mode === "videoframes" || mode === "showcase") && !out)) {
-		console.error("usage:\n  browse.js search <query> [count]            web search → ranked title/url/snippet list (no API key)\n  browse.js read <url>                        page main content as clean readable text/markdown\n  browse.js crawl <url> [depth] [maxPages]    same-site crawl → text of each page\n  browse.js live <url> [maxPages] [secPerPage] [keep]   VISIBLE browser tour the user watches (analysis text to stdout)\n  browse.js shot <url> <out.png> [WxH]        screenshot\n  browse.js scrollshot <url> <outPrefix> [stops]\n  browse.js videoframes <url> <outPrefix> [frames] [referrer]\n  browse.js showcase <url> <outDir> [maxAssets] lazy-load + download case-study media\n  browse.js audit <url>                       zero-dependency delivery quality audit (JSON)\n  browse.js dom <url>                         raw rendered HTML");
+		console.error("usage:\n  browse.js search <query> [count]            web search → ranked title/url/snippet list (no API key)\n  browse.js videosearch <query> [count]       free Pexels/Pixabay videos → structured JSON\n  browse.js read <url>                        page main content as clean readable text/markdown\n  browse.js crawl <url> [depth] [maxPages]    same-site crawl → text of each page\n  browse.js live <url> [maxPages] [secPerPage] [keep]   VISIBLE browser tour the user watches (analysis text to stdout)\n  browse.js shot <url> <out.png> [WxH]        screenshot\n  browse.js scrollshot <url> <outPrefix> [stops]\n  browse.js videoframes <url> <outPrefix> [frames] [referrer]\n  browse.js showcase <url> <outDir> [maxAssets] lazy-load + download case-study media\n  browse.js audit <url>                       zero-dependency delivery quality audit (JSON)\n  browse.js dom <url>                         raw rendered HTML");
 		process.exit(2);
+	}
+	if (mode === "videosearch") {
+		const count = /^\d+$/.test(out || "") ? Math.min(20, Math.max(1, parseInt(out, 10))) : 8;
+		searchStockVideo(url, count).then((result) => {
+			console.log(JSON.stringify(result, null, 2));
+		}).catch((err) => {
+			console.error(`videosearch failed: ${err.message}`);
+			process.exit(1);
+		});
+		return;
 	}
 	const bin = findBrowser();
 	if (!bin) {

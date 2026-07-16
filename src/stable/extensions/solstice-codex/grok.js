@@ -5,6 +5,7 @@ const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
 const { resolveWinSpawn, whichFull } = require("./winspawn");
+const { GrokApprovalBridge, installGrokApprovalHook } = require("./grokApprovalBridge");
 
 const GROK_TEMP_RE = /^solstice-grok-(?:agent-)?[a-z0-9-]+\.(?:txt|md)$/i;
 const GROK_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -264,9 +265,14 @@ class GrokProvider {
 		this.cwd = opts.cwd;
 		this.bin = opts.bin || "grok";
 		this.extensionPath = opts.extensionPath || "";
+		this.env = opts.env || {};
 		this.log = opts.log || (() => { });
 		this.notify = opts.notify;
 		this.spawn = opts.spawn || spawn;
+		this.approvalBridge = typeof opts.authorizeTool === "function"
+			? new GrokApprovalBridge({ authorize: opts.authorizeTool, log: this.log })
+			: null;
+		this.approvalReady = null;
 		this.threadId = "grok-" + Date.now().toString(36);
 		this.child = null;
 		this._starting = false;
@@ -290,6 +296,24 @@ class GrokProvider {
 		this._interruptRequested = true;
 		killTree(this.child);
 		return wasBusy;
+	}
+
+	dispose() {
+		this.interrupt();
+		if (this.approvalBridge) this.approvalBridge.close();
+		this.approvalReady = null;
+	}
+
+	async _ensureApprovalBridge() {
+		if (!this.approvalBridge) return;
+		if (!this.approvalReady) {
+			this.approvalReady = this.approvalBridge.start().then((bridgeEnv) => {
+				installGrokApprovalHook({ extensionPath: this.extensionPath, executable: process.execPath });
+				this.env = { ...this.env, ...bridgeEnv };
+				this.log("[grok-approval] PreToolUse bridge active; safe actions follow Felix autonomy and credit actions remain one-shot gated.\n");
+			});
+		}
+		return this.approvalReady;
 	}
 
 	// Bake concise continuity into each stateless turn. History deliberately stores
@@ -322,10 +346,15 @@ class GrokProvider {
 		].join("\n");
 	}
 
-	send(providerKey, text, preamble, opts = {}) {
+	async send(providerKey, text, preamble, opts = {}) {
 		if (this.busy) return Promise.reject(new Error("a turn is already running"));
 		this._starting = true;
 		this._interruptRequested = false;
+		try { await this._ensureApprovalBridge(); }
+		catch (error) {
+			this._starting = false;
+			throw new Error(`Could not start the Grok approval bridge: ${error && error.message || error}`);
+		}
 		const model = GROK_MODELS[providerKey] || GROK_MODELS["grok-build"];
 
 		// STATELESS turn — NO `-c` resume. Root cause of "stuck after the first
@@ -370,7 +399,7 @@ class GrokProvider {
 		const turnIn = Math.ceil((userPrompt || "").length / 4);
 		let turnOut = 0; // estimated from streamed deltas unless the CLI reports real usage
 		this.tokens.in += turnIn;
-		const env = { ...process.env };
+		const env = { ...process.env, ...this.env };
 		delete env.XAI_API_KEY;    // force grok CLI OAuth, never API-key billing
 		delete env.OPENAI_API_KEY;
 		const tid = this.threadId;
