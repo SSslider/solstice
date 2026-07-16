@@ -71,6 +71,12 @@
         "icon": "$(globe)"
       },
       {
+        "command": "solstice.agent.closeAllDevServers",
+        "title": "Close All Preview Servers",
+        "category": "Solstice",
+        "icon": "$(debug-stop)"
+      },
+      {
         "command": "solstice.agent.deployVercel",
         "title": "Deploy Current Project to Vercel",
         "category": "Solstice",
@@ -81,6 +87,12 @@
         "title": "Open Felix Skills",
         "category": "Solstice",
         "icon": "$(book)"
+      },
+      {
+        "command": "solstice.agent.loadBrandPack",
+        "title": "Load Brand Pack (BrandDNA JSON)",
+        "category": "Solstice",
+        "icon": "$(symbol-color)"
       },
       {
         "command": "solstice.agent.scaffoldApp",
@@ -187,6 +199,11 @@
           "command": "solstice.agent.openSkills",
           "when": "view == solstice.agentPanel",
           "group": "navigation@4.6"
+        },
+        {
+          "command": "solstice.agent.loadBrandPack",
+          "when": "view == solstice.agentPanel",
+          "group": "navigation@4.7"
         },
         {
           "command": "solstice.agent.selectModel",
@@ -321,7 +338,14 @@
         "solstice.codex.selfVerify": {
           "type": "boolean",
           "default": true,
-          "description": "After a fleet-dispatched build finishes with a live preview, automatically capture a screenshot of the result and feed it back to the agent once, asking it to verify the build matches the task and fix anything broken before declaring done. Bounded to a single auto-verify pass per build to avoid loops."
+          "description": "After every site/app build, run a real-browser functional check across navigation, controls, intercepted forms, 404/network/console errors, and desktop/mobile layout. Concrete findings trigger an automatic fix-and-recheck loop capped at three rounds; delivery stays blocked until the browser gate is green."
+        },
+        "solstice.codex.devServerIdleMinutes": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 240,
+          "description": "Stop Solstice-owned preview/dev-server processes after this many minutes without preview activity. Closing a project, window, or build session stops them immediately."
         },
         "solstice.codex.skillEmbedderUrl": {
           "type": "string",

@@ -7,6 +7,8 @@
 	let threads = [];
 	let managerTasks = [];
 	let managerLimit = 2;
+	let devServers = [];
+	let devServerIdleTimeoutMs = 0;
 	let selectedId = null;
 	let selectedTaskId = null;
 	let pendingMergeReview = null;
@@ -23,6 +25,10 @@
 					<button id="newBtn" class="btn primary small">+ Build</button>
 				</div>
 				<div id="taskSummary" class="taskSummary"></div>
+				<div id="devServersCard" class="devServersCard">
+					<div class="devServersHead"><span>Running servers</span><button id="closeAllServersBtn" class="btn danger small">Close all</button></div>
+					<div id="devServersList" class="devServersList"></div>
+				</div>
 				<div id="taskBoard"></div>
 				<div class="subHead">Other threads</div>
 				<div id="threadList"></div>
@@ -74,6 +80,10 @@
 					<div class="artTitle">Walkthrough</div>
 					<div id="wtBody"></div>
 				</div>
+				<div id="buildArtifactsCard" class="art hidden">
+					<div class="artTitle">Build evidence</div>
+					<div id="buildArtifacts"></div>
+				</div>
 				<div id="noArt" class="empty">Plan, diffs and walkthrough of the selected thread appear here.</div>
 			</div>
 		</div>
@@ -90,7 +100,9 @@
 	const threadListEl = $("threadList"), taskBoardEl = $("taskBoard"), taskTabsEl = $("taskTabs"), taskSummaryEl = $("taskSummary"), quotaEl = $("quota"), workTitleEl = $("workTitle");
 	const planCard = $("planCard"), planBody = $("planBody"), diffCard = $("diffCard"), diffStat = $("diffStat"), noArt = $("noArt");
 	const wtCard = $("wtCard"), wtBody = $("wtBody");
+	const buildArtifactsCard = $("buildArtifactsCard"), buildArtifacts = $("buildArtifacts");
 	const taskPreviewCard = $("taskPreviewCard"), taskPreview = $("taskPreview"), mergeReviewCard = $("mergeReviewCard"), mergeReviewPatch = $("mergeReviewPatch"), mergeReviewMeta = $("mergeReviewMeta");
+	const devServersCard = $("devServersCard"), devServersList = $("devServersList"), closeAllServersBtn = $("closeAllServersBtn");
 	let walk = null; // current-turn walkthrough: {commands:[], files:Set, message:""}
 
 	function el(tag, cls, text) {
@@ -213,6 +225,30 @@
 		renderThreads();
 	}
 
+	function renderDevServers() {
+		devServersList.innerHTML = "";
+		devServersCard.classList.toggle("emptyServers", !devServers.length);
+		closeAllServersBtn.disabled = !devServers.length;
+		if (!devServers.length) {
+			devServersList.appendChild(el("div", "serverEmpty", "No Solstice-owned preview servers."));
+			return;
+		}
+		for (const server of devServers) {
+			const row = el("div", "serverRow");
+			const main = el("div", "serverMain");
+			main.appendChild(el("span", "serverDot"));
+			main.appendChild(el("span", "serverProject", (server.root || server.id || "server").split(/[\\/]/).filter(Boolean).pop()));
+			main.appendChild(el("span", "serverPort", `:${server.port || "—"}`));
+			row.appendChild(main);
+			const idleMinutes = server.idleDeadlineAt ? Math.max(0, Math.ceil((server.idleDeadlineAt - Date.now()) / 60000)) : null;
+			row.appendChild(el("div", "serverMeta", `PID ${server.pid || "—"} · ${server.scope}${idleMinutes == null ? "" : ` · closes in ${idleMinutes}m`}`));
+			const stop = el("button", "serverStop", "Stop");
+			stop.addEventListener("click", () => vscode.postMessage({ type: "stopDevServer", id: server.id }));
+			row.appendChild(stop);
+			devServersList.appendChild(row);
+		}
+	}
+
 	function selectThread(id) {
 		selectedId = id;
 		const task = managerTasks.find((row) => row.threadId === id);
@@ -248,6 +284,7 @@
 	$("loginBtn").addEventListener("click", () => vscode.postMessage({ type: "login" }));
 	$("diffBtn").addEventListener("click", () => vscode.postMessage({ type: "openDiff", threadId: selectedId }));
 	$("previewBtn").addEventListener("click", () => vscode.postMessage({ type: "openPreview" }));
+	closeAllServersBtn.addEventListener("click", () => vscode.postMessage({ type: "closeAllDevServers" }));
 	$("confirmMergeBtn").addEventListener("click", () => {
 		if (!pendingMergeReview) return;
 		vscode.postMessage({ type: "mergeManagerTask", taskId: pendingMergeReview.taskId, patchHash: pendingMergeReview.patchHash });
@@ -500,8 +537,45 @@
 	}
 
 	function updateNoArt() {
-		const any = !planCard.classList.contains("hidden") || !diffCard.classList.contains("hidden") || !wtCard.classList.contains("hidden") || !taskPreviewCard.classList.contains("hidden") || !mergeReviewCard.classList.contains("hidden");
+		const any = !planCard.classList.contains("hidden") || !diffCard.classList.contains("hidden") || !wtCard.classList.contains("hidden") || !buildArtifactsCard.classList.contains("hidden") || !taskPreviewCard.classList.contains("hidden") || !mergeReviewCard.classList.contains("hidden");
 		noArt.classList.toggle("hidden", any);
+	}
+
+	function renderArtifactPackages(items) {
+		buildArtifacts.innerHTML = "";
+		for (const item of (items || []).slice(0, 8)) {
+			const card = el("article", "artifactPackage");
+			if (item.thumbnailUri) {
+				const image = el("img", "artifactThumb");
+				image.src = item.thumbnailUri;
+				image.alt = `Browser evidence for ${item.taskId || "build"}`;
+				card.appendChild(image);
+			}
+			card.appendChild(el("strong", "artifactTask", item.taskId || "build"));
+			const qualityMeta = item.quality ? `${item.quality.score || 0}/100 ${item.quality.grade || ""}` : "";
+			const replicaMeta = item.replica ? `replica ${item.replica.score || 0}/${item.replica.targetScore || 80}` : "";
+			const meta = [qualityMeta, replicaMeta, `gate round ${item.selfCheckRound || "?"}`].filter(Boolean).join(" · ");
+			card.appendChild(el("div", "artifactMeta", meta));
+			if (item.recordingUri) {
+				const video = el("video", "artifactVideo");
+				video.src = item.recordingUri;
+				video.controls = true;
+				video.muted = true;
+				video.preload = "metadata";
+				card.appendChild(video);
+			}
+			const actions = el("div", "btnBar");
+			const open = el("button", "btn small", "Open package");
+			open.addEventListener("click", () => vscode.postMessage({ type: "openArtifactPackage", path: item.path }));
+			actions.appendChild(open);
+			const guide = el("button", "btn small", "How to test");
+			guide.addEventListener("click", () => vscode.postMessage({ type: "openArtifactFile", path: item.path, file: item.markdown || "WALKTHROUGH.md" }));
+			actions.appendChild(guide);
+			card.appendChild(actions);
+			buildArtifacts.appendChild(card);
+		}
+		buildArtifactsCard.classList.toggle("hidden", !(items || []).length);
+		updateNoArt();
 	}
 
 	// ---------- walkthrough ----------
@@ -621,6 +695,15 @@
 				managerTasks = msg.tasks || [];
 				managerLimit = msg.limit || 2;
 				renderManagerTasks();
+				break;
+			case "devServers":
+				devServers = msg.servers || [];
+				devServerIdleTimeoutMs = msg.idleTimeoutMs || 0;
+				devServersCard.title = devServerIdleTimeoutMs ? `Automatic idle cleanup after ${Math.round(devServerIdleTimeoutMs / 60000)} minutes` : "";
+				renderDevServers();
+				break;
+			case "artifactPackages":
+				renderArtifactPackages(msg.artifacts || []);
 				break;
 			case "managerPreview": {
 				const task = managerTasks.find((row) => row.id === msg.taskId);

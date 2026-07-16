@@ -557,21 +557,50 @@ class DevServer {
 	constructor(root, opts) {
 		this.root = root;
 		this.onLog = (opts && opts.onLog) || (() => { });
+		this.onStateChange = (opts && opts.onStateChange) || (() => { });
+		this.idleTimeoutMs = Number.isFinite(opts && opts.idleTimeoutMs) ? Math.max(0, Number(opts.idleTimeoutMs)) : 30 * 60 * 1000;
 		this.proc = null;
 		this.starting = null;     // in-flight start() promise (dedupe)
 		this.url = null;
 		this.port = null;
+		this.startedAt = 0;
+		this.lastActivityAt = 0;
+		this.idleDeadlineAt = 0;
+		this.idleTimer = null;
 	}
 
 	log(s) { try { this.onLog(s); } catch { } }
+	emitState(reason) { try { this.onStateChange({ reason, server: this }); } catch { } }
 	hasOwnedProcess() { return !!(this.proc && this.proc.pid && this.proc.exitCode === null); }
+	touch(reason = "activity") {
+		if (!this.hasOwnedProcess()) return false;
+		this.lastActivityAt = Date.now();
+		if (this.idleTimer) clearTimeout(this.idleTimer);
+		this.idleTimer = null;
+		this.idleDeadlineAt = this.idleTimeoutMs > 0 ? this.lastActivityAt + this.idleTimeoutMs : 0;
+		if (this.idleTimeoutMs > 0) {
+			this.idleTimer = setTimeout(() => {
+				this.idleTimer = null;
+				this.log(`[dev] idle timeout reached after ${this.idleTimeoutMs}ms\n`);
+				this.stop("idle-timeout");
+			}, this.idleTimeoutMs);
+			this.idleTimer.unref && this.idleTimer.unref();
+		}
+		this.emitState(reason);
+		return true;
+	}
+	clearIdleTimer() {
+		if (this.idleTimer) clearTimeout(this.idleTimer);
+		this.idleTimer = null;
+		this.idleDeadlineAt = 0;
+	}
 
 	// Resolve to a live dev-server URL, starting the server if needed. Returns
 	// null only if the project has no dev script or the server never came up.
 	async ensure() {
 		const existing = await detectDevServerUrl(this.root).catch(() => null);
-		if (existing) { this.url = existing; return existing; }
-		if (this.url && this.proc && this.proc.exitCode === null) return this.url;
+		if (existing) { this.url = existing; this.touch("ensure"); return existing; }
+		if (this.url && this.proc && this.proc.exitCode === null) { this.touch("ensure"); return this.url; }
 		if (this.starting) return this.starting;
 		this.starting = this._start().finally(() => { this.starting = null; });
 		return this.starting;
@@ -603,23 +632,26 @@ class DevServer {
 		const proc = spawn(npm, args, {
 			cwd: this.root,
 			shell: process.platform === "win32",
+			detached: process.platform !== "win32",
 			windowsHide: true,
 			env: { ...process.env, PORT: String(port), SOLSTICE_WORKSPACE_ROOT: canonicalRoot(this.root), BROWSER: "none", FORCE_COLOR: "0" },
 		});
 		this.proc = proc;
 		this.port = port;
+		this.startedAt = Date.now();
+		this.lastActivityAt = this.startedAt;
 		proc.stdout.on("data", (d) => this.log(String(d)));
 		proc.stderr.on("data", (d) => this.log(String(d)));
 		const ownedPid = proc.pid;
 		proc.on("error", (error) => {
 			this.log(`[dev] failed to start dev server: ${error && error.message || error}\n`);
 			clearDevServerRegistration(this.root, ownedPid);
-			if (this.proc === proc) { this.proc = null; this.url = null; this.port = null; }
+			if (this.proc === proc) { this.clearIdleTimer(); this.proc = null; this.url = null; this.port = null; this.emitState("spawn-error"); }
 		});
 		proc.on("exit", (code) => {
 			this.log(`[dev] dev server exited (${code})\n`);
 			clearDevServerRegistration(this.root, ownedPid);
-			if (this.proc === proc) { this.proc = null; this.url = null; this.port = null; }
+			if (this.proc === proc) { this.clearIdleTimer(); this.proc = null; this.url = null; this.port = null; this.emitState("exit"); }
 		});
 		if (!ownedPid) return null; // the error handler will surface the spawn failure
 		try { writeDevServerRegistration(this.root, { port, pid: ownedPid }); }
@@ -629,13 +661,14 @@ class DevServer {
 			if (this.proc === proc) { this.proc = null; this.port = null; }
 			return null;
 		}
+		this.touch("started");
 
 		// Poll for the port to come up (Vite/Next cold-start can take a while).
 		const DEADLINE = Date.now() + 90 * 1000;
 		while (Date.now() < DEADLINE) {
 			if (!this.proc) return null;           // crashed during boot
 			const url = await detectDevServerUrl(this.root).catch(() => null);
-			if (url) { this.url = url; this.log(`[dev] live at ${url}\n`); return url; }
+			if (url) { this.url = url; this.touch("live"); this.log(`[dev] live at ${url}\n`); return url; }
 			await new Promise((r) => setTimeout(r, 1500));
 		}
 		this.log("[dev] dev server did not become reachable within 90s\n");
@@ -654,14 +687,27 @@ class DevServer {
 		});
 	}
 
-	stop() {
+	stop(reason = "manual") {
 		if (!this.hasOwnedProcess()) return { stopped: false, pid: null };
 		const pid = this.proc.pid;
-		try { process.platform === "win32" ? spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true }) : this.proc.kill("SIGTERM"); } catch { return { stopped: false, pid }; }
+		try {
+			if (process.platform === "win32") spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
+			else {
+				try { process.kill(-pid, "SIGTERM"); }
+				catch { this.proc.kill("SIGTERM"); }
+				const force = setTimeout(() => {
+					try { process.kill(-pid, 0); process.kill(-pid, "SIGKILL"); }
+					catch { /* process group exited cleanly */ }
+				}, 2500);
+				force.unref && force.unref();
+			}
+		} catch { return { stopped: false, pid }; }
 		clearDevServerRegistration(this.root, pid);
+		this.clearIdleTimer();
 		this.proc = null;
 		this.url = null;
 		this.port = null;
+		this.emitState(reason);
 		return { stopped: true, pid };
 	}
 

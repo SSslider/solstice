@@ -8,7 +8,11 @@
 //   node browse.js scrollshot <url> <outPrefix> [stops]   → outPrefix_s0..sN.png at scroll positions
 //   node browse.js dom  <url>
 //   node browse.js videoframes <url> <outPrefix> [frames] [referrer] → outPrefix_f0..fN.png seeked across the video
+//   node browse.js record <url> <out.mp4> [seconds] → real-browser walkthrough recording
 //   node browse.js showcase <url> <outDir> [maxAssets] → lazy-load page, download embedded media + manifest
+//   node browse.js check <url> <outDir>       → functional browser QA (navigation, controls, forms, 404/console/layout)
+//   node browse.js replica-source <url> <outDir> --authorized → rendered design model + breakpoint evidence
+//   node browse.js replica-compare <sourceDir> <replicaUrl> <outDir> [taskId] → visual-diff gate evidence
 // Uses an installed Chrome/Chromium/Edge in headless mode.
 // search/read/crawl give the agent real autonomous research: discover URLs, read pages as
 // text, and walk a site (e.g. an Awwwards/Behance gallery) — beyond single-URL screenshots.
@@ -21,6 +25,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { searchStockVideo } = require("./stockVideo");
+const { captureReplicaSource, compareReplicaVisuals } = require("./site-replica");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -123,6 +128,88 @@ async function scrollshot(bin, url, outPrefix, nStops, dims) {
 	} finally {
 		try { chrome.kill(); } catch { }
 		try { fs.rmSync(tmpProfile, { recursive: true, force: true }); } catch { }
+	}
+}
+
+// Capture a short, real-browser walkthrough as an MP4. Frames come directly
+// from Chrome's rendered page while Felix scrolls through the document and
+// follows one safe same-origin navigation target. No generated/mock imagery is
+// accepted into the recording.
+async function recordWalkthrough(bin, url, outFile, seconds) {
+	if (typeof WebSocket !== "function") throw new Error("record needs Node >= 22 (global WebSocket)");
+	const output = path.resolve(outFile);
+	fs.mkdirSync(path.dirname(output), { recursive: true });
+	const tmpProfile = fs.mkdtempSync(path.join(os.tmpdir(), "solstice-record-profile-"));
+	const framesDir = fs.mkdtempSync(path.join(os.tmpdir(), "solstice-record-frames-"));
+	const chrome = spawn(bin, [
+		"--headless=new", "--disable-gpu", "--no-sandbox", "--mute-audio",
+		"--enable-unsafe-swiftshader", "--hide-scrollbars", "--no-first-run", "--disable-extensions",
+		`--user-data-dir=${tmpProfile}`, "--window-size=1280,720", "--remote-debugging-port=0", "about:blank",
+	], { stdio: "ignore", windowsHide: true });
+	try {
+		const portFile = path.join(tmpProfile, "DevToolsActivePort");
+		let port = 0;
+		for (let i = 0; i < 100 && !port; i++) {
+			await sleep(100);
+			try { port = parseInt(fs.readFileSync(portFile, "utf8").split("\n")[0], 10) || 0; } catch { }
+		}
+		if (!port) throw new Error("Chrome DevTools port never appeared");
+		const tabs = await fetch(`http://127.0.0.1:${port}/json/list`).then((response) => response.json());
+		const tab = tabs.find((target) => target.type === "page");
+		if (!tab) throw new Error("no page target found");
+		const ws = new WebSocket(tab.webSocketDebuggerUrl);
+		await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = () => reject(new Error("CDP socket failed")); });
+		let seq = 0;
+		const pending = new Map();
+		ws.onmessage = (event) => {
+			const message = JSON.parse(event.data);
+			if (message.id && pending.has(message.id)) { pending.get(message.id)(message); pending.delete(message.id); }
+		};
+		const send = (method, params = {}, deadlineMs = 20000) => new Promise((resolve, reject) => {
+			const id = ++seq;
+			const timer = setTimeout(() => { pending.delete(id); reject(new Error(`${method} timed out`)); }, deadlineMs);
+			pending.set(id, (message) => { clearTimeout(timer); message.error ? reject(new Error(message.error.message)) : resolve(message.result); });
+			ws.send(JSON.stringify({ id, method, params }));
+		});
+		const evaluate = async (expression) => (await send("Runtime.evaluate", { expression, returnByValue: true })).result.value;
+		await send("Page.enable");
+		await send("Runtime.enable");
+		await send("Page.navigate", { url }, 30000);
+		for (let i = 0; i < 40; i++) {
+			if (await evaluate("document.readyState === 'complete'")) break;
+			await sleep(250);
+		}
+		await sleep(1200);
+		const fps = 8;
+		const frameCount = Math.max(32, Math.min(120, Math.round(seconds * fps)));
+		const maxScroll = Number(await evaluate("Math.max(0, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight) - innerHeight)")) || 0;
+		for (let index = 0; index < frameCount; index++) {
+			const progress = index / Math.max(1, frameCount - 1);
+			const travel = progress < 0.78 ? progress / 0.78 : 1 - ((progress - 0.78) / 0.22);
+			const eased = 0.5 - Math.cos(Math.max(0, Math.min(1, travel)) * Math.PI) / 2;
+			await evaluate(`window.scrollTo({top:${Math.round(maxScroll * eased)},behavior:'instant'});document.documentElement.setAttribute('data-solstice-walkthrough','active');''`);
+			if (index === Math.floor(frameCount * 0.58)) {
+				await evaluate(`(() => { const a=[...document.querySelectorAll('a[href]')].find(x=>{try{const u=new URL(x.href,location.href);return u.origin===location.origin&&(u.hash||u.pathname===location.pathname)&&x.offsetParent!==null}catch{return false}}); if(a){a.click();return a.href} return '' })()`);
+				await sleep(250);
+			}
+			const shot = await send("Page.captureScreenshot", { format: "jpeg", quality: 82, fromSurface: true });
+			fs.writeFileSync(path.join(framesDir, `frame-${String(index).padStart(4, "0")}.jpg`), Buffer.from(shot.data, "base64"));
+			await sleep(Math.round(1000 / fps));
+		}
+		ws.close();
+		const ffmpeg = process.env.FFMPEG_BIN || "ffmpeg";
+		execFileSync(ffmpeg, [
+			"-hide_banner", "-loglevel", "error", "-y", "-framerate", String(fps),
+			"-i", path.join(framesDir, "frame-%04d.jpg"), "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+			"-c:v", "libx264", "-pix_fmt", "yuv420p",
+			"-movflags", "+faststart", output,
+		], { stdio: ["ignore", "ignore", "pipe"], timeout: 180000 });
+		if (!fs.existsSync(output) || fs.statSync(output).size < 4096) throw new Error("walkthrough recording is empty");
+		console.log(JSON.stringify({ file: output, seconds, fps, frames: frameCount, source: url }));
+	} finally {
+		try { chrome.kill(); } catch { }
+		try { fs.rmSync(tmpProfile, { recursive: true, force: true }); } catch { }
+		try { fs.rmSync(framesDir, { recursive: true, force: true }); } catch { }
 	}
 }
 
@@ -408,6 +495,193 @@ async function audit(bin, url) {
 	}, { headed: false });
 }
 
+// Replit-style post-build functional QA. This is deliberately browser-driven:
+// it navigates and clicks the rendered app, rather than inferring correctness
+// from source. Mutating form submissions are intercepted in the page so a
+// localhost preview can exercise validation/handlers without sending customer
+// data or triggering an external side effect.
+async function functionalCheck(bin, url, outDir) {
+	const networkFailures = [];
+	const runtimeFailures = [];
+	const interceptedMutations = [];
+	const findings = [];
+	const seen = new Set();
+	const add = (severity, check, message, evidence = {}) => {
+		const key = `${severity}|${check}|${message}`;
+		if (seen.has(key)) return;
+		seen.add(key);
+		findings.push({ severity, check, message, evidence });
+	};
+	const safeName = (value) => String(value || "").replace(/[\r\n\t]+/g, " ").trim().slice(0, 120);
+	const rootUrl = new URL(url).toString();
+	if (outDir) fs.mkdirSync(outDir, { recursive: true });
+
+	return withChrome(bin, async ({ send, evalJs, goto, onEvent }) => {
+		await send("Network.enable");
+		await send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] });
+		onEvent((message) => {
+			if (message.method === "Fetch.requestPaused") {
+				const request = message.params && message.params.request || {};
+				const method = String(request.method || "GET").toUpperCase();
+				if (/^(GET|HEAD|OPTIONS)$/.test(method)) {
+					send("Fetch.continueRequest", { requestId: message.params.requestId }).catch(() => { });
+				} else {
+					interceptedMutations.push({ method, url: String(request.url || "").slice(0, 500) });
+					const origin = new URL(rootUrl).origin;
+					send("Fetch.fulfillRequest", {
+						requestId: message.params.requestId,
+						responseCode: 200,
+						responseHeaders: [
+							{ name: "content-type", value: "application/json; charset=utf-8" },
+							{ name: "access-control-allow-origin", value: origin },
+							{ name: "access-control-allow-credentials", value: "true" },
+							{ name: "x-solstice-browser-check", value: "intercepted" },
+						],
+						body: Buffer.from("{}").toString("base64"),
+					}).catch(() => { });
+				}
+			} else if (message.method === "Network.responseReceived") {
+				const response = message.params && message.params.response;
+				if (response && response.status >= 400 && !/favicon\.ico(?:\?|$)/i.test(response.url || "")) {
+					networkFailures.push({ status: response.status, url: String(response.url || "").slice(0, 500), type: message.params.type || "Other" });
+				}
+			} else if (message.method === "Runtime.exceptionThrown") {
+				const detail = message.params && message.params.exceptionDetails;
+				runtimeFailures.push(safeName(detail && (detail.exception && detail.exception.description || detail.text) || "Unhandled runtime exception"));
+			} else if (message.method === "Runtime.consoleAPICalled" && message.params && message.params.type === "error") {
+				const args = (message.params.args || []).map((arg) => arg.value || arg.description || "").join(" ");
+				if (args) runtimeFailures.push(safeName(args));
+			}
+		});
+		await send("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+			window.__solsticeFunctionalCheck = { errors: [], submits: [] };
+			const original = console.error.bind(console);
+			console.error = (...args) => { try { window.__solsticeFunctionalCheck.errors.push(args.map(String).join(' ').slice(0, 500)); } catch {} original(...args); };
+			addEventListener('error', (event) => { try { window.__solsticeFunctionalCheck.errors.push(String(event.message || event.target?.src || event.target?.href || 'resource error').slice(0, 500)); } catch {} }, true);
+			addEventListener('unhandledrejection', (event) => { try { window.__solsticeFunctionalCheck.errors.push(String(event.reason || 'unhandled rejection').slice(0, 500)); } catch {} });
+		})()` });
+
+		const setViewport = async (width, height) => {
+			await send("Emulation.setDeviceMetricsOverride", { width, height, screenWidth: width, screenHeight: height, deviceScaleFactor: 1, mobile: false, scale: 1 });
+			await send("Emulation.setVisibleSize", { width, height });
+		};
+		const pageSnapshot = () => evalJs(`(() => {
+			const visible = (el) => { const s=getComputedStyle(el),r=el.getBoundingClientRect(); return s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity)!==0&&r.width>2&&r.height>2; };
+			const controls=[...document.querySelectorAll('a[href],button,[role="button"],input[type="button"],input[type="submit"],summary')].filter(visible);
+			const forms=[...document.forms].filter(visible);
+			const images=[...document.images].filter(visible).map(img=>({src:String(img.currentSrc||img.src||'').slice(0,300),broken:img.complete&&img.naturalWidth===0}));
+			return {
+				url:location.href,title:document.title,text:(document.body?.innerText||'').slice(0,40000),htmlSize:(document.body?.innerHTML||'').length,
+				viewport:{width:innerWidth,height:innerHeight,scrollWidth:Math.max(document.documentElement.scrollWidth,document.body?.scrollWidth||0)},
+				clipped:controls.filter(el=>{const r=el.getBoundingClientRect();const p=el.parentElement&&getComputedStyle(el.parentElement);return (r.right>innerWidth+4||r.left<-4)&&!(p&&/(auto|scroll)/.test(p.overflowX));}).slice(0,12).map(el=>(el.innerText||el.value||el.getAttribute('aria-label')||el.tagName).trim().slice(0,80)),
+				images,forms:forms.length,
+				controls:controls.slice(0,28).map((el,index)=>({index,tag:el.tagName.toLowerCase(),label:(el.innerText||el.value||el.getAttribute('aria-label')||el.title||'').trim().slice(0,100),href:el.href||'',type:el.type||'',disabled:!!el.disabled,form:!!el.form}))
+			};
+		})()`);
+		const interactionState = () => evalJs(`(() => ({
+			url:location.href,hash:location.hash,scrollY:Math.round(scrollY),
+			body:(document.body?.innerText||'').slice(0,30000),htmlSize:(document.body?.innerHTML||'').length,
+			aria:[...document.querySelectorAll('[aria-expanded],[aria-pressed],[aria-selected],dialog,[role="dialog"]')].map(el=>el.outerHTML.slice(0,500)).join('|')
+		}))()`);
+		const controlsNow = () => evalJs(`(() => {
+			const visible=(el)=>{const s=getComputedStyle(el),r=el.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity)!==0&&r.width>2&&r.height>2;};
+			return [...document.querySelectorAll('a[href],button,[role="button"],input[type="button"],input[type="submit"],summary')].filter(visible).slice(0,28).map((el,index)=>{const r=el.getBoundingClientRect();return {index,x:r.left+r.width/2,y:r.top+r.height/2,tag:el.tagName.toLowerCase(),label:(el.innerText||el.value||el.getAttribute('aria-label')||el.title||'').trim().slice(0,100),href:el.href||'',type:el.type||'',disabled:!!el.disabled,form:!!el.form};});
+		})()`);
+		const controlPoint = (index) => evalJs(`(async()=>{const visible=(el)=>{const s=getComputedStyle(el),r=el.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity)!==0&&r.width>2&&r.height>2;};const el=[...document.querySelectorAll('a[href],button,[role="button"],input[type="button"],input[type="submit"],summary')].filter(visible).slice(0,28)[${Number(index) || 0}];if(!el)return null;el.scrollIntoView({block:'center',inline:'center'});await new Promise(r=>setTimeout(r,100));const r=el.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
+		const clickAt = async (point) => {
+			for (const type of ["mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x: point.x, y: point.y, button: "left", clickCount: 1 });
+			await sleep(850);
+		};
+		const returnHome = async () => { await setViewport(1440, 900); await goto(rootUrl, 350); };
+
+		await returnHome();
+		const desktop = await pageSnapshot();
+		if (desktop.viewport.scrollWidth > desktop.viewport.width + 4) add("error", "layout", `Desktop horizontal overflow: ${desktop.viewport.scrollWidth}px content in ${desktop.viewport.width}px viewport`);
+		for (const label of desktop.clipped) add("error", "layout", `Interactive control is clipped on desktop: ${safeName(label)}`);
+		for (const image of desktop.images.filter((item) => item.broken)) add("error", "resource", `Broken image: ${image.src || "(empty src)"}`);
+
+		const testable = desktop.controls.filter((item) => !item.disabled);
+		let linksChecked = 0, buttonsChecked = 0, formsChecked = 0;
+		for (const original of testable.filter((item) => item.tag === "a").slice(0, 8)) {
+			if (!original.href || /^(mailto:|tel:|javascript:)/i.test(original.href)) continue;
+			await returnHome();
+			const controls = await controlsNow();
+			const point = controls[original.index] && await controlPoint(original.index);
+			if (!point) { add("error", "navigation", `Navigation disappeared before click: ${safeName(original.label || original.href)}`); continue; }
+			const target = new URL(original.href, rootUrl);
+			if (target.origin !== new URL(rootUrl).origin) continue;
+			await clickAt(point);
+			linksChecked++;
+			const after = await interactionState();
+			if (after.url === rootUrl && target.href !== rootUrl && target.hash !== "#") add("error", "navigation", `Navigation did not move: ${safeName(original.label || target.pathname)}`, { target: target.href });
+			if (/\b(404|page not found|not found|העמוד לא נמצא)\b/i.test(after.body.slice(0,3000))) add("error", "404", `Navigation rendered a not-found page: ${target.pathname}`);
+		}
+
+		const destructive = /delete|remove|pay|purchase|buy|checkout|logout|sign out|מחק|הסר|שלם|רכוש|קנה|יציאה/i;
+		for (const original of testable.filter((item) => item.tag !== "a" && !item.form && !destructive.test(item.label)).slice(0, 8)) {
+			await returnHome();
+			const controls = await controlsNow();
+			const point = controls[original.index] && await controlPoint(original.index);
+			if (!point) continue;
+			const before = await interactionState();
+			await clickAt(point);
+			const after = await interactionState();
+			buttonsChecked++;
+			if (JSON.stringify(before) === JSON.stringify(after)) add("error", "dead-control", `Control produced no visible response: ${safeName(original.label || original.tag)}`);
+		}
+
+		await returnHome();
+		const formCount = Math.min(4, desktop.forms || 0);
+		for (let formIndex = 0; formIndex < formCount; formIndex++) {
+			await returnHome();
+			const prepared = await evalJs(`(() => {
+				const form=[...document.forms].filter(el=>{const s=getComputedStyle(el),r=el.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>2&&r.height>2;})[${formIndex}];
+				if(!form)return null;
+				window.__solsticeFunctionalCheck.submits=[];
+				form.addEventListener('submit',event=>{event.preventDefault();window.__solsticeFunctionalCheck.submits.push({valid:form.checkValidity(),action:form.action||'',method:form.method||'get'});},true);
+				for(const el of form.elements){if(el.disabled||el.type==='hidden'||el.type==='submit'||el.type==='button'||el.type==='file')continue;if(el.type==='checkbox'||el.type==='radio')el.checked=true;else if(el.tagName==='SELECT'&&el.options.length)el.selectedIndex=Math.min(1,el.options.length-1);else if(!el.value){const values={email:'qa@example.com',tel:'0500000000',url:'https://example.com',number:'1',date:'2026-07-17'};el.value=values[el.type]||'Solstice QA';}el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}
+				const submit=form.querySelector('button[type="submit"],input[type="submit"],button:not([type])');if(submit)submit.scrollIntoView({block:'center',inline:'center'});
+				const r=submit&&submit.getBoundingClientRect();return {valid:form.checkValidity(),x:r?r.left+r.width/2:0,y:r?r.top+r.height/2:0,hasSubmit:!!submit,label:(submit&&(submit.innerText||submit.value)||'form').trim().slice(0,100)};
+			})()`);
+			if (!prepared) continue;
+			formsChecked++;
+			if (!prepared.valid) { add("warning", "form", `Form ${formIndex + 1} still has unsupported required fields; submission skipped`); continue; }
+			if (prepared.hasSubmit) await clickAt(prepared); else await evalJs(`([...document.forms].filter(el=>{const s=getComputedStyle(el),r=el.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>2&&r.height>2;})[${formIndex}]).requestSubmit()`);
+			const submissions = await evalJs(`window.__solsticeFunctionalCheck?.submits||[]`);
+			if (!submissions.length) add("error", "form", `Form submit handler did not fire: ${safeName(prepared.label)}`);
+		}
+
+		await setViewport(390, 844);
+		await goto(rootUrl, 500);
+		const mobile = await pageSnapshot();
+		if (mobile.viewport.scrollWidth > mobile.viewport.width + 4) add("error", "layout", `Mobile horizontal overflow: ${mobile.viewport.scrollWidth}px content in ${mobile.viewport.width}px viewport`);
+		for (const label of mobile.clipped) add("error", "layout", `Interactive control is clipped on mobile: ${safeName(label)}`);
+		for (const image of mobile.images.filter((item) => item.broken)) add("error", "resource", `Broken image on mobile: ${image.src || "(empty src)"}`);
+
+		if (outDir) {
+			const mobileShot = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+			fs.writeFileSync(path.join(outDir, "mobile.png"), Buffer.from(mobileShot.data, "base64"));
+			await returnHome();
+			const desktopShot = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+			fs.writeFileSync(path.join(outDir, "desktop.png"), Buffer.from(desktopShot.data, "base64"));
+		}
+
+		for (const failure of networkFailures) add("error", failure.status === 404 ? "404" : "network", `${failure.status} response: ${failure.url}`, failure);
+		for (const message of [...new Set(runtimeFailures.filter(Boolean))]) add("error", "console", message);
+		const pageErrors = await evalJs(`window.__solsticeFunctionalCheck?.errors||[]`).catch(() => []);
+		for (const message of [...new Set((pageErrors || []).filter(Boolean))]) add("error", "console", safeName(message));
+		const errors = findings.filter((item) => item.severity === "error");
+		return {
+			ok: errors.length === 0,
+			checkedAt: new Date().toISOString(), url: rootUrl,
+			summary: { linksChecked, buttonsChecked, formsChecked, mutationsIntercepted: interceptedMutations.length, desktopWidth: desktop.viewport.width, mobileWidth: mobile.viewport.width, errors: errors.length, warnings: findings.length - errors.length },
+			findings,
+			interceptedMutations,
+			screenshots: outDir ? { desktop: path.join(outDir, "desktop.png"), mobile: path.join(outDir, "mobile.png") } : {},
+		};
+	}, { headed: false });
+}
+
 // ---- shared Chrome + CDP session (search / read / crawl / live) ----
 // Mirrors the scrollshot/videoframes setup but exposes a tiny {send, evalJs, goto}
 // API so the text-oriented modes don't each re-implement the boilerplate.
@@ -450,7 +724,12 @@ async function withChrome(bin, fn, opts = {}) {
 		await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error("CDP socket failed")); });
 		let seq = 0;
 		const pending = new Map();
-		ws.onmessage = (ev) => { const msg = JSON.parse(ev.data); if (msg.id && pending.has(msg.id)) { pending.get(msg.id)(msg); pending.delete(msg.id); } };
+		const eventHandlers = new Set();
+		ws.onmessage = (ev) => {
+			const msg = JSON.parse(ev.data);
+			if (msg.id && pending.has(msg.id)) { pending.get(msg.id)(msg); pending.delete(msg.id); return; }
+			for (const handler of eventHandlers) { try { handler(msg); } catch {} }
+		};
 		const send = (method, params = {}, deadlineMs = 20000) => new Promise((res, rej) => {
 			const id = ++seq;
 			const timer = setTimeout(() => { pending.delete(id); rej(new Error(`${method} timed out after ${deadlineMs}ms`)); }, deadlineMs);
@@ -467,7 +746,7 @@ async function withChrome(bin, fn, opts = {}) {
 			for (let i = 0; i < 40; i++) { if (await evalJs("document.readyState === 'complete'")) break; await sleep(400); }
 			await sleep(settleMs);
 		};
-		return await fn({ send, evalJs, goto });
+		return await fn({ send, evalJs, goto, onEvent: (handler) => { eventHandlers.add(handler); return () => eventHandlers.delete(handler); } });
 	} finally {
 		if (keepOpen) {
 			// leave the visible window for the user; the temp profile stays until
@@ -719,8 +998,8 @@ function main() {
 		describeImage(url, process.argv.slice(4).join(" ").trim());
 		return;
 	}
-	if (!mode || !url || ((mode === "shot" || mode === "scrollshot" || mode === "videoframes" || mode === "showcase") && !out)) {
-		console.error("usage:\n  browse.js search <query> [count]            web search → ranked title/url/snippet list (no API key)\n  browse.js videosearch <query> [count]       free Pexels/Pixabay videos → structured JSON\n  browse.js read <url>                        page main content as clean readable text/markdown\n  browse.js crawl <url> [depth] [maxPages]    same-site crawl → text of each page\n  browse.js live <url> [maxPages] [secPerPage] [keep]   VISIBLE browser tour the user watches (analysis text to stdout)\n  browse.js shot <url> <out.png> [WxH]        screenshot\n  browse.js scrollshot <url> <outPrefix> [stops]\n  browse.js videoframes <url> <outPrefix> [frames] [referrer]\n  browse.js showcase <url> <outDir> [maxAssets] lazy-load + download case-study media\n  browse.js audit <url>                       zero-dependency delivery quality audit (JSON)\n  browse.js dom <url>                         raw rendered HTML");
+	if (!mode || !url || ((mode === "shot" || mode === "scrollshot" || mode === "videoframes" || mode === "showcase" || mode === "record" || mode === "replica-source" || mode === "replica-compare") && !out)) {
+		console.error("usage:\n  browse.js search <query> [count]            web search → ranked title/url/snippet list (no API key)\n  browse.js videosearch <query> [count]       free Pexels/Pixabay videos → structured JSON\n  browse.js read <url>                        page main content as clean readable text/markdown\n  browse.js crawl <url> [depth] [maxPages]    same-site crawl → text of each page\n  browse.js live <url> [maxPages] [secPerPage] [keep]   VISIBLE browser tour the user watches (analysis text to stdout)\n  browse.js shot <url> <out.png> [WxH]        screenshot\n  browse.js scrollshot <url> <outPrefix> [stops]\n  browse.js record <url> <out.mp4> [seconds]  real-browser walkthrough recording\n  browse.js videoframes <url> <outPrefix> [frames] [referrer]\n  browse.js showcase <url> <outDir> [maxAssets] lazy-load + download case-study media\n  browse.js audit <url>                       zero-dependency delivery quality audit (JSON)\n  browse.js check <url> <outDir>              browser QA: navigation, controls, forms, 404/console/layout\n  browse.js replica-source <url> <outDir> --authorized  authorized rendered source evidence (no code copying)\n  browse.js replica-compare <sourceDir> <replicaUrl> <outDir> [taskId]  desktop/tablet/mobile visual diff\n  browse.js dom <url>                         raw rendered HTML");
 		process.exit(2);
 	}
 	if (mode === "videosearch") {
@@ -738,6 +1017,18 @@ function main() {
 		console.error("No Chrome/Chromium/Edge found. Install one or set SOLSTICE_BROWSER.");
 		process.exit(3);
 	}
+	if (mode === "replica-source") {
+		captureReplicaSource(bin, url, out, withChrome, { authorized: size === "--authorized" || extra === "--authorized" }).then((result) => {
+			console.log(JSON.stringify(result, null, 2));
+		}).catch((err) => { console.error(`replica-source failed: ${err.message}`); process.exit(1); });
+		return;
+	}
+	if (mode === "replica-compare") {
+		compareReplicaVisuals(bin, url, out, size, withChrome, { taskId: extra || "" }).then((result) => {
+			console.log(JSON.stringify(result, null, 2));
+		}).catch((err) => { console.error(`replica-compare failed: ${err.message}`); process.exit(1); });
+		return;
+	}
 	if (mode === "videoframes") {
 		const frames = /^\d+$/.test(size || "") ? Math.min(24, Math.max(2, parseInt(size, 10))) : 10;
 		videoframes(bin, url, out, frames, extra || "").catch((err) => {
@@ -754,8 +1045,20 @@ function main() {
 		});
 		return;
 	}
+	if (mode === "record") {
+		const seconds = /^\d+$/.test(size || "") ? Math.min(20, Math.max(4, parseInt(size, 10))) : 8;
+		recordWalkthrough(bin, url, out, seconds).catch((err) => {
+			console.error(`record failed: ${err.message}`);
+			process.exit(1);
+		});
+		return;
+	}
 	if (mode === "audit") {
 		audit(bin, url).catch((err) => { console.error(`audit failed: ${err.message}`); process.exit(1); });
+		return;
+	}
+	if (mode === "check") {
+		functionalCheck(bin, url, out || "").then((result) => console.log(JSON.stringify(result, null, 2))).catch((err) => { console.error(`check failed: ${err.message}`); process.exit(1); });
 		return;
 	}
 	if (mode === "scrollshot") {

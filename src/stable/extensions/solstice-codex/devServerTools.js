@@ -17,6 +17,9 @@ function serverEntry(id, scope, server, taskId) {
 		pid: server.proc && server.proc.pid || null,
 		port: server.port || null,
 		url: server.url || (server.port ? `http://127.0.0.1:${server.port}` : null),
+		startedAt: server.startedAt || null,
+		lastActivityAt: server.lastActivityAt || null,
+		idleDeadlineAt: server.idleDeadlineAt || null,
 		ownedBySolstice: true,
 	};
 }
@@ -32,7 +35,7 @@ function listOwnedDevServers(workspaceServer, managerServers) {
 	return entries;
 }
 
-function stopOwnedDevServer(workspaceServer, managerServers, id) {
+function stopOwnedDevServer(workspaceServer, managerServers, id, reason = "manual") {
 	const target = String(id || "workspace");
 	if (!SAFE_SERVER_ID.test(target)) return { ok: false, error: "invalid_server_id", id: target };
 	let server = null;
@@ -48,7 +51,7 @@ function stopOwnedDevServer(workspaceServer, managerServers, id) {
 		return { ok: false, error: "owned_server_not_running", id: target };
 	}
 	const before = serverEntry(target, scope, server, taskId);
-	const stopped = server.stop();
+	const stopped = server.stop(reason);
 	return {
 		ok: !!(stopped && stopped.stopped),
 		id: target,
@@ -57,6 +60,18 @@ function stopOwnedDevServer(workspaceServer, managerServers, id) {
 		pid: stopped && stopped.pid || before && before.pid || null,
 		root: before && before.root || null,
 		error: stopped && stopped.stopped ? undefined : "stop_failed",
+	};
+}
+
+function stopAllOwnedDevServers(workspaceServer, managerServers, reason = "close-all") {
+	const ids = listOwnedDevServers(workspaceServer, managerServers).map((entry) => entry.id);
+	const results = ids.map((id) => stopOwnedDevServer(workspaceServer, managerServers, id, reason));
+	return {
+		ok: results.every((result) => result.ok),
+		requested: ids.length,
+		stopped: results.filter((result) => result.ok).length,
+		pids: results.filter((result) => result.ok && result.pid).map((result) => result.pid),
+		results,
 	};
 }
 
@@ -83,6 +98,7 @@ class DevServerToolBridge {
 	constructor(opts = {}) {
 		this.list = opts.list || (() => []);
 		this.stop = opts.stop || (() => ({ ok: false, error: "not_configured" }));
+		this.stopAll = opts.stopAll || (() => ({ ok: false, error: "not_configured" }));
 		this.log = opts.log || (() => { });
 		this.token = crypto.randomBytes(24).toString("hex");
 		this.server = null;
@@ -110,6 +126,10 @@ class DevServerToolBridge {
 					if (req.url === "/solstice/dev-server-stop") {
 						const result = await this.stop(body.id || "workspace");
 						return reply(result && result.ok ? 200 : 409, result || { ok: false, error: "stop_failed" });
+					}
+					if (req.url === "/solstice/dev-server-stop-all") {
+						const result = await this.stopAll();
+						return reply(result && result.ok ? 200 : 409, result || { ok: false, error: "stop_all_failed" });
 					}
 					return reply(404, { ok: false, error: "unknown_tool" });
 				} catch (error) {
@@ -177,7 +197,7 @@ function quoteArg(value) {
 }
 
 function agentToolCommand(executable, script, operation, id, platform = process.platform) {
-	if (!/^(list|stop)$/.test(operation)) throw new Error("invalid operation");
+	if (!/^(list|stop|close-all)$/.test(operation)) throw new Error("invalid operation");
 	if (id != null && !SAFE_SERVER_ID.test(String(id))) throw new Error("invalid server id");
 	const tail = [operation, id].filter((v) => v != null).join(" ");
 	if (platform === "win32") {
@@ -204,6 +224,7 @@ function commandStrings(value, key = "", depth = 0, out = []) {
 function isSafeDevServerToolApproval(params, executable, script, platform = process.platform) {
 	for (const command of commandStrings(params)) {
 		if (command === agentToolCommand(executable, script, "list", null, platform)) return true;
+		if (command === agentToolCommand(executable, script, "close-all", null, platform)) return true;
 		const id = command.match(/(?:workspace|manager:[A-Za-z0-9._-]+)(?="?\s*$)/);
 		if (id && command === agentToolCommand(executable, script, "stop", id[0], platform)) return true;
 	}
@@ -218,7 +239,8 @@ async function cliMain(argv = process.argv.slice(2)) {
 		if (!SAFE_SERVER_ID.test(id)) throw new Error("Server id must be 'workspace' or 'manager:<task-id>'.");
 		return requestTool("dev-server-stop", { id });
 	}
-	throw new Error("Usage: devServerTools.js list | stop [workspace|manager:<task-id>]");
+	if (operation === "close-all") return requestTool("dev-server-stop-all");
+	throw new Error("Usage: devServerTools.js list | stop [workspace|manager:<task-id>] | close-all");
 }
 
 if (require.main === module) {
@@ -237,6 +259,7 @@ module.exports = {
 	isSafeDevServerToolApproval,
 	listOwnedDevServers,
 	requestTool,
+	stopAllOwnedDevServers,
 	stopOwnedDevServer,
 	TOOL_TOKEN_ENV,
 	TOOL_URL_ENV,

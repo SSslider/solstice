@@ -20,11 +20,20 @@ const { runBugbot } = require("./bugbot");
 const { listenOnFirstAvailable } = require("./companionPort");
 const { discoverCodexModels, discoverGrokModels, groupModels } = require("./modelDiscovery");
 const { grokApprovalDescriptor, isSafeGrokTool } = require("./grokApprovalBridge");
+const { listArtifacts } = require("./artifactStore");
+const { CANONICAL_BRAND_PACK, brandPackContext, installBrandPack } = require("./brandPack");
+const {
+	normalizeBrowserReport,
+	selfCheckRoundDir,
+	writeBrowserSelfCheckReport,
+	buildBrowserFixPrompt,
+} = require("./browserSelfCheck");
 const {
 	DevServerToolBridge,
 	agentToolCommand,
 	isSafeDevServerToolApproval,
 	listOwnedDevServers,
+	stopAllOwnedDevServers,
 	stopOwnedDevServer,
 } = require("./devServerTools");
 
@@ -199,6 +208,22 @@ function needsResearchContract(text) {
 	return asksAnalysis.test(t) && hasVisualTarget.test(t);
 }
 
+function siteReplicaSourceUrl(text) {
+	const value = String(text || "");
+	const asksReplica = /\b(clone|reclone|recreate|replica|replicate|mirror|rebuild\s+(?:this|the)\s+(?:site|website)|copy\s+(?:this|the)\s+(?:site|website))\b|(?:שכפל|לשכפל|שכפול|רפליקה|בנה\s+מחדש|תבנה\s+מחדש|העתק\s+את\s+האתר)/i.test(value);
+	if (!asksReplica) return "";
+	const match = value.match(/https?:\/\/[^\s<>'"`]+/i);
+	return match ? match[0].replace(/[),.;!?\]}]+$/g, "") : "";
+}
+
+function needsSiteReplicaContract(text) {
+	return !!siteReplicaSourceUrl(text) && !/SOLSTICE_SITE_REPLICA_CONTRACT/.test(String(text || ""));
+}
+
+function hasSiteReplicaAuthorization(text) {
+	return /\b(my|our|ours|client(?:'s)?|customer(?:'s)?|owned|authorized|authorised|licensed|permission)\b|(?:שלי|שלנו|לקוח|הלקוח|בבעלות|מורשה|מורשית|רישיון|אישור להעתיק|אישור לשכפל)/i.test(String(text || ""));
+}
+
 function needsAnimatedWebsiteKit(text) {
 	const t = String(text || "");
 	if (!t || /SOLSTICE_ANIMATED_WEBSITE_KIT/.test(t)) return false;
@@ -267,6 +292,7 @@ function appendResearchContract(text) {
 	const addVerticalPack = needsVerticalTemplatePack(out);
 	const addGapAnalysis = needsGapAnalysis(out);
 	const addToolboxRouter = needsExplicitToolboxRouter(out);
+	const addSiteReplica = needsSiteReplicaContract(out);
 	if (addResearchContract) {
 		out += [
 			"",
@@ -281,6 +307,21 @@ function appendResearchContract(text) {
 			"7. Do not start implementation until the evidence table in `DECONSTRUCT.md` lists the URLs/files/frames examined and the build decisions derived from them.",
 			"[/SOLSTICE_RESEARCH_CONTRACT]",
 			].join("\n");
+	}
+	if (addSiteReplica) {
+		const sourceUrl = siteReplicaSourceUrl(out);
+		out += [
+			"",
+			"[SOLSTICE_SITE_REPLICA_CONTRACT]",
+			`Authorized-source candidate: ${sourceUrl}`,
+			"This route is only for internal work on a client-owned or licensed source. A bare URL is not authorization; Felix's confirmation modal or an explicit ownership/license statement is required before capture. Never use it to resell or impersonate a third-party brand.",
+			`1. After the required visible tour, capture rendered evidence with: browse.js replica-source ${sourceUrl} .solstice/replica/source --authorized`,
+			"2. Read `.solstice/replica/source/DECONSTRUCT.md` and `source-manifest.json`. Rebuild structure, sections, palette, typography, content hierarchy and responsive behavior in the project stack. Do not copy source HTML, CSS, JavaScript, trackers, authentication state or hidden assets.",
+			"3. Use only client-owned/licensed assets; otherwise create or license replacements. Preserve attribution where required.",
+			"4. The CP-F1 browser gate will run desktop/tablet/mobile visual comparison automatically after functional QA. A score below 80 is a concrete failure and triggers the same bounded auto-fix loop. Do not bypass or delete the evidence.",
+			"5. Final walkthrough must contain source, replica and diff evidence for all three breakpoints, bound to the build taskId.",
+			"[/SOLSTICE_SITE_REPLICA_CONTRACT]",
+		].join("\n");
 	}
 	if (addAnimatedKit) {
 		const kit = animatedWebsiteKitText();
@@ -358,6 +399,9 @@ class AgentController {
 		this.activeFleetAgent = null;  // fleet agent the live build is attributed to
 		this._pendingRecovery = null;  // unfinished build read from .solstice/BUILD.json on activation
 		this._verifyTaskId = null;     // taskId already given its one auto self-verify pass
+		this._browserSelfCheck = null; // active post-build browser QA + bounded auto-fix state
+		this._browserSelfCheckRunning = false;
+		this._walkthroughTaskId = ""; // stable build/task key shared by gate evidence + delivery artifacts
 		this._bugbotTaskId = null;     // taskId already reviewed after self-verify
 		this._bugbotRunning = false;
 		this.output = vscode.window.createOutputChannel("Felix");
@@ -383,6 +427,7 @@ class AgentController {
 		this.devServerToolBridge = new DevServerToolBridge({
 			list: () => this.listDevServersForAgent(),
 			stop: (id) => this.stopDevServerForAgent(id),
+			stopAll: () => this.stopAllDevServers("agent-close-all"),
 			log: (m) => this.output.append(m),
 		});
 		this._devServerToolReady = this.devServerToolBridge.start().catch((error) => {
@@ -906,6 +951,53 @@ class AgentController {
 		].join("\n");
 	}
 
+	brandPackRootForThread(threadId) {
+		const task = this.managerTasks && threadId ? this.managerTasks.forThread(threadId) : null;
+		return task && task.worktree ? task.worktree : workspaceCwd();
+	}
+
+	brandContext(root = workspaceCwd()) {
+		return brandPackContext(root);
+	}
+
+	withBrandPack(text, root = workspaceCwd()) {
+		const prompt = String(text || "");
+		if (!prompt || prompt.includes("[FELIX_BRAND_PACK]") || prompt.includes("[FELIX_BRAND_PACK_ERROR]")) return prompt;
+		const context = this.brandContext(root);
+		return context ? context + prompt : prompt;
+	}
+
+	async loadBrandPackIntoWorkspace() {
+		const root = workspaceCwd();
+		if (!root) { vscode.window.showWarningMessage("Solstice: open a project before loading a Brand Pack."); return null; }
+		const selected = await vscode.window.showOpenDialog({
+			canSelectFiles: true,
+			canSelectFolders: false,
+			canSelectMany: false,
+			filters: { "BrandDNA JSON": ["json"] },
+			openLabel: "Load Brand Pack",
+			title: "Choose a BrandDNA JSON file",
+		});
+		if (!selected || !selected[0]) return null;
+		const target = path.join(root, CANONICAL_BRAND_PACK);
+		if (fs.existsSync(target) && path.resolve(selected[0].fsPath) !== path.resolve(target)) {
+			const choice = await vscode.window.showWarningMessage(
+				"This project already has a Brand Pack. Replace it with the selected BrandDNA JSON?",
+				{ modal: true },
+				"Replace Brand Pack"
+			);
+			if (choice !== "Replace Brand Pack") return null;
+		}
+		try {
+			const pack = installBrandPack(root, selected[0].fsPath);
+			vscode.window.showInformationMessage(`Brand Pack loaded: ${pack.compact.name || pack.compact.domain || "BrandDNA"}`);
+			return pack;
+		} catch (error) {
+			vscode.window.showErrorMessage("Brand Pack rejected: " + String(error && error.message || error));
+			return null;
+		}
+	}
+
 	// Cross-provider "act like a real agent" guidance — persistence, ground-truth
 	// tool use, planning, self-verification, and knowing when to ask. Injected into
 	// every preamble so Felix behaves like an agent, not a one-shot chat model.
@@ -1149,6 +1241,7 @@ self.addEventListener("fetch", (e) => {
 				url = `http://127.0.0.1:${port}/${rel}`;
 			}
 		}
+		if (this.devServer && this.devServer.hasOwnedProcess()) this.devServer.touch("preview-open");
 		// Route a live dev server through the injecting proxy so click-to-select works
 		// on framework apps too (not just plain HTML). Keeps the URL we actually load.
 		url = await this.proxyDevServerForSelect(url).catch(() => url);
@@ -1213,20 +1306,42 @@ self.addEventListener("fetch", (e) => {
 		if (!this.devServer) {
 			this.devServer = new DevServer(root, {
 				onLog: (s) => { try { this.output.append(s); } catch { } },
+				onStateChange: () => {
+					if (this.devServer && !this.devServer.hasOwnedProcess()) {
+						this.previewUrl = "";
+						this.postPreview({ type: "load", url: "", device: this.defaultDevice() });
+					}
+					this.pushDevServerInventory();
+				},
+				idleTimeoutMs: this.devServerIdleTimeoutMs(),
 			});
 		}
 		this.post({ type: "systemNote", text: "🚀 מריץ את שרת הפיתוח (npm run dev)… התצוגה תיפתח כשהוא יעלה." });
 		const url = await this.devServer.ensure().catch(() => null);
-		if (url) { await this.openPreview(url).catch(() => { }); }
+		if (url) { this.devServer.touch("preview-open"); await this.openPreview(url).catch(() => { }); }
 		else { this.post({ type: "systemNote", text: "⚠️ לא הצלחתי להריץ את שרת הפיתוח — בדוק את הטרמינל." }); }
+		this.pushDevServerInventory();
+	}
+
+	devServerIdleTimeoutMs() {
+		const minutes = Number(this.cfg().get("devServerIdleMinutes"));
+		return (Number.isFinite(minutes) && minutes > 0 ? minutes : 30) * 60 * 1000;
 	}
 
 	listDevServersForAgent() {
 		return listOwnedDevServers(this.devServer, this.managerDevServers);
 	}
 
+	pushDevServerInventory() {
+		this.postManager({
+			type: "devServers",
+			servers: this.listDevServersForAgent(),
+			idleTimeoutMs: this.devServerIdleTimeoutMs(),
+		});
+	}
+
 	stopDevServerForAgent(id) {
-		const result = stopOwnedDevServer(this.devServer, this.managerDevServers, id);
+		const result = stopOwnedDevServer(this.devServer, this.managerDevServers, id, "manual");
 		if (!result.ok) return result;
 		if (result.scope === "workspace") {
 			this.previewUrl = "";
@@ -1239,6 +1354,25 @@ self.addEventListener("fetch", (e) => {
 			this.postManager({ type: "managerPreview", taskId: result.taskId, url: "" });
 		}
 		this.output.append(`[dev-tools] stopped ${result.id} PID ${result.pid}\n`);
+		this.pushDevServerInventory();
+		return result;
+	}
+
+	stopAllDevServers(reason = "close-all") {
+		const result = stopAllOwnedDevServers(this.devServer, this.managerDevServers, reason);
+		this.managerDevServers.clear();
+		if (this.preview) this.preview.dispose();
+		for (const preview of this.managerPreviews.values()) preview.dispose();
+		this.managerPreviews.clear();
+		this.previewUrl = "";
+		this.postPreview({ type: "load", url: "", device: this.defaultDevice() });
+		for (const task of this.managerTaskList()) {
+			if (task.previewUrl) this.managerTasks.setStatus(task.id, task.status, { previewUrl: "" });
+			this.postManager({ type: "managerPreview", taskId: task.id, url: "" });
+		}
+		this.pushManagerTasks();
+		this.pushDevServerInventory();
+		this.output.append(`[dev-tools] close-all reason=${reason} stopped=${result.stopped}/${result.requested}\n`);
 		return result;
 	}
 
@@ -1255,6 +1389,7 @@ self.addEventListener("fetch", (e) => {
 		return [
 			"- solstice/dev-server-list — list only dev servers owned by this Solstice window: " + this.devServerToolCommand("list"),
 			"- solstice/dev-server-stop — stop an IDE-owned server without an approval card. First list, then run: " + this.devServerToolCommand("stop", "workspace") + " (replace workspace with a returned manager:<task-id> when needed). Never kill a process by port or PID yourself.",
+			"- solstice/dev-server-stop-all — close every preview server owned by this Solstice window: " + this.devServerToolCommand("close-all") + ". Use this at the end of a build session or when Thomas asks to close all servers.",
 		].join("\n");
 	}
 
@@ -1262,6 +1397,7 @@ self.addEventListener("fetch", (e) => {
 		const commands = [
 			this.devServerToolCommand("list"),
 			this.devServerToolCommand("stop", "workspace"),
+			this.devServerToolCommand("close-all"),
 			...this.listDevServersForAgent()
 				.filter((item) => item.scope === "manager")
 				.map((item) => this.devServerToolCommand("stop", item.id)),
@@ -1286,8 +1422,8 @@ self.addEventListener("fetch", (e) => {
 			return true;
 		}
 		if (isPureStopRuntimeIntent(text) && this.devServer && this.devServer.hasOwnedProcess()) {
-			const result = this.devServer.stop();
-			if (result.stopped) {
+			const result = this.stopDevServerForAgent("workspace");
+			if (result.ok) {
 				this.previewUrl = "";
 				this.postPreview({ type: "load", url: "", device: this.defaultDevice() });
 				this.post({ type: "systemNote", text: `🛑 שרת הפיתוח של Solstice נעצר (PID ${result.pid}).` });
@@ -1342,6 +1478,7 @@ self.addEventListener("fetch", (e) => {
 		// This is intentionally the only refreshPreview implementation. A duplicate
 		// method used to override the reopen path, so turn 2+ silently lost Preview.
 		if (!this.previewUrl) { this.openPreview("").catch(() => { }); return; }
+		if (this.devServer && this.devServer.hasOwnedProcess()) this.devServer.touch("preview-refresh");
 		if (!this.previewPanel) { this.openPreviewPanel(this.previewUrl, this.defaultDevice()); return; }
 		this.postPreview({ type: "reload", holdMs: 900 });
 	}
@@ -2223,6 +2360,7 @@ self.addEventListener("fetch", (e) => {
 			`- Sample frames from a video on any page (case-study scroll videos, domain-locked Vimeo embeds): ${shot.replace(" shot <url> <out.png>", ' videoframes <url> <outPrefix> [frames] [referrer]')}`,
 			`- Search FREE stock video from Pexels/Pixabay whenever the user explicitly asks for video/footage (this does not spend generation credits): ${shot.replace(" shot <url> <out.png>", ' videosearch "<query>" [count]')}. Download the chosen clip and poster into the workspace, preserve attribution/license metadata, and embed a lazy muted playsInline <video>.`,
 			`- Extract a Behance/Dribbble showcase as structured evidence (forces lazy-load, downloads best image variants, inventories players): ${shot.replace(" shot <url> <out.png>", ' showcase <url> <outDir> [maxAssets]')}`,
+			`- Authorized site replica evidence (client-owned/licensed sources only; rendered evidence, never copied source code): ${shot.replace(" shot <url> <out.png>", ' replica-source <url> <outDir> --authorized')}. The CP-F1 gate runs replica-compare automatically after the rebuild.`,
 			"- Research workflow: when the user asks you to imitate/take inspiration from a site or find references, SEARCH for it, READ or CRAWL the top results, and SCROLLSHOT the best ones before designing — don't guess from memory.",
 			`- VIEW ANY IMAGE (you cannot see images yourself — this gives you a detailed text read of one): ${shot.replace(" shot <url> <out.png>", ' describe <image.png> ["what to focus on"]')}`,
 			"  Use it for every reference screenshot BEFORE designing, and for your own verification screenshots before declaring done. It routes to a vision model for you, so it works even though your chat model is text-only.",
@@ -2236,6 +2374,7 @@ self.addEventListener("fetch", (e) => {
 			"- ALWAYS externalize your design/site analysis to a FILE — the user reads the analysis in the CENTER window as a research dashboard, not the chat. When deconstructing / analyzing / researching a design, website or app, the FIRST thing you do is create `RESEARCH.md` (or `DECONSTRUCT.md`) in the workspace root, and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end, and never only in chat. Include as you go: what you examined, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, detected techniques (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed frames/screenshots with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
 			`- PREMIUM COMPONENT LIBRARY — your fastest path to an Awwwards-bar page. BEFORE building any common section (navbar, hero, features, gallery, stats, testimonials, pricing, CTA, footer) from scratch, read ${path.join(this.context.extensionPath, "prompts", "components", "library.html")} (sections are delimited by '═══ COMPONENT: <id> ═══' markers; ids+tags in manifest.json next to it). Copy the closest component, then ADAPT it to the client: retheme the --c-* tokens to the brand palette, replace ALL copy with sector-true Hebrew, swap in real/generated imagery, rename fx- prefixes on collision. NEVER ship a component verbatim — it is a high starting bar, not a final design.`,
+				this.brandContext(workspaceCwd()),
 				this.agentBehavior(),
 				this.appModeGuidance(),
 				playbook ? "\n" + playbook : "",
@@ -2266,6 +2405,7 @@ self.addEventListener("fetch", (e) => {
 			`- Sample frames from a video on any page (case-study scroll videos, domain-locked Vimeo embeds): ${shot.replace(" shot <url> <out.png>", ' videoframes <url> <outPrefix> [frames] [referrer]')}`,
 			`- Search FREE stock video from Pexels/Pixabay whenever the user explicitly asks for video/footage (this does not spend generation credits): ${shot.replace(" shot <url> <out.png>", ' videosearch "<query>" [count]')}. Download the chosen clip and poster into the workspace, preserve attribution/license metadata, and embed a lazy muted playsInline <video>.`,
 			`- Extract a Behance/Dribbble showcase as structured evidence (forces lazy-load, downloads best image variants, inventories players): ${shot.replace(" shot <url> <out.png>", ' showcase <url> <outDir> [maxAssets]')}`,
+			`- Authorized site replica evidence (client-owned/licensed sources only; rendered evidence, never copied source code): ${shot.replace(" shot <url> <out.png>", ' replica-source <url> <outDir> --authorized')}. The CP-F1 gate runs replica-compare automatically after the rebuild.`,
 			"- Research workflow: when the user asks you to imitate/take inspiration from a site or find references, SEARCH for it, READ or CRAWL the top results, and SCROLLSHOT the best ones before designing — don't guess from memory.",
 			"- You CAN view images: open any screenshot/reference image with your Read tool and study it in exhaustive detail (layout, sections, colors with hex, typography, imagery style, spacing, mood). Always do this for every reference screenshot before designing, and for your own verification screenshots before declaring done.",
 			`- Capture a design TOP-TO-BOTTOM in DESKTOP and MOBILE (Behance/Dribbble show both): desktop full-page → ${shot.replace(" shot <url> <out.png>", ' scrollshot <url> <outPrefix> [stops]')}; mobile full-page → ${shot.replace("shot <url> <out.png>", "shot <url> <out.png> 390x3000")}. Open each with your Read tool to study both viewports.`,
@@ -2279,6 +2419,7 @@ self.addEventListener("fetch", (e) => {
 			"- FOLLOW-UP PROMPTS CONTINUE THE SAME PLAN: append a new `## Phase` to the existing .solstice/PLAN.md for each new user request — never restart the plan file; completed phases keep their [x].",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
 			`- PREMIUM COMPONENT LIBRARY — your fastest path to an Awwwards-bar page. BEFORE building any common section (navbar, hero, features, gallery, stats, testimonials, pricing, CTA, footer) from scratch, read ${path.join(this.context.extensionPath, "prompts", "components", "library.html")} (sections are delimited by '═══ COMPONENT: <id> ═══' markers; ids+tags in manifest.json next to it). Copy the closest component, then ADAPT it to the client: retheme the --c-* tokens to the brand palette, replace ALL copy with sector-true Hebrew, swap in real/generated imagery, rename fx- prefixes on collision. NEVER ship a component verbatim — it is a high starting bar, not a final design.`,
+				this.brandContext(workspaceCwd()),
 				this.agentBehavior(),
 				this.appModeGuidance(),
 				playbook ? "\n" + playbook : "",
@@ -2286,13 +2427,13 @@ self.addEventListener("fetch", (e) => {
 		}
 
 	async sendClaude(text) {
-		const prompt = appendResearchContract(text);
 		if (!this.claudeAllowed()) {
 			vscode.window.showWarningMessage("Solstice: Claude is disabled. Set solstice.codex.allowClaude to true to enable it.");
 			return;
 		}
 		const cwd = workspaceCwd();
 		if (!cwd) { vscode.window.showWarningMessage("Solstice: open a folder first."); return; }
+		const prompt = appendResearchContract(this.withBrandPack(text, cwd));
 		if (!this.claude) {
 			const selected = MODEL_REGISTRY[this.providerKey()] || {};
 			const devServerToolEnv = await this.devServerToolEnv();
@@ -2315,9 +2456,9 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	async sendGrok(text, rawText = text) {
-		const prompt = appendResearchContract(text);
 		const cwd = workspaceCwd();
 		if (!cwd) { vscode.window.showWarningMessage("Solstice: open a folder first."); return; }
+		const prompt = appendResearchContract(this.withBrandPack(text, cwd));
 		if (!this.grok) {
 			const devServerToolEnv = await this.devServerToolEnv();
 			this.grok = new GrokProvider({
@@ -2395,6 +2536,7 @@ self.addEventListener("fetch", (e) => {
 		const result = await this.managerTasks.merge(taskId, expectedPatchHash);
 		this.pushManagerTasks();
 		this.postManager({ type: "managerMerged", taskId, patchHash: result.patchHash });
+		this.stopDevServerForAgent(`manager:${taskId}`);
 		vscode.window.showInformationMessage(`Solstice: merged ${result.task.label} after git apply --check (${result.patchBytes} bytes).`);
 		return result;
 	}
@@ -2407,8 +2549,24 @@ self.addEventListener("fetch", (e) => {
 		let url = await detectDevServerUrl(root).catch(() => null);
 		if (!url && hasFramework(root)) {
 			let server = this.managerDevServers.get(taskId);
-			if (!server) { server = new DevServer(root, { onLog: (s) => this.output.append(`[manager:${taskId}] ${s}`) }); this.managerDevServers.set(taskId, server); }
+			if (!server) {
+				server = new DevServer(root, {
+					onLog: (s) => this.output.append(`[manager:${taskId}] ${s}`),
+					onStateChange: () => {
+						if (!server.hasOwnedProcess() && this.managerDevServers.get(taskId) === server) {
+							this.managerDevServers.delete(taskId);
+							const current = this.managerTasks && this.managerTasks.get(taskId);
+							if (current) this.managerTasks.setStatus(taskId, current.status, { previewUrl: "" });
+							this.postManager({ type: "managerPreview", taskId, url: "" });
+						}
+						this.pushDevServerInventory();
+					},
+					idleTimeoutMs: this.devServerIdleTimeoutMs(),
+				});
+				this.managerDevServers.set(taskId, server);
+			}
 			url = await server.ensure();
+			server.touch("preview-open");
 		} else if (!url) {
 			let server = this.managerPreviews.get(taskId);
 			if (!server) { server = new PreviewServer(root, { onSelect: (pick) => this.postManager({ type: "elementSelected", taskId, pick }) }); this.managerPreviews.set(taskId, server); }
@@ -2420,6 +2578,7 @@ self.addEventListener("fetch", (e) => {
 		this.pushManagerTasks();
 		this.openPreviewPanel(url, "desktop");
 		this.postManager({ type: "managerPreview", taskId, url });
+		this.pushDevServerInventory();
 		return url;
 	}
 
@@ -2439,6 +2598,37 @@ self.addEventListener("fetch", (e) => {
 
 	pushThreads() {
 		this.postManager({ type: "threads", threads: this.threadList() });
+	}
+
+	artifactPackages() {
+		const root = workspaceCwd();
+		if (!root) return [];
+		return listArtifacts(root).slice(0, 24).map((item) => {
+			const dir = path.resolve(root, item.path || "");
+			const inside = dir === path.resolve(root) || dir.startsWith(path.resolve(root) + path.sep);
+			if (!inside) return null;
+			const uri = (name) => {
+				if (!name || !this.manager) return "";
+				const file = path.join(dir, name);
+				try { return fs.existsSync(file) ? this.manager.asWebviewUri(vscode.Uri.file(file)).toString() : ""; } catch { return ""; }
+			};
+			return { ...item, thumbnailUri: uri(item.thumbnail), recordingUri: uri(item.recording) };
+		}).filter(Boolean);
+	}
+
+	pushArtifactPackages() {
+		this.postManager({ type: "artifactPackages", artifacts: this.artifactPackages() });
+	}
+
+	openArtifactPackage(relativePath, fileName) {
+		const root = workspaceCwd();
+		if (!root) return;
+		const target = path.resolve(root, relativePath || "", fileName || "");
+		const base = path.resolve(root);
+		if (target !== base && !target.startsWith(base + path.sep)) throw new Error("artifact path escapes workspace");
+		if (!fs.existsSync(target)) throw new Error("artifact file does not exist");
+		if (fileName) return vscode.commands.executeCommand("vscode.open", vscode.Uri.file(target));
+		return vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(target));
 	}
 
 	async ensureClient() {
@@ -2511,6 +2701,7 @@ self.addEventListener("fetch", (e) => {
 			if (tid === this.threadId) { this.markBusy("_builder", true); this.notePulse("_builder", "state"); this.postPreview({ type: "building", on: true }); this.fleetFlow("building"); this.injectMercuryClient().catch(() => { }); }
 			this.pushThreads();
 		} else if (method === "turn/completed" && tid) {
+			let browserCheckStarted = false;
 			const th = this.upsertThread({ id: tid });
 			th.activeTurnId = null;
 			th.status = "idle";
@@ -2520,15 +2711,22 @@ self.addEventListener("fetch", (e) => {
 				this.managerTasks.setStatus(managerTask.id, "ready_review", { phase: "review" });
 				this.managerTasks.inspect(managerTask.id).then(() => this.pushManagerTasks()).catch((e) => this.output.append("[manager] inspect failed: " + e.message + "\n"));
 			}
-			if (tid === this.threadId) { this.markBusy("_builder", false); this.postPreview({ type: "building", on: false }); this.fleetFlow("done"); this._failoverTried = null; this.refreshPreview(); }
+			if (tid === this.threadId) {
+				this.markBusy("_builder", false);
+				this.postPreview({ type: "building", on: false });
+				this._failoverTried = null;
+				this.refreshPreview();
+				browserCheckStarted = this.maybeRunBrowserSelfCheck();
+				if (!browserCheckStarted) this.fleetFlow("done");
+			}
 			if (tid === this.threadId) this.learnFromFidelityFile();
 			if (tid === this.threadId) {
 				try { captureBuild(workspaceCwd(), { prompt: this._lastUserPrompt, provider: this.providerLabel(), previewUrl: this.previewUrl }); }
 				catch (e) { this.output.append("[project-brain] capture failed: " + (e && e.message || e) + "\n"); }
 			}
-			if (tid === this.threadId) this.maybeCreateWalkthrough();
+			if (tid === this.threadId && !browserCheckStarted) this.maybeCreateWalkthrough();
 			this.pushThreads();
-			if (tid === this.threadId) this.drainSteerQueue();
+			if (tid === this.threadId && !browserCheckStarted) this.drainSteerQueue();
 		} else if (method === "turn/diff/updated" && tid) {
 			const th = this.upsertThread({ id: tid });
 			th.diff = params.diff || "";
@@ -2705,7 +2903,7 @@ self.addEventListener("fetch", (e) => {
 		}
 	}
 
-	developerInstructions(text = "") {
+	developerInstructions(text = "", cwd = workspaceCwd()) {
 		const browseJs = path.join(this.context.extensionPath, "webtools", "browse.js"); // dir is "webtools" not "tools": the Windows build's 7z -x!tools strips any nested tools/ dir
 		const node = process.execPath;
 		const run = process.platform === "win32"
@@ -2716,7 +2914,7 @@ self.addEventListener("fetch", (e) => {
 			"You are the Solstice IDE agent. Capabilities beyond your normal tools:",
 			this.devServerToolInstructions(),
 			`- Web browsing & research: ${run}`,
-			"  Replace mode 'shot' with: 'search \"<query>\" [count]' to discover URLs; 'videosearch \"<query>\" [count]' for FREE Pexels/Pixabay stock clips whenever video is explicitly requested; 'read <url>' for readable text; 'crawl <url> [depth] [maxPages]' for same-site research; 'live <url> [maxPages] [secPerPage] [keep]' for a VISIBLE tour; 'showcase <url> <outDir> [maxAssets]' to force lazy-load and extract Behance/Dribbble images plus video/player URLs; 'dom <url>' for raw HTML; 'videoframes <url> <outPrefix> [frames] [referrer]' to sample video. Download the chosen stock clip/poster locally, retain attribution/license metadata, and use a lazy muted playsInline <video>. For every interactive site/design research request, run `live` first; keep background engine research headless.",
+			"  Replace mode 'shot' with: 'search \"<query>\" [count]' to discover URLs; 'videosearch \"<query>\" [count]' for FREE Pexels/Pixabay stock clips whenever video is explicitly requested; 'read <url>' for readable text; 'crawl <url> [depth] [maxPages]' for same-site research; 'live <url> [maxPages] [secPerPage] [keep]' for a VISIBLE tour; 'showcase <url> <outDir> [maxAssets]' to force lazy-load and extract Behance/Dribbble images plus video/player URLs; 'replica-source <url> <outDir> --authorized' for rendered desktop/tablet/mobile evidence of a client-owned or licensed site (never copied source code); 'dom <url>' for raw HTML; 'videoframes <url> <outPrefix> [frames] [referrer]' to sample video. Download the chosen stock clip/poster locally, retain attribution/license metadata, and use a lazy muted playsInline <video>. For every interactive site/design research request, run `live` first; keep background engine research headless.",
 			"  Research workflow: when asked to imitate/take inspiration from a site or find references, SEARCH, then READ or CRAWL the top results, and screenshot the best before designing — don't guess from memory.",
 			"  After taking a screenshot, ALWAYS open it with your view_image tool to study layout, colors, typography and content. Use this whenever the user asks to inspect, analyze or imitate a website or design (e.g. Behance/Dribbble references).",
 				"  Capture designs TOP-TO-BOTTOM in DESKTOP and MOBILE: desktop full-page via 'scrollshot <url> <outPrefix> [stops]', mobile full-page via 'shot <url> <out.png> 390x3000'; open each with view_image to study both viewports.",
@@ -2727,6 +2925,7 @@ self.addEventListener("fetch", (e) => {
 			"- When deconstructing / analyzing / researching a design, website, or app: maintain DECONSTRUCT.md (or RESEARCH.md) in the workspace root and UPDATE IT INCREMENTALLY after EVERY finding — never only at the end. The IDE renders this file live to the user as a research dashboard. Include as you go: what you examined so far, frame/screen classification tables, color tokens (hex), typography, section-by-section breakdown, techniques you detected (stack, animation libraries, layout tricks), and your build decisions. Use markdown tables and checklists. Embed the frames/screenshots you examine as images with workspace-relative paths (e.g. ![frame 2](.solstice/frames/frame02.png)) — the dashboard renders them as thumbnails, including inside table cells.",
 			"- Prefer modern stacks when asked (Next.js, three.js, react-three-fiber); install dependencies as needed.",
 			`- PREMIUM COMPONENT LIBRARY — your fastest path to an Awwwards-bar page. BEFORE building any common section (navbar, hero, features, gallery, stats, testimonials, pricing, CTA, footer) from scratch, read ${path.join(this.context.extensionPath, "prompts", "components", "library.html")} (sections are delimited by '═══ COMPONENT: <id> ═══' markers; ids+tags in manifest.json next to it). Copy the closest component, then ADAPT it to the client: retheme the --c-* tokens to the brand palette, replace ALL copy with sector-true Hebrew, swap in real/generated imagery, rename fx- prefixes on collision. NEVER ship a component verbatim — it is a high starting bar, not a final design.`,
+				this.brandContext(cwd),
 			"- FOLLOW-UP PROMPTS CONTINUE THE SAME PLAN: when the user sends another request after a build, keep ONE evolving plan for the project — append a new phase for the new request; never restart from scratch; completed steps stay marked done.",
 				this.agentBehavior(),
 				this.appModeGuidance(),
@@ -2735,7 +2934,7 @@ self.addEventListener("fetch", (e) => {
 		}
 
 	async startThread(text = "", cwd = workspaceCwd()) {
-		const developerInstructions = this.developerInstructions(text);
+		const developerInstructions = this.developerInstructions(text, cwd);
 		this.logPreambleSize("codex", developerInstructions);
 		const client = await this.ensureClient();
 		const th = await client.request("thread/start", {
@@ -2767,7 +2966,8 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	async startTurn(threadId, text) {
-		const prompt = appendResearchContract(text);
+		const root = this.brandPackRootForThread(threadId);
+		const prompt = appendResearchContract(this.withBrandPack(text, root));
 		const client = await this.ensureClient();
 		await this.ensureRunnable(threadId);
 		const th = this.upsertThread({ id: threadId });
@@ -2783,16 +2983,33 @@ self.addEventListener("fetch", (e) => {
 
 	// sidebar send: lazily creates the sidebar thread
 	async send(text) {
-		const rawText = text;
+		let rawText = text;
+		const browserFixTurn = /^\s*\[FELIX_BROWSER_SELF_CHECK\]/.test(String(text || ""));
+		const replicaUrl = !browserFixTurn && siteReplicaSourceUrl(rawText);
+		if (replicaUrl && !hasSiteReplicaAuthorization(rawText)) {
+			const confirmed = await vscode.window.showWarningMessage(
+				"Solstice can rebuild this URL only for internal work on a site the client owns or is licensed to reproduce. Confirm authorization before any capture.",
+				{ modal: true },
+				"Confirm authorized source"
+			);
+			if (confirmed !== "Confirm authorized source") return;
+			rawText = `${rawText}\n\n[REPLICA_AUTHORIZATION_CONFIRMED] Thomas confirmed this is client-owned or licensed material for an internal rebuild.`;
+			text = rawText;
+		}
+		const browserBuildIntent = !browserFixTurn && this.isBrowserBuildIntent(rawText);
 		// Runtime-only continuation actions are resolved before any model context is
 		// assembled. With a workspace-owned dev-server registration, "open the site"
 		// therefore opens the exact live URL without a discovery or inventory turn.
-		if (await this.handleRuntimeIntent(rawText)) {
+		if (!browserFixTurn && await this.handleRuntimeIntent(rawText)) {
 			if (rawText) this._lastUserPrompt = rawText;
 			return;
 		}
 		if (this._planApprovalBypass) this._planApprovalBypass = false;
-		else if (this.isBuildIntent(text)) {
+		else if (!browserFixTurn && (this.isBuildIntent(text) || browserBuildIntent)) {
+			if (browserBuildIntent) {
+				this.armBrowserSelfCheck(rawText);
+				this._walkthroughPending = true;
+			}
 			this.beginFlowingPlan(text);
 			text = this.flowingBuildPrompt(text);
 		}
@@ -2810,7 +3027,7 @@ self.addEventListener("fetch", (e) => {
 		}
 		// remember the last prompt so auto-failover can transparently re-run it
 		// on the next model in the chain after a quota/rate-limit error.
-		if (rawText) this._lastUserPrompt = rawText;
+		if (rawText && !browserFixTurn) this._lastUserPrompt = rawText;
 		// Make sure the live provider actually has an installed CLI on THIS
 		// machine before we try to spawn it — otherwise switch to one that does,
 		// or show an install card. Prevents the silent ENOENT desktop failure.
@@ -2836,7 +3053,7 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	async steer(threadId, text) {
-		text = appendResearchContract(text);
+		text = appendResearchContract(this.withBrandPack(text, this.brandPackRootForThread(threadId)));
 		const provider = this.providerKey();
 		// grok / claude run as spawned CLIs with no native mid-turn injection.
 		// While they're busy, queue the steer and drain it into a follow-up turn
@@ -2881,6 +3098,11 @@ self.addEventListener("fetch", (e) => {
 
 	async interrupt(threadId) {
 		let stopped = false;
+		if (this._browserSelfCheck && (!threadId || threadId === this.threadId)) {
+			this._browserSelfCheck = null;
+			this._browserSelfCheckRunning = false;
+			stopped = true;
+		}
 		if (!threadId && this.pendingPlanApproval) {
 			this.pendingPlanApproval = null;
 			this._planApprovalBypass = false;
@@ -2955,11 +3177,17 @@ self.addEventListener("fetch", (e) => {
 		await client.request("thread/archive", { threadId }).catch(() => { });
 		this.threads.delete(threadId);
 		this.loaded.delete(threadId);
-		if (this.threadId === threadId) this.threadId = null;
+		const managerTask = this.managerTasks && this.managerTasks.forThread(threadId);
+		if (managerTask) this.stopDevServerForAgent(`manager:${managerTask.id}`);
+		if (this.threadId === threadId) {
+			this.threadId = null;
+			this.stopDevServerForAgent("workspace");
+		}
 		this.pushThreads();
 	}
 
 	newThread() {
+		if (this.threadId) this.stopDevServerForAgent("workspace");
 		this.threadId = null;
 		this.lastDiff = "";
 		// drop the claude session so the next send starts a fresh conversation
@@ -3252,7 +3480,17 @@ self.addEventListener("fetch", (e) => {
 		const t = String(text || "");
 		if (isPureLaunchIntent(t)) return false;
 		return /\b(build|create|make|implement|develop|scaffold|redesign|rebuild|clone|ship|code|fix)\b[\s\S]{0,180}\b(site|website|app|application|page|dashboard|project|feature|frontend|backend|api|component|flow)\b/i.test(t) ||
-			/(?:ת?בנה|לבנות|ת?צור|ליצור|תפתח|פתח|יישם|תקן|עצב מחדש)[\s\S]{0,180}(?:אתר|אפליקצי|עמוד|דשבורד|פרויקט|פיצ'ר|בקאנד|פרונט|API|קומפוננט|מערכת)/i.test(t);
+			/(?:ת?בנה|לבנות|ת?צור|ליצור|תפתח|פתח|יישם|תקן|עצב מחדש|שכפל|לשכפל|בנה מחדש|תבנה מחדש)[\s\S]{0,180}(?:אתר|אפליקצי|עמוד|דשבורד|פרויקט|פיצ'ר|בקאנד|פרונט|API|קומפוננט|מערכת)/i.test(t);
+	}
+
+	isBrowserBuildIntent(text) {
+		const t = String(text || "");
+		const explicitSurface = /\b(site|website|webapp|web app|app|application|page|dashboard|frontend|component|ui|landing|storefront|pwa)\b|אתר|אפליקצי|עמוד|דשבורד|פרונט|קומפוננט|ממשק|דף נחיתה/i.test(t);
+		const browserSurface = explicitSurface || /\bsystem\b|מערכת/i.test(t);
+		const backendOnly = /\b(backend|api|database|schema|migration|webhook|worker|cron)\b|בקאנד|מסד נתונים|סכמה|מיגרצי|וובהוק/i.test(t) && !explicitSurface;
+		const followupMutation = /\b(add|change|update|polish|style|refactor|wire|connect|animate|replace)\b|(?:הוסף|תוסיף|שנה|תשנה|עדכן|תעדכן|שפר|תשפר|חבר|תחבר|החלף|תחליף)/i.test(t);
+		const statusOnly = /\b(update me|status|progress|what changed)\b|(?:עדכון מצב|מה המצב|מה השתנה)/i.test(t);
+		return browserSurface && !backendOnly && !statusOnly && (this.isBuildIntent(t) || followupMutation);
 	}
 
 	requestPlanApproval(prompt) {
@@ -3761,6 +3999,143 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	// ---- self-verify (Phase 3) ---------------------------------------------
+	// Every website build gets a real browser pass before the legacy visual
+	// verify/Bugbot/delivery chain. The checker clicks same-origin navigation,
+	// safe controls and intercepted forms, and inspects 404/network/console and
+	// desktop/mobile layout failures. Concrete failures are fed into a bounded
+	// auto-fix turn, then the whole browser pass runs again until green.
+	armBrowserSelfCheck(task) {
+		if (this.cfg().get("selfVerify") === false) return;
+		const fleetTaskId = this._activeBuild && this._activeBuild.taskId;
+		this._browserSelfCheck = {
+			id: fleetTaskId || `interactive-${Date.now()}`,
+			task: String(task || this._lastUserPrompt || "").slice(0, 4000),
+			round: 0,
+			maxRounds: 3,
+			token: crypto.randomBytes(12).toString("hex"),
+			replicaSourceUrl: siteReplicaSourceUrl(task),
+		};
+		this._walkthroughTaskId = this._browserSelfCheck.id;
+		this._browserSelfCheckRunning = false;
+	}
+
+	maybeRunBrowserSelfCheck() {
+		const state = this._browserSelfCheck;
+		if (!state || this._browserSelfCheckRunning) return false;
+		this._browserSelfCheckRunning = true;
+		setTimeout(() => this.runBrowserSelfCheck(state.token).catch((error) => {
+			this.output.append(`[browser-check] ${error && error.stack || error}\n`);
+			this.failBrowserSelfCheck(state, `Browser self-check crashed: ${error && error.message || error}`);
+		}), 700);
+		return true;
+	}
+
+	async browserSelfCheckUrl() {
+		const cwd = workspaceCwd();
+		if (!cwd) return "";
+		if (!this.previewUrl) await this.openPreview("").catch(() => { });
+		for (let attempt = 0; attempt < 20; attempt++) {
+			if (this.previewUrl) return this.previewUrl;
+			const registered = await detectDevServerUrl(cwd).catch(() => null);
+			if (registered) {
+				await this.openPreview(registered).catch(() => { });
+				if (this.previewUrl) return this.previewUrl;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 500));
+		}
+		return "";
+	}
+
+	async runBrowserSelfCheck(token) {
+		const state = this._browserSelfCheck;
+		if (!state || state.token !== token) { this._browserSelfCheckRunning = false; return; }
+		const cwd = workspaceCwd();
+		const url = await this.browserSelfCheckUrl();
+		if (!cwd || !url) {
+			this.failBrowserSelfCheck(state, "Browser self-check could not resolve a live workspace preview.");
+			return;
+		}
+		state.round += 1;
+		const roundDir = selfCheckRoundDir(cwd, state.id, state.round);
+		const runtime = this.resolveWalkthroughRuntime();
+		const tool = path.join(this.context.extensionPath, "webtools", "browse.js");
+		this.output.append(`[browser-check] round=${state.round}/${state.maxRounds} url=${url}\n`);
+		this.announceAgentMessage(`🔍 בדיקת דפדפן אוטומטית · סבב ${state.round}/${state.maxRounds}`);
+		const result = await this.runCli(runtime.bin, [tool, "check", url, roundDir], cwd, runtime.env);
+		if (!this._browserSelfCheck || this._browserSelfCheck.token !== token) return;
+		if (result.code !== 0) {
+			const detail = String(result.stderr || result.stdout || result.error && result.error.message || "browser checker failed").trim().slice(-800);
+			this.failBrowserSelfCheck(state, `Browser self-check runtime failed: ${detail}`);
+			return;
+		}
+		let report;
+		try { report = JSON.parse(result.stdout || "{}"); }
+		catch (error) { this.failBrowserSelfCheck(state, `Browser self-check returned invalid JSON: ${error.message}`); return; }
+		let normalized = normalizeBrowserReport(report);
+		if (normalized.ok && state.replicaSourceUrl) {
+			const sourceDir = path.join(cwd, ".solstice", "replica", "source");
+			const comparisonDir = path.join(roundDir, "replica-comparison");
+			const compared = await this.runCli(runtime.bin, [tool, "replica-compare", sourceDir, url, comparisonDir, state.id], cwd, runtime.env);
+			let replica;
+			if (compared.code === 0) {
+				try { replica = JSON.parse(compared.stdout || "{}"); }
+				catch (error) { replica = { ok: false, score: 0, targetScore: 80, error: `invalid visual-diff JSON: ${error.message}` }; }
+			} else {
+				replica = { ok: false, score: 0, targetScore: 80, error: String(compared.stderr || compared.stdout || compared.error && compared.error.message || "replica comparison failed").trim().slice(-800) };
+			}
+			replica.evidenceDir = path.relative(cwd, comparisonDir).split(path.sep).join("/");
+			const findings = [...normalized.findings];
+			if (!replica.ok) {
+				const detail = replica.error
+					? `${replica.error}. Capture the authorized source first with browse.js replica-source ${state.replicaSourceUrl} .solstice/replica/source --authorized, then rebuild from that evidence.`
+					: `Replica visual fidelity is ${replica.score || 0}/100; target is ${replica.targetScore || 80}. Open ${replica.evidenceDir}/VISUAL_DIFF.md and fix the desktop/tablet/mobile gaps.`;
+				findings.push({ severity: "error", check: "visual-fidelity", message: detail, evidence: { score: replica.score || 0, target: replica.targetScore || 80, dir: replica.evidenceDir } });
+			}
+			normalized = normalizeBrowserReport({ ...normalized, ok: normalized.ok && replica.ok, replica, findings });
+		}
+		const saved = writeBrowserSelfCheckReport(cwd, state.id, state.round, normalized);
+		normalized = saved.report;
+		this.output.append(`[browser-check] round=${state.round} ok=${normalized.ok} findings=${normalized.findings.length} report=${saved.file}\n`);
+		if (normalized.ok) {
+			this._walkthroughTaskId = state.id;
+			this._browserSelfCheck = null;
+			this._browserSelfCheckRunning = false;
+			const summary = normalized.summary || {};
+			const replicaNote = normalized.replica ? ` · replica ${normalized.replica.score}/100` : "";
+			this.announceAgentMessage(`✅ בדיקת הדפדפן ירוקה: ${summary.linksChecked || 0} ניווטים, ${summary.buttonsChecked || 0} כפתורים, ${summary.formsChecked || 0} טפסים${replicaNote} · ${saved.file}`);
+			this.post({ type: "systemNote", text: "[FELIX_BROWSER_SELF_CHECK_GREEN] ה-build עבר בדפדפן אמיתי; אין שגיאות 404/console/layout או controls מתים." });
+			if (this._activeBuild && this._activeBuild.taskId === state.id) this._verifyTaskId = state.id;
+			this.fleetFlow("done");
+			this.maybeCreateWalkthrough();
+			this.drainSteerQueue();
+			return;
+		}
+		if (state.round >= state.maxRounds) {
+			this.failBrowserSelfCheck(state, `Browser self-check stayed red after ${state.maxRounds} rounds. Last report: ${saved.file}`);
+			return;
+		}
+		const fixPrompt = buildBrowserFixPrompt(normalized, state.round, state.maxRounds);
+		this._browserSelfCheckRunning = false;
+		this.announceAgentMessage(`🛠 בדיקת הדפדפן מצאה ${normalized.summary && normalized.summary.errors || normalized.findings.length} תקלות; פליקס מתקן ומריץ שוב.`);
+		await this.send(fixPrompt).catch((error) => this.failBrowserSelfCheck(state, `Could not start browser auto-fix turn: ${error && error.message || error}`));
+	}
+
+	failBrowserSelfCheck(state, message) {
+		if (!state || !this._browserSelfCheck || this._browserSelfCheck.token !== state.token) return;
+		this._browserSelfCheck = null;
+		this._browserSelfCheckRunning = false;
+		this._walkthroughPending = false;
+		this._walkthroughTaskId = "";
+		this.output.append(`[browser-check] FAILED ${message}\n`);
+		this.announceAgentMessage("❌ " + message);
+		if (this._activeBuild && this._activeBuild.taskId === state.id) {
+			this.sendBuildStatus("error", { error: message });
+			this._flowActive = false;
+			this._activeBuild = null;
+		}
+		this.drainSteerQueue();
+	}
+
 	// One automatic verification pass per build: screenshot the live preview and
 	// feed it back to the agent so it visually checks its own work and fixes
 	// regressions before declaring done — instead of trusting a turn that
@@ -4014,15 +4389,15 @@ self.addEventListener("fetch", (e) => {
 		// Wait for that verification turn to finish before freezing the evidence.
 		if (this._activeBuild) return;
 		const cwd = workspaceCwd(), previewUrl = this.previewUrl;
-		if (!cwd || !previewUrl) {
-			this.output.append("[walkthrough] skipped: no workspace/preview URL\n");
+		const taskId = this._walkthroughTaskId;
+		if (!cwd || !previewUrl || !taskId) {
+			this.output.append("[walkthrough] skipped: no workspace/preview URL/taskId\n");
 			return;
 		}
 		this._walkthroughPending = false;
 		this._walkthroughRunning = true;
 		const tool = path.join(this.context.extensionPath, "webtools", "walkthrough.js");
-		const args = [tool, cwd, previewUrl];
-		if (this.lastDeployUrl) args.push(this.lastDeployUrl);
+		const args = [tool, cwd, previewUrl, this.lastDeployUrl || "", taskId];
 		const runtime = this.resolveWalkthroughRuntime();
 		this.output.append(`[walkthrough] runtime=${runtime.source} bin=${runtime.bin}\n`);
 		this.runCli(runtime.bin, args, cwd, runtime.env).then((result) => {
@@ -4031,6 +4406,7 @@ self.addEventListener("fetch", (e) => {
 			const artifact = parsed.artifact;
 			ensureScheduledCheck(cwd, this.lastDeployUrl || previewUrl);
 			const companion = this._companion(); companion.walkthrough = artifact; companion.ts = Date.now();
+			this.pushArtifactPackages();
 			this.announceAgentMessage("📦 חבילת walkthrough מוכנה: " + artifact);
 			vscode.window.showInformationMessage("📦 Solstice יצר חבילת walkthrough", "פתח").then((choice) => {
 				if (choice === "פתח") vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(artifact));
@@ -4038,7 +4414,7 @@ self.addEventListener("fetch", (e) => {
 		}).catch((e) => {
 			this.output.append("[walkthrough] " + (e && e.message || e) + "\n");
 			this.announceAgentMessage("⚠️ יצירת חבילת walkthrough נכשלה: " + String(e && e.message || e).slice(0, 300));
-		}).finally(() => { this._walkthroughRunning = false; });
+		}).finally(() => { this._walkthroughRunning = false; this._walkthroughTaskId = ""; });
 	}
 
 	// ---- connectors: on-demand link-auth + vault (Phase 4) -----------------
@@ -4562,10 +4938,8 @@ self.addEventListener("fetch", (e) => {
 		clearTimeout(this.researchDebounce);
 		if (this.researchPanel) this.researchPanel.dispose();
 		if (this.galleryPanel) this.galleryPanel.dispose();
+		this.stopAllDevServers("window-dispose");
 		if (this.preview) this.preview.dispose();
-		if (this.devServer) this.devServer.dispose();
-		for (const server of this.managerDevServers.values()) server.dispose();
-		this.managerDevServers.clear();
 		if (this.devServerToolBridge) this.devServerToolBridge.close();
 		if (this.grokWatcher) this.grokWatcher.dispose();
 		if (this.grok) this.grok.interrupt();
@@ -4686,6 +5060,8 @@ function openManager(controller, extensionUri) {
 					await controller.refreshAccount("manager");
 					await controller.listThreads();
 					controller.pushManagerTasks();
+					controller.pushDevServerInventory();
+					controller.pushArtifactPackages();
 					break;
 				case "createManagerTask": {
 					const task = await controller.createManagerTask(msg.label || msg.prompt || "New build");
@@ -4697,6 +5073,8 @@ function openManager(controller, extensionUri) {
 				case "reviewManagerTask": await controller.reviewManagerTask(msg.taskId); break;
 				case "mergeManagerTask": await controller.mergeManagerTask(msg.taskId, msg.patchHash); break;
 				case "openManagerTaskPreview": await controller.openManagerTaskPreview(msg.taskId); break;
+				case "stopDevServer": controller.stopDevServerForAgent(msg.id); break;
+				case "closeAllDevServers": controller.stopAllDevServers("manager-close-all"); break;
 				case "listThreads": await controller.listThreads(); break;
 				case "selectThread": await controller.readThread(msg.threadId); break;
 				case "newThread": {
@@ -4710,6 +5088,8 @@ function openManager(controller, extensionUri) {
 				case "approval": controller.resolveApproval(msg.key, msg.decision); break;
 				case "openDiff": await controller.showDiff(msg.threadId); break;
 				case "openPreview": await controller.openPreview(""); break;
+				case "openArtifactPackage": await controller.openArtifactPackage(msg.path); break;
+				case "openArtifactFile": await controller.openArtifactPackage(msg.path, msg.file); break;
 				case "archiveThread": await controller.archiveThread(msg.threadId); break;
 				case "setModel": await controller.setModel(msg.key); break;
 				case "selectModel": await controller.selectModel(); break;
@@ -5247,8 +5627,13 @@ function activate(context) {
 		vscode.commands.registerCommand("solstice.agent.signOut", () => controller.signOut()),
 		vscode.commands.registerCommand("solstice.agent.openManager", () => openManager(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.openPreview", (url) => controller.openPreview(typeof url === "string" ? url : "")),
+		vscode.commands.registerCommand("solstice.agent.closeAllDevServers", () => {
+			const result = controller.stopAllDevServers("command-close-all");
+			vscode.window.showInformationMessage(`Solstice: closed ${result.stopped} preview server${result.stopped === 1 ? "" : "s"}.`);
+		}),
 		vscode.commands.registerCommand("solstice.agent.deployVercel", () => controller.deployCurrentProject()),
 		vscode.commands.registerCommand("solstice.agent.openSkills", () => openSkills(controller, context.extensionUri)),
+		vscode.commands.registerCommand("solstice.agent.loadBrandPack", () => controller.loadBrandPackIntoWorkspace()),
 		vscode.commands.registerCommand("solstice.agent.scaffoldApp", () => controller.scaffoldAppIntoWorkspace()),
 		vscode.commands.registerCommand("solstice.agent.selectModel", () => controller.selectModel()),
 		vscode.commands.registerCommand("solstice.agent.selectAutonomy", () => controller.selectAutonomy()),
@@ -5261,6 +5646,12 @@ function activate(context) {
 		vscode.commands.registerCommand("solstice.agent.openFleet", () => openFleet(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.checkEngines", () => controller.checkEngines())
 	);
+	context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders((event) => {
+		const ownedRoots = [controller.devServer, ...controller.managerDevServers.values()].filter(Boolean).map((server) => path.resolve(server.root));
+		if (event.removed.some((folder) => ownedRoots.includes(path.resolve(folder.uri.fsPath)))) {
+			controller.stopAllDevServers("project-closed");
+		}
+	}));
 	// Always-visible Solstice version badge (bottom status bar) → opens Fleet on click.
 	try {
 		const verItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1000);
