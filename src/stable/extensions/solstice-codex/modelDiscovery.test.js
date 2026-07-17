@@ -6,6 +6,7 @@ const { parseGrokModels, parseCodexModelList, groupModels } = require("./modelDi
 const grok = parseGrokModels(`Available models:\n  * grok-composer-2.5-fast (default)\n  - grok-4.5\n`);
 assert.deepEqual(grok.map((model) => model.key), ["composer-2.5", "grok-4.5"]);
 assert.deepEqual(grok.map((model) => model.provider), ["composer", "grok"]);
+assert.deepEqual(grok.map((model) => model.isDefault), [true, false]);
 assert.equal(grok.some((model) => /4\.3/.test(model.key)), false);
 
 const codex = parseCodexModelList({ data: [

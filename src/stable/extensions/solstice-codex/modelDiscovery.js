@@ -25,11 +25,12 @@ function grokLabel(id) {
 
 function parseGrokModels(output) {
 	return String(output || "").split(/\r?\n/)
-		.map((line) => /^\s*(?:\*|-)\s+([^\s]+)(?:\s+\(default\))?\s*$/.exec(line))
+		.map((line) => /^\s*(?:\*|-)\s+([^\s]+)(\s+\(default\))?\s*$/.exec(line))
 		.filter(Boolean)
 		.map((match) => ({
 			key: match[1] === "grok-composer-2.5-fast" ? "composer-2.5" : match[1],
 			modelId: match[1],
+			isDefault: Boolean(match[2]),
 			label: grokLabel(match[1]),
 			description: /^grok-composer-/i.test(match[1]) ? "Fast composer tier reported by grok CLI" : "Agentic build model reported by grok CLI",
 			runner: "grok",
