@@ -5,6 +5,7 @@ const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
 const { resolveWinSpawn, whichFull } = require("./winspawn");
+const { parseGrokModels } = require("./modelDiscovery");
 const { GrokApprovalBridge, installGrokApprovalHook } = require("./grokApprovalBridge");
 
 const GROK_TEMP_RE = /^solstice-grok-(?:agent-)?[a-z0-9-]+\.(?:txt|md)$/i;
@@ -157,10 +158,8 @@ const MODEL_REGISTRY = {
 	"gpt-5.5": { label: "GPT-5.5 (Codex)", desc: "ChatGPT subscription — full agent: plans, approvals, image gen", runner: "codex", codexId: "gpt-5.5", order: 1 },
 	"claude-opus": { label: "Opus", desc: "Manual Thomas testing only", runner: "claude", claudeId: "opus", provider: "claude", gated: true, manualOnly: true, order: 2 },
 	"claude-sonnet": { label: "Sonnet", desc: "Manual Thomas testing only", runner: "claude", claudeId: "sonnet", provider: "claude", gated: true, manualOnly: true, order: 3 },
-	// The stable Grok CLI 0.2.93 advertises this exact id via `grok models`.
-	// Keep the stable id (rather than guessing a private/versioned slug) while
-	// presenting the current Grok Build generation in the picker.
-	"grok-build": { label: "Grok 4.5 Build", desc: "grok-build via the grok CLI — agentic fallback", runner: "grok", grokId: "grok-build", provider: "grok", order: 4 },
+	// Grok CLI >=0.2.93 advertises this exact id via `grok models`.
+	"grok-4.5": { label: "Grok 4.5 Build", desc: "grok-4.5 via the grok CLI — agentic fallback", runner: "grok", grokId: "grok-4.5", provider: "grok", order: 4 },
 	"composer-2.5": { label: "Composer 2.5 Fast", desc: "grok CLI — fast builder", runner: "grok", grokId: "grok-composer-2.5-fast", provider: "composer", order: 5 },
 };
 
@@ -182,6 +181,56 @@ const GROK_MODELS = Object.fromEntries(
 		.filter(([, m]) => m.runner === "grok")
 		.map(([key, m]) => [key, { id: m.grokId || key, label: m.label }])
 );
+
+// Ask the installed CLI which model ids it accepts before starting a turn.
+// This keeps future CLI renames from turning into a silent exit-code-1 loop.
+function discoverLiveGrokModels(bin, spawnImpl = spawn, timeoutMs = 5000) {
+	return new Promise((resolve) => {
+		let output = "";
+		let child = null;
+		let settled = false;
+		const finish = () => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			resolve(parseGrokModels(output));
+		};
+		const timer = setTimeout(() => {
+			try { if (child && child.pid) child.kill(); } catch { }
+			finish();
+		}, timeoutMs);
+		try {
+			const plan = resolveWinSpawn(bin, ["models"]);
+			child = spawnImpl(plan.cmd, plan.args, {
+				env: plan.env || process.env,
+				windowsHide: true,
+			});
+			if (child.stdout) child.stdout.on("data", (chunk) => { output += String(chunk); });
+			if (child.stderr) child.stderr.on("data", (chunk) => { output += String(chunk); });
+			child.on("error", finish);
+			child.on("close", finish);
+		} catch { finish(); }
+	});
+}
+
+function chooseLiveGrokModel(requested, models) {
+	const requestedId = String(requested && requested.id || requested || "").trim();
+	const normalized = (models || []).map((model) => ({
+		id: String(model && (model.modelId || model.id) || "").trim(),
+		isDefault: Boolean(model && model.isDefault),
+	})).filter((model) => model.id);
+	const live = normalized.map((model) => model.id);
+	if (!requestedId || !live.length || live.includes(requestedId)) {
+		return { id: requestedId, fallback: false, live };
+	}
+	const wantsComposer = /^grok-composer-/i.test(requestedId);
+	const sameFamily = live.filter((id) => /^grok-composer-/i.test(id) === wantsComposer);
+	const preferred = wantsComposer
+		? sameFamily.find((id) => /composer-2\.5/i.test(id))
+		: sameFamily.find((id) => id === "grok-4.5");
+	const liveDefault = normalized.find((model) => model.isDefault);
+	return { id: preferred || sameFamily[0] || (liveDefault && liveDefault.id) || live[0], fallback: true, live };
+}
 
 // The grok CLI's streaming-json stdout only carries thought/text chunks.
 // Tool activity (shell commands, file edits, reads) is written to the
@@ -355,7 +404,13 @@ class GrokProvider {
 			this._starting = false;
 			throw new Error(`Could not start the Grok approval bridge: ${error && error.message || error}`);
 		}
-		const model = GROK_MODELS[providerKey] || GROK_MODELS["grok-build"];
+		const configuredModel = GROK_MODELS[providerKey] || GROK_MODELS["grok-4.5"];
+		const selected = chooseLiveGrokModel(configuredModel, await discoverLiveGrokModels(this.bin, this.spawn));
+		const model = { ...configuredModel, id: selected.id || configuredModel.id };
+		const modelFallbackNotice = selected.fallback
+			? `⚠️ Grok model “${configuredModel.id}” is not accepted by the installed CLI. Retrying this turn with “${model.id}” from the live \`grok models\` list.`
+			: "";
+		if (modelFallbackNotice) this.log(`[grok] ${modelFallbackNotice}\n`);
 
 		// STATELESS turn — NO `-c` resume. Root cause of "stuck after the first
 		// prompt": `grok -c` resuming a large session (after a long build) performs
@@ -407,6 +462,12 @@ class GrokProvider {
 		const preambleBytes = Buffer.byteLength(String(this._sys || ""), "utf8");
 		this.log(`[preamble] runner=grok bytes=${preambleBytes}${preambleBytes > 24 * 1024 ? " WARNING>24KB" : ""}\n`);
 		this.notify("turn/started", { threadId: tid, turn: { id: turnId } });
+		if (modelFallbackNotice) {
+			const noticeId = "gm" + this.seq++;
+			this.notify("item/started", { threadId: tid, item: { id: noticeId, type: "agentMessage" } });
+			this.notify("item/agentMessage/delta", { threadId: tid, itemId: noticeId, delta: modelFallbackNotice });
+			this.notify("item/completed", { threadId: tid, item: { id: noticeId, type: "agentMessage", text: modelFallbackNotice } });
+		}
 
 		let reasoning = null; // { id, text }
 		let message = null;   // { id, text }
@@ -583,6 +644,7 @@ class GrokProvider {
 			this._starting = false;
 			if (this._interruptRequested) killTree(child);
 			let buf = "";
+			let stderrText = "";
 			const cleanupFiles = () => {
 				for (const file of [promptFile, agentFile]) {
 					if (!file) continue;
@@ -611,7 +673,12 @@ class GrokProvider {
 					try { onEvent(JSON.parse(line)); } catch { this.log(line + "\n"); }
 				}
 			});
-			child.stderr.on("data", (d) => { noteStartupActivity(); this.log(d.toString()); });
+			child.stderr.on("data", (d) => {
+				noteStartupActivity();
+				const text = d.toString();
+				stderrText += text;
+				this.log(text);
+			});
 			child.on("error", (e) => {
 				this.child = null;
 				this._starting = false;
@@ -670,7 +737,13 @@ class GrokProvider {
 				if (timedOut) {
 					this.notify("error", { threadId: tid, error: { message: `grok turn exceeded the ${Math.round(TURN_BUDGET_MS / 60000)}-minute budget and was ended. Anything already produced is kept — your next message continues from here.` } });
 				} else if (code !== 0 && code !== null) {
-					this.notify("error", { threadId: tid, error: { message: `grok exited with code ${code} — check the Felix output log.` } });
+					const rejectedModel = /couldn['’]?t set model|invalid params|unknown model|model.+not (?:found|available)/i.test(stderrText);
+					const liveText = selected.live.length ? selected.live.join(", ") : "unavailable (run Solstice: Check Model Engines)";
+					const message = rejectedModel
+						? `Grok rejected model “${model.id}”. Live \`grok models\`: ${liveText}. The repair turn failed cleanly and the browser self-check will record this finding instead of hanging.`
+						: `grok exited with code ${code}. The repair turn failed cleanly and the browser self-check will record this finding instead of hanging.`;
+					this.notify("turn/engineFailed", { threadId: tid, turnId, model: model.id, code, error: { message } });
+					this.notify("error", { threadId: tid, error: { message } });
 				}
 				if (turnOut >= 0) this.tokens.out += turnOut; // estimate path (real usage already applied)
 				this.notify("usage", { threadId: tid, model, exact: this.tokensExact, turn: { in: turnIn, out: turnOut < 0 ? null : turnOut }, total: { in: this.tokens.in, out: this.tokens.out } });
@@ -681,4 +754,4 @@ class GrokProvider {
 	}
 }
 
-module.exports = { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, unifiedDiff, killTree, resolveGrokBinary, grokBundlePresent, cleanupStaleGrokTempFiles, createStartupHeartbeat, GROK_STARTUP_HEARTBEAT_MS, GROK_HISTORY_TEXT_LIMIT };
+module.exports = { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, unifiedDiff, killTree, resolveGrokBinary, grokBundlePresent, cleanupStaleGrokTempFiles, createStartupHeartbeat, discoverLiveGrokModels, chooseLiveGrokModel, GROK_STARTUP_HEARTBEAT_MS, GROK_HISTORY_TEXT_LIMIT };

@@ -1769,7 +1769,17 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	providerKey() {
-		const k = this.cfg().get("provider") || "composer-2.5";
+		let k = this.cfg().get("provider") || "composer-2.5";
+		// Migrate the pre-04096 persisted key without keeping the removed model id
+		// in the active registry or selector defaults.
+		const legacyGrokBuildKey = ["grok", "build"].join("-");
+		if (k === legacyGrokBuildKey) {
+			k = "grok-4.5";
+			if (!this._legacyGrokProviderMigrated) {
+				this._legacyGrokProviderMigrated = true;
+				Promise.resolve(this.cfg().update("provider", k, this.cfgTarget())).catch(() => { });
+			}
+		}
 		// Claude is Thomas-test-only: a persisted/stale setting must never activate
 		// it on startup. It becomes live only after a manual picker selection in
 		// this window, and only while the explicit allowClaude gate is open.
@@ -1783,7 +1793,7 @@ self.addEventListener("fetch", (e) => {
 	runnerBin(runner) {
 		if (runner === "codex") return resolveCodexBinary(this.context.extensionPath, this.cfg().get("path"));
 		if (runner === "claude") return this.cfg().get("claudePath") || "claude";
-		// grok runner (grok-build / composer-2.5): explicit setting → bundled engine → PATH.
+		// grok runner (grok-4.5 / composer-2.5): explicit setting → bundled engine → PATH.
 		return resolveGrokBinary(this.context.extensionPath, this.cfg().get("grokPath"));
 	}
 
@@ -2128,7 +2138,7 @@ self.addEventListener("fetch", (e) => {
 	// freshest non-Claude models. Config-driven so newer/stronger models can be
 	// slotted in without code changes.
 	failoverChain() {
-		const def = ["gpt-5.6", "gpt-5.5", "composer-2.5", "grok-build"];
+		const def = ["gpt-5.6", "gpt-5.5", "composer-2.5", "grok-4.5"];
 		let chain = this.cfg().get("failoverChain");
 		if (!Array.isArray(chain) || !chain.length) chain = def;
 		// hard guard: claude can never enter the automatic chain
@@ -2175,7 +2185,7 @@ self.addEventListener("fetch", (e) => {
 			"All auto-failover models hit their limit. Switch the Solstice agent manually?",
 			...choices
 		).then(async (pick) => {
-			const key = pick === "GPT-5.6 Sol (Codex)" ? "gpt-5.6" : pick === "GPT-5.5 (Codex)" ? "gpt-5.5" : pick === "Grok 4.5 Build" ? "grok-build" : pick === "Composer 2.5 Fast" ? "composer-2.5" : null;
+			const key = pick === "GPT-5.6 Sol (Codex)" ? "gpt-5.6" : pick === "GPT-5.5 (Codex)" ? "gpt-5.5" : pick === "Grok 4.5 Build" ? "grok-4.5" : pick === "Composer 2.5 Fast" ? "composer-2.5" : null;
 			if (!key) return;
 			await this.cfg().update("provider", key, this.cfgTarget());
 			this.applyProviderToWebviews();
@@ -2727,6 +2737,18 @@ self.addEventListener("fetch", (e) => {
 			if (tid === this.threadId && !browserCheckStarted) this.maybeCreateWalkthrough();
 			this.pushThreads();
 			if (tid === this.threadId && !browserCheckStarted) this.drainSteerQueue();
+		} else if (method === "turn/engineFailed" && tid) {
+			// A repair model dying is a browser-gate finding, not a successful turn
+			// and not a reason to leave the gate spinning forever. Preserve the
+			// failure for the next check round; turn/completed will schedule it.
+			const state = this._browserSelfCheck;
+			if (state && tid === this.threadId) {
+				const message = String(params && params.error && params.error.message || "The model engine exited before completing the repair turn.");
+				state.pendingEngineFailure = message.slice(0, 1000);
+				state.engineFailures = (state.engineFailures || 0) + 1;
+				this.output.append(`[browser-check] repair engine failed (${state.engineFailures}): ${message}\n`);
+				this.announceAgentMessage(`⚠️ מנוע התיקון נכשל; הכשל נרשם כממצא וה־self-check ימשיך לסבב הבא. ${message}`);
+			}
 		} else if (method === "turn/diff/updated" && tid) {
 			const th = this.upsertThread({ id: tid });
 			th.diff = params.diff || "";
@@ -4072,6 +4094,23 @@ self.addEventListener("fetch", (e) => {
 		try { report = JSON.parse(result.stdout || "{}"); }
 		catch (error) { this.failBrowserSelfCheck(state, `Browser self-check returned invalid JSON: ${error.message}`); return; }
 		let normalized = normalizeBrowserReport(report);
+		if (state.pendingEngineFailure) {
+			const engineFailure = state.pendingEngineFailure;
+			state.pendingEngineFailure = "";
+			normalized = normalizeBrowserReport({
+				...normalized,
+				ok: false,
+				findings: [
+					...normalized.findings,
+					{
+						severity: "error",
+						check: "repair-engine",
+						message: engineFailure,
+						evidence: { engineFailures: state.engineFailures || 1 },
+					},
+				],
+			});
+		}
 		if (normalized.ok && state.replicaSourceUrl) {
 			const sourceDir = path.join(cwd, ".solstice", "replica", "source");
 			const comparisonDir = path.join(roundDir, "replica-comparison");

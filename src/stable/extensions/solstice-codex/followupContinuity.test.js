@@ -17,6 +17,13 @@ function fakeSpawn(_cmd, args) {
 	child.stdout = new EventEmitter();
 	child.stderr = new EventEmitter();
 	child.kill = () => { };
+	if (args[0] === "models") {
+		setImmediate(() => {
+			child.stdout.emit("data", Buffer.from("Available models:\n  * grok-4.5 (default)\n  - grok-composer-2.5-fast\n"));
+			child.emit("close", 0);
+		});
+		return child;
+	}
 	const promptFile = args[args.indexOf("--prompt-file") + 1];
 	prompts.push(fs.readFileSync(promptFile, "utf8"));
 	setImmediate(() => {
@@ -28,8 +35,8 @@ function fakeSpawn(_cmd, args) {
 
 (async () => {
 	const provider = new GrokProvider({ cwd: root, bin: "fake-grok", spawn: fakeSpawn, notify: () => { } });
-	await provider.send("grok-build", "[FELIX_PROJECT_BRAIN]\nlarge injected context\n[/FELIX_PROJECT_BRAIN]\nBuild the first site", "system", { userText: "Build the first site" });
-	await provider.send("grok-build", "[FELIX_PROJECT_BRAIN]\nlarge injected context again\n[/FELIX_PROJECT_BRAIN]\nChange the hero to blue", "system", { userText: "Change the hero to blue" });
+	await provider.send("grok-4.5", "[FELIX_PROJECT_BRAIN]\nlarge injected context\n[/FELIX_PROJECT_BRAIN]\nBuild the first site", "system", { userText: "Build the first site" });
+	await provider.send("grok-4.5", "[FELIX_PROJECT_BRAIN]\nlarge injected context again\n[/FELIX_PROJECT_BRAIN]\nChange the hero to blue", "system", { userText: "Change the hero to blue" });
 
 	assert.equal(prompts.length, 2);
 	assert.match(prompts[1], /^\[FELIX_CURRENT_REQUEST\]\nChange the hero to blue/);

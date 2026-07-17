@@ -18,7 +18,7 @@ function providerForModel(id, runner) {
 }
 
 function grokLabel(id) {
-	if (id === "grok-build") return "Grok 4.5 Build";
+	if (id === "grok-4.5") return "Grok 4.5 Build";
 	if (id === "grok-composer-2.5-fast") return "Composer 2.5 Fast";
 	return id;
 }
@@ -31,7 +31,7 @@ function parseGrokModels(output) {
 			key: match[1] === "grok-composer-2.5-fast" ? "composer-2.5" : match[1],
 			modelId: match[1],
 			label: grokLabel(match[1]),
-			description: match[1] === "grok-build" ? "Agentic build model reported by grok CLI" : "Fast composer tier reported by grok CLI",
+			description: /^grok-composer-/i.test(match[1]) ? "Fast composer tier reported by grok CLI" : "Agentic build model reported by grok CLI",
 			runner: "grok",
 			provider: providerForModel(match[1], "grok"),
 		}));

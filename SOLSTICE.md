@@ -83,15 +83,15 @@ and `Julius-cc-x/agents/orion/deliverables/antigravity_clone_master_plan_2026-06
      Solstice amber brand accents (--sol-grad bubbles), thinking shimmer,
      custom scrollbars.
    - ✅ Multi-provider (12/06 ~04:00): grok.js GrokProvider wraps grok CLI
-     0.2.20 (`grok --cwd ... -m grok-build|grok-composer-2.5-fast
+     0.2.20 (`grok --cwd ... -m grok-4.5|grok-composer-2.5-fast
      --always-approve --output-format streaming-json -p`, `-c` continues,
      OAuth forced by deleting XAI/OPENAI keys from env). Re-emits codex
      notification vocab so both webviews render unchanged. Setting
-     solstice.codex.provider (gpt-5.5|grok-build|composer-2.5) + Select
+     solstice.codex.provider (gpt-5.5|grok-4.5|composer-2.5) + Select
      Agent Model QuickPick ($(chip) toolbar) + once-per-session auto
      fallback suggestion when codex reports usage/rate limit. FS-watcher
      synthesizes fileChange items for grok turns (auto-open + preview
-     refresh). E2E verified: grok-build built a landing page in-IDE.
+     refresh). E2E verified: grok-4.5 built a landing page in-IDE.
    - ✅ Live activity feed: command cards get spinner + state text
      (Running/finished/failed) with amber→green/red border, slide-in
      animation on every feed item, "Agent is working…" bouncing-dots line

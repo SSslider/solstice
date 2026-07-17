@@ -33,7 +33,7 @@ const grok = fs.readFileSync(path.join(__dirname, "grok.js"), "utf8");
 const extension = fs.readFileSync(path.join(__dirname, "extension.js"), "utf8");
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
 assert.match(grok, /"gpt-5\.6"[\s\S]{0,180}codexId:\s*"gpt-5\.6"/);
-assert.match(grok, /"grok-build"[\s\S]{0,180}label:\s*"Grok 4\.5 Build"[\s\S]{0,180}grokId:\s*"grok-build"/);
+assert.match(grok, /"grok-4\.5"[\s\S]{0,180}label:\s*"Grok 4\.5 Build"[\s\S]{0,180}grokId:\s*"grok-4\.5"/);
 assert.match(extension, /isPureLaunchIntent/);
 assert.equal(pkg.contributes.configuration.properties["solstice.codex.failoverChain"].default[0], "gpt-5.6");
 

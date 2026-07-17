@@ -40,6 +40,9 @@ ok(extension.includes("browserCheckStarted = this.maybeRunBrowserSelfCheck()"), 
 ok(extension.includes("this.isBuildIntent(text) || browserBuildIntent"), "browser follow-up edits enter the same build and QA flow");
 ok(extension.includes("add|change|update|polish|style|refactor"), "browser follow-up mutation verbs arm the QA gate");
 ok(extension.includes("await this.send(fixPrompt)"), "red browser findings trigger an automatic fix turn");
+	ok(extension.includes('method === "turn/engineFailed"'), "repair-engine exits are captured before turn completion");
+	ok(extension.includes('check: "repair-engine"'), "repair-engine exits become concrete browser findings");
+	ok(extension.includes("state.pendingEngineFailure = \"\""), "recorded engine failures are consumed once before the next repair round");
 	ok(extension.includes("state.round >= state.maxRounds"), "auto-fix loop has a hard convergence bound");
 	ok(extension.includes("this._verifyTaskId = state.id"), "green browser result feeds the existing verified delivery chain");
 	ok(browse.includes('Input.dispatchMouseEvent'), "functional check performs real browser clicks");

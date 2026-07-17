@@ -3,8 +3,8 @@
 const assert = require("assert");
 const { parseGrokModels, parseCodexModelList, groupModels } = require("./modelDiscovery");
 
-const grok = parseGrokModels(`Available models:\n  * grok-composer-2.5-fast (default)\n  - grok-build\n`);
-assert.deepEqual(grok.map((model) => model.key), ["composer-2.5", "grok-build"]);
+const grok = parseGrokModels(`Available models:\n  * grok-composer-2.5-fast (default)\n  - grok-4.5\n`);
+assert.deepEqual(grok.map((model) => model.key), ["composer-2.5", "grok-4.5"]);
 assert.deepEqual(grok.map((model) => model.provider), ["composer", "grok"]);
 assert.equal(grok.some((model) => /4\.3/.test(model.key)), false);
 
