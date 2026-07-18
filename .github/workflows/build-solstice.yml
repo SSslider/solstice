@@ -87,6 +87,12 @@ jobs:
       - name: Bundle codex binary (win32)
         run: bash scripts/bundle-codex-binary.sh win32
 
+      # CI runners are intentionally not logged in to Codex. Verify the exact
+      # bundled executable/version here; the live model catalog is checked on
+      # an authenticated machine before release delivery.
+      - name: Verify bundled Codex version (win32)
+        run: node scripts/verify-bundled-codex-models.js win32 --version-only
+
       # Grok/Composer engine — bundled like codex so Composer 2.5 is runnable on
       # a clean install in ANY order (the real fix for the recurring "switch to
       # Composer → spawn EPERM / not installed"). Ships brotli-compressed.
@@ -157,6 +163,9 @@ jobs:
       - name: Bundle codex binary (darwin)
         run: bash scripts/bundle-codex-binary.sh darwin
 
+      - name: Verify bundled Codex version (darwin)
+        run: node scripts/verify-bundled-codex-models.js darwin --version-only
+
       - name: Bundle grok binary (darwin)
         run: bash scripts/bundle-grok-binary.sh darwin
 
@@ -225,6 +234,9 @@ jobs:
 
       - name: Bundle codex binary (linux)
         run: bash scripts/bundle-codex-binary.sh linux
+
+      - name: Verify bundled Codex version (linux)
+        run: node scripts/verify-bundled-codex-models.js linux --version-only
 
       - name: Bundle grok binary (linux)
         run: bash scripts/bundle-grok-binary.sh linux
