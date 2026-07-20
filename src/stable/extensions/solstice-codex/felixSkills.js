@@ -97,6 +97,7 @@ class FelixSkills {
 		this._seedPrompt(extensionPath, "animated-website-kit", "animated-website-kit.md", ["animation", "gsap", "r3f", "scrollytelling", "three"]);
 		this._seedPrompt(extensionPath, "felix-toolbox-router", "felix-toolbox-router.md", ["toolbox", "router", "workflow", "research", "build"]);
 		this._seedPrompt(extensionPath, "gap-analysis-playbook", "gap-analysis-playbook.md", ["gap", "antigravity", "cursor", "analysis"]);
+		this._seedDirectory(extensionPath, "scroll-world-gpt-image", path.join("prompts", "scroll-world"));
 		const verticalDir = path.join(extensionPath, "prompts", "verticals");
 		let files = [];
 		try { files = fs.readdirSync(verticalDir).filter((f) => f.endsWith(".md")).sort(); } catch { }
@@ -105,6 +106,31 @@ class FelixSkills {
 			const sector = slug(f.replace(/\.md$/, ""));
 			const tags = ["vertical", "template", sector].concat(sector.split("-").filter(Boolean));
 			this._seedPrompt(extensionPath, name, path.join("verticals", f), tags, sector);
+		}
+	}
+
+	_seedDirectory(extensionPath, name, rel) {
+		const source = path.join(extensionPath, rel);
+		const target = path.join(this.skillsDir, slug(name));
+		if (fs.existsSync(target) || !fs.existsSync(path.join(source, "SKILL.md"))) return;
+		const temp = target + `.installing-${process.pid}-${Date.now().toString(36)}`;
+		const copy = (from, to) => {
+			fs.mkdirSync(to, { recursive: true });
+			for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+				const sourceFile = path.join(from, entry.name);
+				const targetFile = path.join(to, entry.name);
+				if (entry.isSymbolicLink()) throw new Error("seed skill contains a symlink");
+				if (entry.isDirectory()) copy(sourceFile, targetFile);
+				else if (entry.isFile()) fs.copyFileSync(sourceFile, targetFile, fs.constants.COPYFILE_EXCL);
+			}
+		};
+		try {
+			copy(source, temp);
+			fs.renameSync(temp, target);
+			this.log("[skills] seeded directory " + name);
+		} catch (error) {
+			try { fs.rmSync(temp, { recursive: true, force: true }); } catch { }
+			this.log("[skills] directory seed failed for " + name + ": " + error.message);
 		}
 	}
 
@@ -146,14 +172,22 @@ class FelixSkills {
 				meta[k] = k === "tags" ? v.split(",").map((s) => s.trim()).filter(Boolean) : v;
 			}
 		}
-		return { meta, body, file };
+		return { meta, body, file, skillDir: path.basename(file).toLowerCase() === "skill.md" ? path.dirname(file) : "" };
 	}
 
 	// active skills only — versioned archives (*.vN.md) are excluded.
 	list() {
-		let files = [];
-		try { files = fs.readdirSync(this.skillsDir).filter((f) => f.endsWith(".md") && !/\.v\d+\.md$/.test(f)); } catch { }
-		return files.map((f) => { try { return this._parse(path.join(this.skillsDir, f)); } catch { return null; } }).filter(Boolean);
+		let entries = [];
+		try { entries = fs.readdirSync(this.skillsDir, { withFileTypes: true }); } catch { }
+		const files = [];
+		for (const entry of entries) {
+			if (entry.isFile() && entry.name.endsWith(".md") && !/\.v\d+\.md$/.test(entry.name)) files.push(path.join(this.skillsDir, entry.name));
+			else if (entry.isDirectory()) {
+				const portable = path.join(this.skillsDir, entry.name, "SKILL.md");
+				if (fs.existsSync(portable)) files.push(portable);
+			}
+		}
+		return files.map((file) => { try { return this._parse(file); } catch { return null; } }).filter(Boolean);
 	}
 
 	// lessons learned from fidelity gaps / failures — the "never repeat a

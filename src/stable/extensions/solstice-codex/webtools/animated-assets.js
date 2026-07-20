@@ -9,6 +9,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { generateImage } = require("./image-bridge");
 
 function fail(message) {
 	console.error(`animated-assets: ${message}`);
@@ -173,17 +174,6 @@ function loadBrief(root) {
 	return { p, brief };
 }
 
-function codexBinary() {
-	const name = process.platform === "win32" ? "codex.exe" : "codex";
-	const candidates = [
-		process.env.CODEX_BIN,
-		path.join(__dirname, "..", "bin", name),
-		process.platform === "win32" && process.env.APPDATA ? path.join(process.env.APPDATA, "npm", "codex.cmd") : "",
-		process.env.HOME ? path.join(process.env.HOME, ".npm-global", "bin", process.platform === "win32" ? "codex.cmd" : "codex") : "",
-	].filter(Boolean);
-	return candidates.find((candidate) => fs.existsSync(candidate)) || (process.platform === "win32" ? "codex.cmd" : "codex");
-}
-
 function generateKeyframes(root) {
 	const { p, brief } = loadBrief(root);
 	brief.chapters.forEach((chapter, index) => {
@@ -192,7 +182,6 @@ function generateKeyframes(root) {
 		if (fs.existsSync(output)) return;
 		const previous = index ? path.join(p.source, `frame_${String(index).padStart(3, "0")}.png`) : "none";
 		const spec = [
-			"Use your built-in image generation tool to create exactly one cinematic website animation keyframe.",
 			`Brand/world: ${brief.brand}. Chapter ${index + 1}/${brief.chapters.length}: ${chapter.title}.`,
 			`Scene: ${chapter.scene}`,
 			`Motion/presentation language: ${brief.presentation || "vertical-cinematic"}.`,
@@ -200,11 +189,12 @@ function generateKeyframes(root) {
 			previous !== "none" ? `First inspect ${previous} and use it as the continuity reference. This is the next moment in the same camera move, not a redesign.` : "Establish the visual identity that all later frames must preserve.",
 			`Composition: ${brief.aspect || "16:9"}, edge-to-edge cinematic frame, safe negative space for HTML copy.`,
 			`Avoid: ${brief.avoid}`,
-			`Copy the exact generated image into ${output}. Do not merely describe it. Verify that exact file exists before finishing.`,
 		].join("\n");
 		fs.writeFileSync(path.join(p.prompts, `frame_${number}.txt`), spec + "\n", "utf8");
-		run(codexBinary(), ["exec", "--skip-git-repo-check", "--full-auto", spec], { cwd: root });
-		if (!fs.existsSync(output)) fail(`Codex did not create ${output}`);
+		try {
+			const delivered = generateImage({ workspace: root, output, prompt: spec });
+			console.log(JSON.stringify({ ok: true, command: "generate-keyframe", frame: number, provider: delivered.provider, output: delivered.output, width: delivered.width, height: delivered.height }));
+		} catch (error) { fail(`GPT-Image-2 bridge did not deliver ${output}: ${error.message}`); }
 	});
 	return { p, brief };
 }

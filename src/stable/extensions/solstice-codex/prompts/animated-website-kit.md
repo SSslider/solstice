@@ -32,12 +32,12 @@ Use the free image-sequence path for canvas scrub scenes and for requests that d
 
 1. Run `node <extension>/webtools/animated-assets.js init <workspace>`.
 2. Edit `.solstice/animated/brief.json`: define one coherent world, 4-8 chapter scenes, continuity lock, duration, fps, and output dimensions.
-3. Run `node <extension>/webtools/animated-assets.js free <workspace>`. It asks Codex image generation for coherent chapter keyframes, verifies exact files, uses ffmpeg motion interpolation/preparation, writes `public/frames/frame_001.webp ...`, a manifest, and a ready `src/components/CanvasScrub.jsx` scaffold.
+3. Run `node <extension>/webtools/animated-assets.js free <workspace>`. It routes every keyframe through the Solstice-owned `image-bridge.js` (agent + GPT-Image-2), requires one session-isolated raster with valid magic and dimensions, copies it atomically into the workspace, then uses ffmpeg motion interpolation/preparation and writes `public/frames/frame_001.webp ...`, a manifest, and a ready `src/components/CanvasScrub.jsx` scaffold. A zero exit code without the verified asset is a failure.
 4. Import `CanvasScrub`, pass the chapter copy from the manifest/brief, and keep text in crisp DOM layers above the canvas.
 
 Felix may propose X-Field/Seedance as an optional premium route when it would materially improve a cinematic/video-heavy site. The proposal must compare the free stock/image route against the premium route, state the intended scene, estimated time, and expected credit/cost range, and say clearly that no provider bridge is implemented in this checkpoint. It must not invoke a provider. Any future execution remains blocked by the existing one-time Thomas approval card, even in Autonomous, plus separate Thomas+Orion approval of the bridge contract. After an approved clip exists locally, only the non-billable extraction step is allowed: `animated-assets.js from-video <workspace> <approved-clip> --thomas-approved`.
 
-Never silently fall back from the free route to a paid provider.
+GPT-Image-2 is the only still-image generation provider. X-Field/Higgsfield, Seedance and Kling are video-only behind Thomas's approval card. Never silently fall back from the free route to a paid provider.
 
 ## GSAP Scrollytelling Template
 

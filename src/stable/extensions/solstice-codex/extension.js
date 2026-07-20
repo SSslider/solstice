@@ -13,6 +13,7 @@ const { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, resolveGrokBinary,
 const { ClaudeProvider } = require("./claude");
 const { FleetBridge } = require("./fleetBridge");
 const { FelixSkills, skillProgress } = require("./felixSkills");
+const { SkillInstaller } = require("./skillInstaller");
 const { captureBuild, projectContext, workspaceContext, captureAnnotation, ensureScheduledCheck, dueScheduledChecks } = require("./projectBrain");
 const { ManagerWorktrees } = require("./managerWorktrees");
 const { createReviewHandler } = require("./reviewShare");
@@ -36,6 +37,7 @@ const {
 	stopAllOwnedDevServers,
 	stopOwnedDevServer,
 } = require("./devServerTools");
+const { capabilityInstructions: imageCapabilityInstructions } = require("./webtools/image-bridge");
 
 // Resolve a bare CLI name against PATH the same way child_process.spawn would,
 // so we can tell BEFORE spawning whether the model binary actually exists on
@@ -406,6 +408,7 @@ class AgentController {
 		this._bugbotRunning = false;
 		this.output = vscode.window.createOutputChannel("Felix");
 		this.skills = null;            // Felix's private self-improvement store (Phase 6)
+		this.skillInstaller = null;     // reviewed GitHub -> runtime skill directory installer
 		this.scheduledCheckTimer = null;
 		this._scheduledCheckRunning = false;
 		this.activeCliChildren = new Set(); // walkthrough/deploy/helper processes stopped by global Stop
@@ -445,6 +448,10 @@ class AgentController {
 				log: (m) => this.output.append(m + "\n"),
 			});
 			this.skills.seedFrom(context.extensionPath);
+			this.skillInstaller = new SkillInstaller({
+				skillsDir: this.skills.skillsDir,
+				log: (m) => this.output.append(m + "\n"),
+			});
 		} catch (e) { this.output.append("[skills] init failed: " + (e && e.message || e) + "\n"); }
 	}
 
@@ -2346,6 +2353,14 @@ self.addEventListener("fetch", (e) => {
 		this.onNotification("item/completed", { threadId: this.grok ? this.grok.threadId : undefined, item });
 	}
 
+	imageCapabilityInstructions() {
+		return imageCapabilityInstructions({
+			extensionPath: this.context.extensionPath,
+			nodePath: process.execPath,
+			platform: process.platform,
+		});
+	}
+
 	grokPreamble(text = "") {
 		const browseJs = path.join(this.context.extensionPath, "webtools", "browse.js"); // dir is "webtools" not "tools": the Windows build's 7z -x!tools strips any nested tools/ dir
 		const node = process.execPath;
@@ -2375,9 +2390,7 @@ self.addEventListener("fetch", (e) => {
 			`- VIEW ANY IMAGE (you cannot see images yourself — this gives you a detailed text read of one): ${shot.replace(" shot <url> <out.png>", ' describe <image.png> ["what to focus on"]')}`,
 			"  Use it for every reference screenshot BEFORE designing, and for your own verification screenshots before declaring done. It routes to a vision model for you, so it works even though your chat model is text-only.",
 			`- Capture a design TOP-TO-BOTTOM in DESKTOP and MOBILE (Behance/Dribbble show both): desktop full-page → ${shot.replace(" shot <url> <out.png>", ' scrollshot <url> <outPrefix> [stops]')}; mobile full-page → ${shot.replace("shot <url> <out.png>", "shot <url> <out.png> 390x3000")}. Then 'describe' each to study layout/colors/typography in both viewports.`,
-				"- Generate images by subcontracting to codex (it has an image generation tool):",
-				'  codex exec --skip-git-repo-check --full-auto "Use your image generation tool to create: <detailed description>. Then copy the EXACT file you just generated (by its precise filename from ~/.codex/generated_images/ — never the most recent file, other jobs may write there concurrently) into <workspace>/public/images/<descriptive-name>.png"',
-				"  Verify the file exists in the workspace afterwards, and view it with codex vision to confirm it shows the right subject before using it.",
+				this.imageCapabilityInstructions(),
 				"- CREDIT GATE: never start paid/external video or 3D generation (Kling, Seedance, X-Field, Higgsfield, Runway, Pika, Luma, Veo, Sora, or similar) without an explicit Thomas approval card. This applies even in Autonomous.",
 				"- MANDATORY — real imagery, never placeholders: every page you build MUST use real images. NEVER ship gray boxes, solid-color rectangles, `placeholder.com` / `via.placeholder` / `dummyimage` / `picsum.photos` / `unsplash.com/random` URLs, empty `<img>`, or `TODO image` comments. For EVERY image the design calls for (hero, gallery, product shots, avatars, backgrounds), GENERATE a real one with the image command above and save it under public/images/ BEFORE you finish — a build that still contains placeholders is NOT done. If generation fails, retry; only as a last resort use a tasteful CSS gradient/photographic texture styled to look intentional, never a raw placeholder service.",
 			"- ALWAYS externalize your plan to a FILE — the user watches the plan in the CENTER window, not the chat. The MOMENT you start a multi-step build, WRITE the plan to `.solstice/PLAN.md` (create the .solstice folder) BEFORE doing anything else, and re-write the file after each step so the live timeline updates. Don't only describe the plan in chat. Shape: group steps under `## Phase name` headings; each step `1. [ ] Step title`; optional one-line `_short detail_`; nested `   - [ ] sub-task`. Progress marks: `[x]` done, `[~]` current, `[ ]` pending. Short, outcome-oriented titles. FOLLOW-UP PROMPTS CONTINUE THE SAME PLAN: when the user sends another request after a build, DO NOT overwrite or restart the plan — APPEND a new `## Phase` for the new request to the existing .solstice/PLAN.md and keep all completed phases with their [x] marks, so the center timeline shows the whole project evolving across prompts.",
@@ -2419,9 +2432,7 @@ self.addEventListener("fetch", (e) => {
 			"- Research workflow: when the user asks you to imitate/take inspiration from a site or find references, SEARCH for it, READ or CRAWL the top results, and SCROLLSHOT the best ones before designing — don't guess from memory.",
 			"- You CAN view images: open any screenshot/reference image with your Read tool and study it in exhaustive detail (layout, sections, colors with hex, typography, imagery style, spacing, mood). Always do this for every reference screenshot before designing, and for your own verification screenshots before declaring done.",
 			`- Capture a design TOP-TO-BOTTOM in DESKTOP and MOBILE (Behance/Dribbble show both): desktop full-page → ${shot.replace(" shot <url> <out.png>", ' scrollshot <url> <outPrefix> [stops]')}; mobile full-page → ${shot.replace("shot <url> <out.png>", "shot <url> <out.png> 390x3000")}. Open each with your Read tool to study both viewports.`,
-				"- Generate images by subcontracting to codex (it has an image generation tool):",
-				'  codex exec --skip-git-repo-check --full-auto "Use your image generation tool to create: <detailed description>. Then copy the EXACT file you just generated (by its precise filename from ~/.codex/generated_images/ — never the most recent file, other jobs may write there concurrently) into <workspace>/public/images/<descriptive-name>.png"',
-				"  Verify the file exists in the workspace afterwards, and view it with your Read tool to confirm it shows the right subject before using it.",
+				this.imageCapabilityInstructions(),
 				"- CREDIT GATE: never start paid/external video or 3D generation (Kling, Seedance, X-Field, Higgsfield, Runway, Pika, Luma, Veo, Sora, or similar) without an explicit Thomas approval card. This applies even in Autonomous.",
 				"- MANDATORY — real imagery, never placeholders: every page you build MUST use real images. NEVER ship gray boxes, solid-color rectangles, `placeholder.com` / `via.placeholder` / `dummyimage` / `picsum.photos` / `unsplash.com/random` URLs, empty `<img>`, or `TODO image` comments. Generate a real image (via the codex image command above) for EVERY slot the design needs and save it under public/images/ before finishing — placeholders mean the build is NOT done.",
 			"- For multi-step builds, use your todo/plan tool and keep step statuses updated as you work — the IDE renders it as a live checklist.",
@@ -2940,7 +2951,7 @@ self.addEventListener("fetch", (e) => {
 			"  Research workflow: when asked to imitate/take inspiration from a site or find references, SEARCH, then READ or CRAWL the top results, and screenshot the best before designing — don't guess from memory.",
 			"  After taking a screenshot, ALWAYS open it with your view_image tool to study layout, colors, typography and content. Use this whenever the user asks to inspect, analyze or imitate a website or design (e.g. Behance/Dribbble references).",
 				"  Capture designs TOP-TO-BOTTOM in DESKTOP and MOBILE: desktop full-page via 'scrollshot <url> <outPrefix> [stops]', mobile full-page via 'shot <url> <out.png> 390x3000'; open each with view_image to study both viewports.",
-				"- Image generation: you can generate images; afterwards copy the generated file from your image output directory into the workspace with a proper name and reference it from the site.",
+				this.imageCapabilityInstructions(),
 				"- CREDIT GATE: never start paid/external video or 3D generation (Kling, Seedance, X-Field, Higgsfield, Runway, Pika, Luma, Veo, Sora, or similar) without an explicit Thomas approval card. This applies even in Autonomous.",
 				"- MANDATORY — real imagery, never placeholders: every page MUST use real images. NEVER leave gray boxes, solid-color rectangles, `placeholder.com` / `via.placeholder` / `dummyimage` / `picsum.photos` / `unsplash.com/random` URLs, empty `<img>`, or `TODO image` comments. Generate a real image for EVERY slot the design needs (hero, gallery, product, avatar, background) and save it into the workspace before finishing — placeholders mean the build is NOT done.",
 			"- For any multi-step build task, first create a plan with your plan tool and keep step statuses updated as you work.",
@@ -4326,6 +4337,7 @@ self.addEventListener("fetch", (e) => {
 			const blocks = hits.map((h) =>
 				"• " + (h.meta.kind === "lesson" ? "⚠️ לקח: " : "") + (h.meta.name || "skill") +
 				(h.meta.tags && h.meta.tags.length ? " [" + h.meta.tags.join(", ") + "]" : "") +
+				(h.skillDir ? "\nResources: " + h.skillDir + " (read SKILL.md and open its referenced files before acting)" : "") +
 				"\n" + h.body.slice(0, 500).trim());
 			return "[FELIX_SKILLS]\n🧠 ידע נצבר רלוונטי (skills מבניות מאומתות + לקחים מטעויות עבר — השתמש, ואל תחזור על לקח שסומן ⚠️):\n" + blocks.join("\n\n") + "\n[/FELIX_SKILLS]\n\n---\n\n";
 		} catch { return ""; }
@@ -4984,6 +4996,7 @@ self.addEventListener("fetch", (e) => {
 		if (this.grok) this.grok.interrupt();
 		if (this.claude) this.claude.interrupt();
 		if (this.client) this.client.stop();
+		if (this.skillInstaller) this.skillInstaller.dispose();
 		this.closeFleetBridges();
 	}
 }
@@ -5165,7 +5178,32 @@ function openSkills(controller, extensionUri) {
 		enableScripts: true, retainContextWhenHidden: true, localResourceRoots: webviewResourceRoots(extensionUri),
 	});
 	skillsPanel.webview.html = mediaHtml(skillsPanel.webview, extensionUri, "skills.js", "skills.css");
-	skillsPanel.webview.onDidReceiveMessage((m) => { if (m.type === "ready" || m.type === "refresh") pushSkillsPanel(controller); });
+	skillsPanel.webview.onDidReceiveMessage(async (m) => {
+		if (m.type === "ready" || m.type === "refresh") { pushSkillsPanel(controller); return; }
+		if (!controller.skillInstaller) {
+			skillsPanel.webview.postMessage({ type: "installError", message: "Skill installer is unavailable in this session." });
+			return;
+		}
+		try {
+			if (m.type === "previewInstall") {
+				skillsPanel.webview.postMessage({ type: "installBusy", message: "Cloning and inspecting without running repository code…" });
+				const preview = await controller.skillInstaller.preview(m.url, m.skillPath || "");
+				skillsPanel.webview.postMessage({ type: preview.selectionRequired ? "skillSelection" : "installPreview", ...preview });
+			} else if (m.type === "confirmInstall") {
+				const preview = controller.skillInstaller.previews.get(String(m.id || ""));
+				if (!preview) throw new Error("Install preview expired; preview the repository again.");
+				const detail = `${preview.source.displayUrl}\ncommit ${preview.source.commit}\n${preview.files.length} files · ${preview.totalBytes} bytes\n\nDependencies are recorded only; no hooks or scripts will run.`;
+				const accepted = await vscode.window.showWarningMessage(`Install Felix skill '${preview.name}'?`, { modal: true, detail }, "Install reviewed skill");
+				if (accepted !== "Install reviewed skill") { skillsPanel.webview.postMessage({ type: "installCancelled" }); return; }
+				skillsPanel.webview.postMessage({ type: "installBusy", message: "Installing atomically into Felix runtime storage…" });
+				const result = await controller.skillInstaller.install(m.id);
+				skillsPanel.webview.postMessage({ type: "installDone", ...result });
+				pushSkillsPanel(controller);
+			}
+		} catch (error) {
+			skillsPanel.webview.postMessage({ type: "installError", message: String(error && error.message || error) });
+		}
+	});
 	skillsPanel.onDidDispose(() => { skillsPanel = null; });
 }
 
