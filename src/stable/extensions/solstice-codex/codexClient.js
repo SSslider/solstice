@@ -25,7 +25,7 @@ class CodexClient {
 		if (this.opts.codexHome) env.CODEX_HOME = this.opts.codexHome;
 		// Same Windows npm-shim EPERM guard as the grok provider: a bare codex
 		// resolves to codex.cmd, which CreateProcess refuses to run. No-op on *nix.
-		const sp = resolveWinSpawn(this.opts.binPath, ["app-server"]);
+		const sp = resolveWinSpawn(this.opts.binPath, [...(this.opts.configArgs || []), "app-server"]);
 		// ROOT CAUSE (02/07, corrected): `detached:true` on WINDOWS was the real
 		// culprit behind BOTH the PowerShell/Command-Prompt window storm AND the
 		// spawn EPERM — not windowsHide. On a console-less GUI Electron parent,

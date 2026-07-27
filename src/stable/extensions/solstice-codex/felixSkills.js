@@ -94,10 +94,10 @@ class FelixSkills {
 	// import static prompt playbooks as seed skills, once.
 	seedFrom(extensionPath) {
 		this._seedPrompt(extensionPath, "design-playbook", "design-playbook.md", ["design", "premium", "landing", "ui"]);
-		this._seedPrompt(extensionPath, "animated-website-kit", "animated-website-kit.md", ["animation", "gsap", "r3f", "scrollytelling", "three"]);
+		this._seedPrompt(extensionPath, "animated-website-kit", "animated-website-kit.md", ["animation", "gsap", "r3f", "three", "webgl", "general-motion"]);
 		this._seedPrompt(extensionPath, "felix-toolbox-router", "felix-toolbox-router.md", ["toolbox", "router", "workflow", "research", "build"]);
 		this._seedPrompt(extensionPath, "gap-analysis-playbook", "gap-analysis-playbook.md", ["gap", "antigravity", "cursor", "analysis"]);
-		this._seedDirectory(extensionPath, "scroll-world-gpt-image", path.join("prompts", "scroll-world"));
+		const scrollWorld = this._seedDirectory(extensionPath, "scroll-world-gpt-image", path.join("prompts", "scroll-world"));
 		const verticalDir = path.join(extensionPath, "prompts", "verticals");
 		let files = [];
 		try { files = fs.readdirSync(verticalDir).filter((f) => f.endsWith(".md")).sort(); } catch { }
@@ -107,36 +107,93 @@ class FelixSkills {
 			const tags = ["vertical", "template", sector].concat(sector.split("-").filter(Boolean));
 			this._seedPrompt(extensionPath, name, path.join("verticals", f), tags, sector);
 		}
+		return { scrollWorld };
+	}
+
+	_validPortableSeed(file, name) {
+		try {
+			const parsed = this._parse(file);
+			return slug(parsed.meta.name) === slug(name) && parsed.body.trim().length > 100;
+		} catch { return false; }
 	}
 
 	_seedDirectory(extensionPath, name, rel) {
 		const source = path.join(extensionPath, rel);
 		const target = path.join(this.skillsDir, slug(name));
-		if (fs.existsSync(target) || !fs.existsSync(path.join(source, "SKILL.md"))) return;
+		const sourceSkill = path.join(source, "SKILL.md");
+		const targetSkill = path.join(target, "SKILL.md");
+		if (!this._validPortableSeed(sourceSkill, name)) {
+			const result = { name, status: "failed", error: "bundled SKILL.md is missing or invalid" };
+			this.log(`[skills] directory seed failed for ${name}: ${result.error}`);
+			return result;
+		}
 		const temp = target + `.installing-${process.pid}-${Date.now().toString(36)}`;
-		const copy = (from, to) => {
+		const copy = (from, to, exclusive = true) => {
+			let copied = 0;
 			fs.mkdirSync(to, { recursive: true });
 			for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
 				const sourceFile = path.join(from, entry.name);
 				const targetFile = path.join(to, entry.name);
 				if (entry.isSymbolicLink()) throw new Error("seed skill contains a symlink");
-				if (entry.isDirectory()) copy(sourceFile, targetFile);
-				else if (entry.isFile()) fs.copyFileSync(sourceFile, targetFile, fs.constants.COPYFILE_EXCL);
+				if (entry.isDirectory()) copied += copy(sourceFile, targetFile, exclusive);
+				else if (entry.isFile() && (!exclusive || !fs.existsSync(targetFile))) {
+					fs.copyFileSync(sourceFile, targetFile, exclusive ? fs.constants.COPYFILE_EXCL : 0);
+					copied++;
+				}
 			}
+			return copied;
 		};
+		if (this._validPortableSeed(targetSkill, name)) {
+			try {
+				const copied = copy(source, target, true);
+				if (copied) {
+					this.log(`[skills] self-healed ${copied} missing resource(s) for ${name}`);
+					return { name, status: "repaired", target, copied };
+				}
+				this.log("[skills] verified directory seed " + name);
+				return { name, status: "verified", target };
+			} catch (error) {
+				this.log("[skills] directory seed verification failed for " + name + ": " + error.message);
+				return { name, status: "failed", error: error.message, target };
+			}
+		}
 		try {
-			copy(source, temp);
+			if (fs.existsSync(target)) {
+				if (fs.existsSync(targetSkill)) {
+					const backup = path.join(target, `SKILL.invalid-${Date.now().toString(36)}.md`);
+					fs.renameSync(targetSkill, backup);
+				}
+				copy(source, target, true);
+				if (!this._validPortableSeed(targetSkill, name)) throw new Error("self-heal did not produce a valid SKILL.md");
+				this.log("[skills] self-healed directory seed " + name);
+				return { name, status: "repaired", target };
+			}
+			copy(source, temp, true);
 			fs.renameSync(temp, target);
 			this.log("[skills] seeded directory " + name);
+			return { name, status: "seeded", target };
 		} catch (error) {
 			try { fs.rmSync(temp, { recursive: true, force: true }); } catch { }
 			this.log("[skills] directory seed failed for " + name + ": " + error.message);
+			return { name, status: "failed", error: error.message, target };
 		}
 	}
 
 	_seedPrompt(extensionPath, name, rel, tags, sector) {
 		const seedFile = path.join(this.skillsDir, slug(name) + ".md");
-		if (fs.existsSync(seedFile)) return;
+		if (fs.existsSync(seedFile)) {
+			try {
+				const current = this._parse(seedFile);
+				const expectedTags = [...new Set(tags || [])];
+				const currentTags = current.meta.tags || [];
+				if (String(current.meta.provenance || "").startsWith("seed:")
+					&& JSON.stringify(currentTags) !== JSON.stringify(expectedTags)) {
+					this._writeFile(seedFile, { ...current.meta, tags: expectedTags, updatedAt: new Date().toISOString() }, current.body);
+					this.log("[skills] reconciled seed tags for " + name);
+				}
+			} catch (error) { this.log("[skills] seed tag reconcile failed for " + name + ": " + error.message); }
+			return;
+		}
 		let src = "";
 		try { src = fs.readFileSync(path.join(extensionPath, "prompts", rel), "utf8"); } catch { return; }
 		this._writeFile(seedFile, {
@@ -204,18 +261,56 @@ class FelixSkills {
 	async retrieve(queryText, k = 3) {
 		const skills = [...this.list(), ...this.listLessons()];
 		if (!skills.length) return [];
+		const explicit = this._explicitMatches(queryText, skills);
+		if (explicit.length) {
+			const rest = this._keywordRank(queryText, skills.filter((skill) => !explicit.includes(skill)));
+			return [...explicit.map((skill) => this._withRetrieval(skill, {
+				score: Number.MAX_SAFE_INTEGER,
+				reason: "explicit skill name",
+				pinned: true,
+			})), ...rest].slice(0, k);
+		}
 		if (this.embedderUrl) {
-			try { return await this._embedRank(queryText, skills, k); }
+			try {
+				const ranked = await this._embedRank(queryText, skills, k);
+				return ranked.map((skill, index) => this._withRetrieval(skill, { score: null, reason: `semantic match #${index + 1}`, pinned: false }));
+			}
 			catch (e) { this.log("[skills] embed rank failed, keyword fallback: " + (e && e.message || e)); }
 		}
+		return this._keywordRank(queryText, skills).slice(0, k);
+	}
+
+	_withRetrieval(skill, retrieval) {
+		skill.retrieval = retrieval;
+		return skill;
+	}
+
+	_explicitMatches(queryText, skills) {
+		const compact = String(queryText || "").toLowerCase().replace(/[\s_-]+/g, "");
+		return skills.filter((skill) => {
+			const name = String(skill.meta.name || "");
+			const compactName = name.toLowerCase().replace(/[\s_-]+/g, "");
+			if (compactName.length >= 4 && compact.includes(compactName)) return true;
+			return name === "scroll-world-gpt-image" && (compact.includes("scrollworld") || /סקול\s*וורלד/i.test(String(queryText || "")));
+		});
+	}
+
+	_keywordRank(queryText, skills) {
 		const q = new Set(tokenize(queryText));
 		return skills.map((s) => {
 			const hay = tokenize((s.meta.name || "") + " " + ((s.meta.tags || []).join(" ")) + " " + (s.meta.sector || "") + " " + s.body.slice(0, 400));
-			let score = 0;
-			for (const t of hay) if (q.has(t)) score++;
-			score += Math.log1p(parseInt(s.meta.uses, 10) || 0); // proven skills rank higher
-			return { s, score };
-		}).filter((x) => x.score > 0).sort((a, b) => b.score - a.score).slice(0, k).map((x) => x.s);
+			let overlap = 0;
+			for (const t of new Set(hay)) if (q.has(t)) overlap++;
+			const useBonus = Math.min(0.75, Math.log1p(parseInt(s.meta.uses, 10) || 0) / 4);
+			const score = overlap * 4 + useBonus;
+			return { s, score, overlap, useBonus };
+		}).filter((x) => x.overlap > 0)
+			.sort((a, b) => b.score - a.score)
+			.map((x) => this._withRetrieval(x.s, {
+				score: Math.round(x.score * 100) / 100,
+				reason: `${x.overlap} relevant term${x.overlap === 1 ? "" : "s"}; use bonus ${x.useBonus.toFixed(2)} (capped)`,
+				pinned: false,
+			}));
 	}
 
 	// bump the use-counter of retrieved skills (called at dispatch, best-effort).

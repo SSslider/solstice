@@ -7,7 +7,7 @@ const os = require("os");
 const { spawn } = require("child_process");
 const { CodexClient, resolveCodexBinary } = require("./codexClient");
 const { checkCodexModelCompatibility } = require("./codexCompatibility");
-const { isPureLaunchIntent, isPureStopRuntimeIntent } = require("./intent");
+const { isPureLaunchIntent, runtimeStopIntent } = require("./intent");
 const { PreviewServer, DevServer, detectDevServerUrl, hasFramework } = require("./preview");
 const { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, resolveGrokBinary, grokBundlePresent, killTree } = require("./grok");
 const { ClaudeProvider } = require("./claude");
@@ -32,6 +32,7 @@ const {
 const {
 	DevServerToolBridge,
 	agentToolCommand,
+	codexMcpConfigArgs,
 	isSafeDevServerToolApproval,
 	listOwnedDevServers,
 	stopAllOwnedDevServers,
@@ -435,6 +436,7 @@ class AgentController {
 		});
 		this._devServerToolReady = this.devServerToolBridge.start().catch((error) => {
 			this.output.append(`[dev-tools] bridge unavailable: ${error && error.message || error}\n`);
+			vscode.window.showErrorMessage(`Solstice dev-server controls are unavailable: ${error && error.message || error}`);
 			return {};
 		});
 		try {
@@ -447,7 +449,12 @@ class AgentController {
 				embedderUrl: this.cfg().get("skillEmbedderUrl") || "",
 				log: (m) => this.output.append(m + "\n"),
 			});
-			this.skills.seedFrom(context.extensionPath);
+			const seeded = this.skills.seedFrom(context.extensionPath);
+			if (seeded && seeded.scrollWorld && seeded.scrollWorld.status === "repaired") {
+				vscode.window.showInformationMessage("Felix self-healed the ScrollWorld skill in global storage.");
+			} else if (seeded && seeded.scrollWorld && seeded.scrollWorld.status === "failed") {
+				vscode.window.showErrorMessage(`Felix could not install ScrollWorld: ${seeded.scrollWorld.error}`);
+			}
 			this.skillInstaller = new SkillInstaller({
 				skillsDir: this.skills.skillsDir,
 				log: (m) => this.output.append(m + "\n"),
@@ -1340,16 +1347,90 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	pushDevServerInventory() {
+		const servers = this.listDevServersForAgent();
 		this.postManager({
 			type: "devServers",
-			servers: this.listDevServersForAgent(),
+			servers,
 			idleTimeoutMs: this.devServerIdleTimeoutMs(),
 		});
+		this.updateDevServerStatus(servers);
+	}
+
+	updateDevServerStatus(servers = this.listDevServersForAgent()) {
+		if (!this.devServerStatus) return;
+		const count = servers.length;
+		this.devServerStatus.text = `$(zap) ${count} שרתי preview`;
+		this.devServerStatus.tooltip = count
+			? "Solstice-owned preview servers are using memory. Click to inspect or close them."
+			: "No Solstice-owned preview servers are running.";
+		this.devServerStatus.show();
+	}
+
+	async devServerMemoryMb(pid) {
+		const safePid = Number(pid);
+		if (!Number.isInteger(safePid) || safePid <= 0) return null;
+		try {
+			const execFile = require("util").promisify(require("child_process").execFile);
+			let bytes;
+			if (process.platform === "win32") {
+				const script = [
+					`$all=Get-CimInstance Win32_Process; $ids=@(${safePid});`,
+					"do { $next=@($all | Where-Object { $ids -contains [int]$_.ParentProcessId } | ForEach-Object { [int]$_.ProcessId } | Where-Object { $ids -notcontains $_ }); $ids += $next } while ($next.Count -gt 0);",
+					"($ids | ForEach-Object { (Get-Process -Id $_ -ErrorAction SilentlyContinue).WorkingSet64 } | Measure-Object -Sum).Sum",
+				].join(" ");
+				const { stdout } = await execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: 3000 });
+				bytes = Number(stdout.trim());
+			} else {
+				const { stdout } = await execFile("ps", ["-e", "-o", "pid=,ppid=,rss="], { encoding: "utf8", timeout: 3000 });
+				const rows = stdout.trim().split("\n").map((line) => line.trim().split(/\s+/).map(Number)).filter((row) => row.length === 3);
+				const ids = new Set([safePid]);
+				let changed = true;
+				while (changed) {
+					changed = false;
+					for (const [child, parent] of rows) {
+						if (ids.has(parent) && !ids.has(child)) { ids.add(child); changed = true; }
+					}
+				}
+				bytes = rows.filter(([child]) => ids.has(child)).reduce((sum, row) => sum + row[2] * 1024, 0);
+			}
+			return Number.isFinite(bytes) && bytes >= 0 ? Math.round(bytes / 1024 / 1024) : null;
+		} catch { return null; }
+	}
+
+	async showDevServers() {
+		const servers = this.listDevServersForAgent();
+		if (!servers.length) {
+			vscode.window.showInformationMessage("Solstice: no preview servers are running.");
+			return;
+		}
+		const items = await Promise.all(servers.map(async (server) => {
+			const ram = await this.devServerMemoryMb(server.pid);
+			return {
+				label: `$(pulse) ${path.basename(server.root || "project")} · :${server.port || "?"}`,
+				description: `PID ${server.pid || "?"} · RAM ${ram == null ? "unknown" : `${ram} MB`}`,
+				detail: server.root || "",
+				serverId: server.id,
+			};
+		}));
+		items.push({
+			label: "$(debug-stop) Close all preview servers",
+			description: `Stop ${servers.length} Solstice-owned server${servers.length === 1 ? "" : "s"}`,
+			detail: "No unrelated process is touched.",
+			closeAll: true,
+		});
+		const selected = await vscode.window.showQuickPick(items, { title: "Solstice preview servers", placeHolder: "Inspect a server or close all" });
+		if (!selected || !selected.closeAll) return;
+		const result = this.stopAllDevServers("statusbar-close-all");
+		if (!result.ok) vscode.window.showErrorMessage(`Solstice could stop only ${result.stopped}/${result.requested} preview servers.`);
+		else vscode.window.showInformationMessage(`Solstice: closed ${result.stopped} preview server${result.stopped === 1 ? "" : "s"}.`);
 	}
 
 	stopDevServerForAgent(id) {
 		const result = stopOwnedDevServer(this.devServer, this.managerDevServers, id, "manual");
-		if (!result.ok) return result;
+		if (!result.ok) {
+			this.pushDevServerInventory();
+			return result;
+		}
 		if (result.scope === "workspace") {
 			this.previewUrl = "";
 			this.postPreview({ type: "load", url: "", device: this.defaultDevice() });
@@ -1367,13 +1448,22 @@ self.addEventListener("fetch", (e) => {
 
 	stopAllDevServers(reason = "close-all") {
 		const result = stopAllOwnedDevServers(this.devServer, this.managerDevServers, reason);
-		this.managerDevServers.clear();
-		if (this.preview) this.preview.dispose();
-		for (const preview of this.managerPreviews.values()) preview.dispose();
-		this.managerPreviews.clear();
-		this.previewUrl = "";
-		this.postPreview({ type: "load", url: "", device: this.defaultDevice() });
+		const stoppedIds = new Set(result.results.filter((item) => item.ok).map((item) => item.id));
+		for (const item of result.results) {
+			if (item.ok && item.scope === "manager" && item.taskId) this.managerDevServers.delete(item.taskId);
+		}
+		if (stoppedIds.has("workspace")) {
+			if (this.preview) this.preview.dispose();
+			this.previewUrl = "";
+			this.postPreview({ type: "load", url: "", device: this.defaultDevice() });
+		}
+		for (const [taskId, preview] of this.managerPreviews) {
+			if (!stoppedIds.has(`manager:${taskId}`)) continue;
+			preview.dispose();
+			this.managerPreviews.delete(taskId);
+		}
 		for (const task of this.managerTaskList()) {
+			if (!stoppedIds.has(`manager:${task.id}`)) continue;
 			if (task.previewUrl) this.managerTasks.setStatus(task.id, task.status, { previewUrl: "" });
 			this.postManager({ type: "managerPreview", taskId: task.id, url: "" });
 		}
@@ -1412,6 +1502,17 @@ self.addEventListener("fetch", (e) => {
 		return [...new Set(commands)].map((command) => `Bash(${command})`);
 	}
 
+	grokDevServerAllowedTools() {
+		return [
+			this.devServerToolCommand("list"),
+			this.devServerToolCommand("stop", "workspace"),
+			this.devServerToolCommand("close-all"),
+			...this.listDevServersForAgent()
+				.filter((item) => item.scope === "manager")
+				.map((item) => this.devServerToolCommand("stop", item.id)),
+		];
+	}
+
 	// Deterministic runtime commands should not spend a model turn rediscovering
 	// the workspace. Launch/reveal is handled by the IDE; an owned dev server can
 	// also be stopped directly. External servers are left to the agent because we
@@ -1428,14 +1529,22 @@ self.addEventListener("fetch", (e) => {
 			this.post({ type: "systemNote", text: this.previewUrl ? "🚀 האתר פתוח ב־Live Preview." : "⚠️ לא נמצא שרת או קובץ שניתן להציג." });
 			return true;
 		}
-		if (isPureStopRuntimeIntent(text) && this.devServer && this.devServer.hasOwnedProcess()) {
-			const result = this.stopDevServerForAgent("workspace");
+		const stopScope = runtimeStopIntent(text);
+		if (stopScope) {
+			const result = stopScope === "all"
+				? this.stopAllDevServers("intent-close-all")
+				: this.stopDevServerForAgent("workspace");
 			if (result.ok) {
-				this.previewUrl = "";
-				this.postPreview({ type: "load", url: "", device: this.defaultDevice() });
-				this.post({ type: "systemNote", text: `🛑 שרת הפיתוח של Solstice נעצר (PID ${result.pid}).` });
-				return true;
+				const stopped = stopScope === "all" ? result.stopped : 1;
+				this.post({ type: "systemNote", text: stopped ? `🛑 סגרתי ${stopped} שרתי preview.` : "ℹ️ אין שרתי preview פתוחים לסגירה." });
+			} else {
+				const detail = result.error || `${result.stopped || 0}/${result.requested || 1} servers stopped`;
+				const message = `Solstice could not close the requested preview server(s): ${detail}`;
+				this.output.append(`[dev-tools] ${message}\n`);
+				this.post({ type: "systemNote", text: `⚠️ ${message}` });
+				vscode.window.showErrorMessage(message);
 			}
+			return true;
 		}
 		return false;
 	}
@@ -2487,6 +2596,7 @@ self.addEventListener("fetch", (e) => {
 				bin: resolveGrokBinary(this.context.extensionPath, this.cfg().get("grokPath")),
 				extensionPath: this.context.extensionPath,
 				env: devServerToolEnv,
+				allowedTools: this.grokDevServerAllowedTools(),
 				authorizeTool: (input) => this.authorizeGrokTool(input),
 				log: (s) => this.output.append(s),
 				notify: (m, p) => this.onNotification(m, p),
@@ -2660,6 +2770,7 @@ self.addEventListener("fetch", (e) => {
 			binPath,
 			codexHome: this.cfg().get("home") || undefined,
 			env: devServerToolEnv,
+			configArgs: codexMcpConfigArgs(process.execPath, path.join(this.context.extensionPath, "devServerTools.js")),
 			log: (s) => this.output.append(s),
 			onExit: (code) => {
 				this.threadId = null;
@@ -4324,8 +4435,11 @@ self.addEventListener("fetch", (e) => {
 			const hits = await this.skills.retrieve(task, 4);
 			if (!hits.length) return "";
 			const useEvents = this.skills.recordUse(hits); // proven skills float up over time
-			const names = hits.map((h) => h.meta.name || "skill");
-			this.announceAgentMessage("🧠 השתמשתי ב-skills: " + names.join(", "));
+			const reasons = hits.map((h) => {
+				const selection = h.retrieval || {};
+				return `${h.meta.name || "skill"} — ${selection.pinned ? "pinned by explicit name" : selection.reason || "relevant"}`;
+			});
+			this.announceAgentMessage("🧠 Skills selected: " + reasons.join(" · ") + ". To replace: say “use skill <name>” / “השתמש בסקיל <שם>”.");
 			for (const event of useEvents) {
 				if (!event.leveledUp) continue;
 				const name = event.item.meta.name || "skill";
@@ -5706,8 +5820,10 @@ function activate(context) {
 		vscode.commands.registerCommand("solstice.agent.openPreview", (url) => controller.openPreview(typeof url === "string" ? url : "")),
 		vscode.commands.registerCommand("solstice.agent.closeAllDevServers", () => {
 			const result = controller.stopAllDevServers("command-close-all");
-			vscode.window.showInformationMessage(`Solstice: closed ${result.stopped} preview server${result.stopped === 1 ? "" : "s"}.`);
+			if (!result.ok) vscode.window.showErrorMessage(`Solstice could stop only ${result.stopped}/${result.requested} preview servers.`);
+			else vscode.window.showInformationMessage(`Solstice: closed ${result.stopped} preview server${result.stopped === 1 ? "" : "s"}.`);
 		}),
+		vscode.commands.registerCommand("solstice.agent.showDevServers", () => controller.showDevServers()),
 		vscode.commands.registerCommand("solstice.agent.deployVercel", () => controller.deployCurrentProject()),
 		vscode.commands.registerCommand("solstice.agent.openSkills", () => openSkills(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.loadBrandPack", () => controller.loadBrandPackIntoWorkspace()),
@@ -5723,6 +5839,13 @@ function activate(context) {
 		vscode.commands.registerCommand("solstice.agent.openFleet", () => openFleet(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.checkEngines", () => controller.checkEngines())
 	);
+	try {
+		const devServerItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1001);
+		devServerItem.command = "solstice.agent.showDevServers";
+		controller.devServerStatus = devServerItem;
+		controller.updateDevServerStatus();
+		context.subscriptions.push(devServerItem);
+	} catch { }
 	context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders((event) => {
 		const ownedRoots = [controller.devServer, ...controller.managerDevServers.values()].filter(Boolean).map((server) => path.resolve(server.root));
 		if (event.removed.some((folder) => ownedRoots.includes(path.resolve(folder.uri.fsPath)))) {

@@ -7,6 +7,7 @@ const os = require("os");
 const path = require("path");
 const { DevServer, readDevServerRegistration } = require("./preview");
 const { listOwnedDevServers, stopAllOwnedDevServers } = require("./devServerTools");
+const { runtimeStopIntent } = require("./intent");
 
 let checks = 0;
 function ok(value, message) { checks++; assert.ok(value, message); }
@@ -81,7 +82,11 @@ process.on("SIGTERM", () => server.close(() => process.exit(0)));
 		ok(inventory.length === 3, "IDE inventory lists all three owned servers");
 		ok(inventory.every((entry) => entry.pid && entry.port && entry.root && entry.idleDeadlineAt), "inventory exposes PID, port, project, and idle deadline");
 		const pids = inventory.map((entry) => entry.pid);
-		const closed = stopAllOwnedDevServers(servers[0], new Map([["b", servers[1]], ["c", servers[2]]]), "three-window-close");
+		const stopScope = runtimeStopIntent("תסגור את כל האתרים");
+		ok(stopScope === "all", "Hebrew close-all request resolves before model dispatch");
+		const closed = stopScope === "all"
+			? stopAllOwnedDevServers(servers[0], new Map([["b", servers[1]], ["c", servers[2]]]), "intent-close-all")
+			: { ok: false, stopped: 0 };
 		ok(closed.ok && closed.stopped === 3, "closing three windows stops all three owned server trees");
 		ok(await waitFor(() => pids.every((pid) => !alive(pid))), "zero owned preview processes remain after window closure");
 		ok(roots.every((root) => readDevServerRegistration(root) === null), "all workspace ownership records are cleared");

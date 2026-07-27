@@ -315,6 +315,7 @@ class GrokProvider {
 		this.bin = opts.bin || "grok";
 		this.extensionPath = opts.extensionPath || "";
 		this.env = opts.env || {};
+		this.allowedTools = Array.isArray(opts.allowedTools) ? opts.allowedTools : [];
 		this.log = opts.log || (() => { });
 		this.notify = opts.notify;
 		this.spawn = opts.spawn || spawn;
@@ -441,12 +442,21 @@ class GrokProvider {
 		}
 		const promptFile = path.join(os.tmpdir(), `solstice-grok-${Date.now().toString(36)}-${this.seq++}.txt`);
 		try { fs.writeFileSync(promptFile, userPrompt, "utf8"); } catch { }
+		const disallowedTools = [
+			"Read", "Write", "Edit",
+			// The Solstice-owned close/list commands use Grok's native Bash tool.
+			// Keep Bash in the toolset only when exact commands were granted; the
+			// PreToolUse bridge still gates every other shell invocation.
+			...(this.allowedTools.length ? [] : ["Bash"]),
+			"Glob", "Grep", "List", "LS", "WebFetch", "WebSearch",
+		];
 		const args = ["--cwd", this.cwd, "-m", model.id,
 			"--permission-mode", "bypassPermissions",
 			// Composer occasionally hallucinates PascalCase Claude-Code tool names;
 			// blocking them makes those fail fast instead of SIGTERM-killing the turn.
-			"--disallowed-tools", "Read,Write,Edit,Bash,Glob,Grep,List,LS,WebFetch,WebSearch",
+			"--disallowed-tools", disallowedTools.join(","),
 			"--output-format", "streaming-json"];
+		for (const command of this.allowedTools || []) args.push("--allow", `Bash(${command})`);
 		if (this._sys && sysInline) args.push("--system-prompt-override", this._sys);
 		else if (agentFile) args.push("--agent", agentFile);
 		args.push("--prompt-file", promptFile);

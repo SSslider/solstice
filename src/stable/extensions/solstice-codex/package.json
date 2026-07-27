@@ -77,6 +77,12 @@
         "icon": "$(debug-stop)"
       },
       {
+        "command": "solstice.agent.showDevServers",
+        "title": "Show Preview Servers",
+        "category": "Solstice",
+        "icon": "$(zap)"
+      },
+      {
         "command": "solstice.agent.deployVercel",
         "title": "Deploy Current Project to Vercel",
         "category": "Solstice",

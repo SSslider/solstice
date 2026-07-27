@@ -6,11 +6,12 @@ const os = require("os");
 const path = require("path");
 const { EventEmitter } = require("events");
 const { GrokProvider } = require("./grok");
-const { isPureLaunchIntent, isPureStopRuntimeIntent } = require("./intent");
+const { isPureLaunchIntent, isPureStopRuntimeIntent, runtimeStopIntent } = require("./intent");
 const { DevServer } = require("./preview");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "solstice-followup-"));
 const prompts = [];
+const spawnArgs = [];
 function fakeSpawn(_cmd, args) {
 	const child = new EventEmitter();
 	child.pid = 4242;
@@ -24,6 +25,7 @@ function fakeSpawn(_cmd, args) {
 		});
 		return child;
 	}
+	spawnArgs.push(args);
 	const promptFile = args[args.indexOf("--prompt-file") + 1];
 	prompts.push(fs.readFileSync(promptFile, "utf8"));
 	setImmediate(() => {
@@ -34,7 +36,7 @@ function fakeSpawn(_cmd, args) {
 }
 
 (async () => {
-	const provider = new GrokProvider({ cwd: root, bin: "fake-grok", spawn: fakeSpawn, notify: () => { } });
+	const provider = new GrokProvider({ cwd: root, bin: "fake-grok", spawn: fakeSpawn, notify: () => { }, allowedTools: ["safe-close"] });
 	await provider.send("grok-4.5", "[FELIX_PROJECT_BRAIN]\nlarge injected context\n[/FELIX_PROJECT_BRAIN]\nBuild the first site", "system", { userText: "Build the first site" });
 	await provider.send("grok-4.5", "[FELIX_PROJECT_BRAIN]\nlarge injected context again\n[/FELIX_PROJECT_BRAIN]\nChange the hero to blue", "system", { userText: "Change the hero to blue" });
 
@@ -45,8 +47,13 @@ function fakeSpawn(_cmd, args) {
 	assert.ok(!provider.history.some((entry) => entry.text.includes("FELIX_PROJECT_BRAIN")), "history stores clean requests, not injected context");
 	assert.equal(provider.history[0].text, "Build the first site");
 	assert.equal(provider.history[2].text, "Change the hero to blue");
+	assert.ok(spawnArgs.every((args) => args.includes("--allow") && args.includes("Bash(safe-close)")), "Grok turns receive exact native tool grants");
+	assert.ok(spawnArgs.every((args) => !args[args.indexOf("--disallowed-tools") + 1].split(",").includes("Bash")), "Grok keeps its native Bash tool available when exact IDE controls are granted");
 	assert.equal(isPureLaunchIntent("פתח את האתר"), true);
 	assert.equal(isPureStopRuntimeIntent("תעשה terminate לפרוסס של האתר"), true);
+	assert.equal(runtimeStopIntent("תסגור את כל האתרים"), "all");
+	assert.equal(runtimeStopIntent("אני לא צריך את האתר עכשיו"), "workspace");
+	assert.equal(runtimeStopIntent("turn off every preview server"), "all");
 	assert.equal(isPureStopRuntimeIntent("תקן את כפתור ה-stop באתר"), false);
 
 	const extension = fs.readFileSync(path.join(__dirname, "extension.js"), "utf8");
@@ -63,5 +70,5 @@ function fakeSpawn(_cmd, args) {
 	assert.equal(killedWith, "SIGTERM");
 
 	fs.rmSync(root, { recursive: true, force: true });
-	console.log("followupContinuity.test.js: 15/15 checks passed");
+	console.log("followupContinuity.test.js: 21/21 checks passed");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

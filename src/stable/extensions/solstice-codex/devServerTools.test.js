@@ -5,13 +5,17 @@ const { execFile } = require("child_process");
 const fs = require("fs");
 const http = require("http");
 const path = require("path");
+const { PassThrough } = require("stream");
 const { promisify } = require("util");
 const {
 	DevServerToolBridge,
+	MCP_TOOLS,
 	agentToolCommand,
+	codexMcpConfigArgs,
 	isSafeDevServerToolApproval,
 	listOwnedDevServers,
 	requestTool,
+	runMcpServer,
 	stopAllOwnedDevServers,
 	stopOwnedDevServer,
 } = require("./devServerTools");
@@ -48,6 +52,19 @@ function rawPost(url, token) {
 		});
 		req.on("error", reject);
 		req.end(body);
+	});
+}
+
+function mcpRequest(input, output, message) {
+	return new Promise((resolve, reject) => {
+		const onData = (chunk) => {
+			const line = String(chunk).trim().split("\n").find(Boolean);
+			if (!line) return;
+			output.off("data", onData);
+			try { resolve(JSON.parse(line)); } catch (error) { reject(error); }
+		};
+		output.on("data", onData);
+		input.write(JSON.stringify(message) + "\n");
 	});
 }
 
@@ -88,6 +105,29 @@ async function main() {
 	try {
 		const listResult = await requestTool("dev-server-list", {}, env);
 		ok(listResult.ok && listResult.servers.length === 2 && listResult.servers[0].pid === 404, "loopback solstice/dev-server-list returns the live owned servers");
+		const priorUrl = process.env.SOLSTICE_DEV_SERVER_TOOL_URL;
+		const priorToken = process.env.SOLSTICE_DEV_SERVER_TOOL_TOKEN;
+		Object.assign(process.env, env);
+		const mcpIn = new PassThrough();
+		const mcpOut = new PassThrough();
+		runMcpServer(mcpIn, mcpOut);
+		try {
+			const initialized = await mcpRequest(mcpIn, mcpOut, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } });
+			ok(initialized.result.serverInfo.name === "solstice-dev-servers", "MCP server completes the native initialize handshake");
+			const tools = await mcpRequest(mcpIn, mcpOut, { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+			ok(tools.result.tools.map((tool) => tool.name).join(",") === "dev_server_list,dev_server_stop,dev_server_stop_all", "MCP tools/list exposes three concrete schemas");
+			const called = await mcpRequest(mcpIn, mcpOut, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "dev_server_list", arguments: {} } });
+			ok(!called.result.isError && called.result.structuredContent.servers.length === 2, "MCP tools/call reaches the tokenized IDE bridge");
+			const unsafe = await mcpRequest(mcpIn, mcpOut, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "dev_server_stop", arguments: { id: "workspace; taskkill /F" } } });
+			ok(unsafe.result.isError && /invalid_server_id/.test(unsafe.result.content[0].text), "MCP tool rejects command injection and arbitrary process targets");
+		} finally {
+			if (priorUrl === undefined) delete process.env.SOLSTICE_DEV_SERVER_TOOL_URL;
+			else process.env.SOLSTICE_DEV_SERVER_TOOL_URL = priorUrl;
+			if (priorToken === undefined) delete process.env.SOLSTICE_DEV_SERVER_TOOL_TOKEN;
+			else process.env.SOLSTICE_DEV_SERVER_TOOL_TOKEN = priorToken;
+			mcpIn.destroy();
+			mcpOut.destroy();
+		}
 		const cli = await promisify(execFile)(process.execPath, [path.join(__dirname, "devServerTools.js"), "list"], { env: { ...process.env, ...env } });
 		const cliResult = JSON.parse(cli.stdout);
 		ok(cliResult.ok && cliResult.servers[0].pid === 404, "packaged helper CLI reaches the in-process bridge");
@@ -120,9 +160,15 @@ async function main() {
 	ok((extension.match(/this\.devServerToolInstructions\(\)/g) || []).length === 3, "tool contract is injected into Codex, Grok and Claude prompts");
 	ok(/env: devServerToolEnv/.test(extension) && /this\.opts\.env/.test(codex) && /this\.env/.test(grok) && /this\.env/.test(claude), "tokenized bridge environment reaches all three engines");
 	ok(/allowedTools: this\.claudeDevServerAllowedTools\(\)/.test(extension) && /--allowedTools/.test(claude), "Claude receives exact no-prompt Bash grants for the IDE-owned tools");
+	ok(/allowedTools: this\.grokDevServerAllowedTools\(\)/.test(extension) && /--allow/.test(grok), "Grok receives exact native shell-tool grants for IDE-owned controls");
+	const codexConfig = codexMcpConfigArgs("/opt/Solstice/Electron", "/opt/Solstice/devServerTools.js").join(" ");
+	ok(MCP_TOOLS.length === 3 && /mcp_servers\.solstice_dev_servers/.test(codexConfig) && /dev_server_stop_all/.test(codexConfig), "Codex receives a real MCP tool schema for list, stop, and stop-all");
+	ok(/configArgs: codexMcpConfigArgs/.test(extension) && /this\.opts\.configArgs/.test(codex), "Codex app-server starts with the session-scoped MCP configuration");
 	ok(/stopOwnedDevServer\(this\.devServer, this\.managerDevServers, id/.test(extension), "extension maps the tool to workspace and manager DevServer registries");
 	ok(/stopAllDevServers\("window-dispose"\)/.test(extension) && /onDidChangeWorkspaceFolders/.test(extension), "window and project closure trigger owned-server cleanup");
 	ok(/devServersCard/.test(fs.readFileSync(path.join(__dirname, "media", "manager.js"), "utf8")), "Manager View renders the running-server inventory");
+	ok(extension.includes("$(zap) ${count} שרתי preview") && /showDevServers/.test(extension), "status bar exposes live preview count and inspection/close control");
+	ok(extension.includes("vscode.window.showErrorMessage(message)"), "runtime stop failures are visible instead of log-only");
 
 	console.log(`${passed}/${passed} checks passed`);
 }

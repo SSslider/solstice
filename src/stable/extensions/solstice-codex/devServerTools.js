@@ -192,6 +192,96 @@ function requestTool(name, args = {}, env = process.env) {
 	});
 }
 
+const MCP_TOOLS = [
+	{
+		name: "dev_server_list",
+		description: "List preview dev servers owned by this Solstice IDE window. Never lists unrelated processes.",
+		inputSchema: { type: "object", properties: {}, additionalProperties: false },
+	},
+	{
+		name: "dev_server_stop",
+		description: "Stop one preview dev server owned by this Solstice IDE window using its opaque inventory id.",
+		inputSchema: {
+			type: "object",
+			properties: { id: { type: "string", pattern: "^(workspace|manager:[A-Za-z0-9._-]+)$" } },
+			required: ["id"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "dev_server_stop_all",
+		description: "Stop every preview dev server owned by this Solstice IDE window.",
+		inputSchema: { type: "object", properties: {}, additionalProperties: false },
+	},
+];
+
+async function callMcpTool(name, args) {
+	if (name === "dev_server_list") return requestTool("dev-server-list");
+	if (name === "dev_server_stop") return requestTool("dev-server-stop", { id: args && args.id });
+	if (name === "dev_server_stop_all") return requestTool("dev-server-stop-all");
+	throw new Error("unknown_tool");
+}
+
+function runMcpServer(input = process.stdin, output = process.stdout) {
+	let buffer = "";
+	const send = (message) => output.write(JSON.stringify(message) + "\n");
+	const handle = async (message) => {
+		if (!message || message.jsonrpc !== "2.0" || message.id === undefined) return;
+		try {
+			if (message.method === "initialize") {
+				return send({
+					jsonrpc: "2.0",
+					id: message.id,
+					result: {
+						protocolVersion: message.params && message.params.protocolVersion || "2025-03-26",
+						capabilities: { tools: { listChanged: false } },
+						serverInfo: { name: "solstice-dev-servers", version: "1.0.0" },
+						instructions: "Use these tools only for preview servers owned by the current Solstice window.",
+					},
+				});
+			}
+			if (message.method === "tools/list") {
+				return send({ jsonrpc: "2.0", id: message.id, result: { tools: MCP_TOOLS } });
+			}
+			if (message.method === "tools/call") {
+				const result = await callMcpTool(message.params && message.params.name, message.params && message.params.arguments || {});
+				return send({
+					jsonrpc: "2.0",
+					id: message.id,
+					result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: false },
+				});
+			}
+			send({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } });
+		} catch (error) {
+			send({
+				jsonrpc: "2.0",
+				id: message.id,
+				result: {
+					content: [{ type: "text", text: `Solstice dev-server tool failed: ${error && error.message || error}` }],
+					isError: true,
+				},
+			});
+		}
+	};
+	input.setEncoding("utf8");
+	input.on("data", (chunk) => {
+		buffer += chunk;
+		if (buffer.length > 1024 * 1024) {
+			buffer = "";
+			send({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Request too large" } });
+			return;
+		}
+		let newline;
+		while ((newline = buffer.indexOf("\n")) >= 0) {
+			const line = buffer.slice(0, newline).trim();
+			buffer = buffer.slice(newline + 1);
+			if (!line) continue;
+			try { handle(JSON.parse(line)); }
+			catch { send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }); }
+		}
+	});
+}
+
 function quoteArg(value) {
 	return `"${String(value).replace(/"/g, '\\"')}"`;
 }
@@ -204,6 +294,24 @@ function agentToolCommand(executable, script, operation, id, platform = process.
 		return `cmd /d /s /c "set ELECTRON_RUN_AS_NODE=1&& ""${executable}"" ""${script}"" ${tail}"`;
 	}
 	return `ELECTRON_RUN_AS_NODE=1 ${quoteArg(executable)} ${quoteArg(script)} ${tail}`;
+}
+
+function tomlString(value) {
+	return JSON.stringify(String(value));
+}
+
+function codexMcpConfigArgs(executable, script) {
+	const config = [
+		"{",
+		`command=${tomlString(executable)},`,
+		`args=[${tomlString(script)},${tomlString("mcp")}],`,
+		`env={ELECTRON_RUN_AS_NODE=${tomlString("1")}},`,
+		`env_vars=[${tomlString(TOOL_URL_ENV)},${tomlString(TOOL_TOKEN_ENV)}],`,
+		`enabled_tools=[${MCP_TOOLS.map((tool) => tomlString(tool.name)).join(",")}],`,
+		'required=true,default_tools_approval_mode="auto"',
+		"}",
+	].join("");
+	return ["--config", `mcp_servers.solstice_dev_servers=${config}`];
 }
 
 function commandStrings(value, key = "", depth = 0, out = []) {
@@ -233,6 +341,7 @@ function isSafeDevServerToolApproval(params, executable, script, platform = proc
 
 async function cliMain(argv = process.argv.slice(2)) {
 	const operation = argv[0];
+	if (operation === "mcp") { runMcpServer(); return null; }
 	if (operation === "list") return requestTool("dev-server-list");
 	if (operation === "stop") {
 		const id = argv[1] || "workspace";
@@ -244,21 +353,29 @@ async function cliMain(argv = process.argv.slice(2)) {
 }
 
 if (require.main === module) {
-	cliMain()
-		.then((result) => process.stdout.write(JSON.stringify(result, null, 2) + "\n"))
-		.catch((error) => {
-			process.stderr.write(`Error: ${error && error.message || error}\n`);
-			process.exitCode = 1;
-		});
+	if (process.argv[2] === "mcp") {
+		runMcpServer();
+	} else {
+		cliMain()
+			.then((result) => process.stdout.write(JSON.stringify(result, null, 2) + "\n"))
+			.catch((error) => {
+				process.stderr.write(`Error: ${error && error.message || error}\n`);
+				process.exitCode = 1;
+			});
+	}
 }
 
 module.exports = {
 	DevServerToolBridge,
+	MCP_TOOLS,
 	agentToolCommand,
+	callMcpTool,
 	cliMain,
+	codexMcpConfigArgs,
 	isSafeDevServerToolApproval,
 	listOwnedDevServers,
 	requestTool,
+	runMcpServer,
 	stopAllOwnedDevServers,
 	stopOwnedDevServer,
 	TOOL_TOKEN_ENV,
