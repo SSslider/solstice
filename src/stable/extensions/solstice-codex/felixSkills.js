@@ -1,6 +1,7 @@
 "use strict";
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const http = require("http");
 const https = require("https");
 const SKILL_STORE_MIGRATION = ".storage-migration-v1.json";
@@ -20,6 +21,60 @@ function slug(s) {
 // tokens include latin + hebrew so retrieval works on bilingual task prompts.
 function tokenize(s) {
 	return (String(s || "").toLowerCase().match(/[a-z0-9\u0590-\u05ff]+/g)) || [];
+}
+
+function sha256(file) {
+	return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+function portableInventory(root) {
+	const files = [];
+	const walk = (dir, prefix = "") => {
+		for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+			const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+			if (rel === ".felix-runtime.json") continue;
+			const file = path.join(dir, entry.name);
+			if (entry.isSymbolicLink()) files.push({ path: rel, status: "invalid-symlink" });
+			else if (entry.isDirectory()) walk(file, rel);
+			else if (entry.isFile()) files.push({ path: rel, bytes: fs.statSync(file).size, sha256: sha256(file) });
+		}
+	};
+	if (fs.existsSync(root)) walk(root);
+	return files;
+}
+
+function inventoryFingerprint(files) {
+	return crypto.createHash("sha256").update(JSON.stringify(files)).digest("hex");
+}
+
+function explicitScrollWorldRequest(text) {
+	const raw = String(text || "");
+	const compact = raw.toLowerCase().replace(/[\s_-]+/g, "");
+	return compact.includes("scrollworld") || /סקול\s*וורלד/i.test(raw);
+}
+
+function hasExclusiveScrollWorldRoute(text) {
+	return /\[FELIX_ROUTE\s+name="scroll-world-gpt-image"\s+exclusive="true"\]/.test(String(text || ""))
+		|| explicitScrollWorldRequest(text);
+}
+
+function composeSkillsPrompt(hits) {
+	const selected = Array.isArray(hits) ? hits : [];
+	const exclusive = selected.length === 1 && selected[0].retrieval && selected[0].retrieval.exclusive === true;
+	const bodies = selected.map((hit) => exclusive
+		? String(hit.body || "").trim()
+		: String(hit.body || "").slice(0, 500).trim());
+	const blocks = selected.map((hit, index) =>
+		"• " + (hit.meta.kind === "lesson" ? "⚠️ לקח: " : "") + (hit.meta.name || "skill") +
+		(hit.meta.tags && hit.meta.tags.length ? " [" + hit.meta.tags.join(", ") + "]" : "") +
+		(hit.skillDir ? "\nResources: " + hit.skillDir + " (read SKILL.md and open its referenced files before acting)" : "") +
+		"\n" + bodies[index]);
+	const route = exclusive ? "[FELIX_ROUTE name=\"scroll-world-gpt-image\" exclusive=\"true\"]\n" : "";
+	return {
+		exclusive,
+		injectedBytes: bodies.reduce((sum, body) => sum + Buffer.byteLength(body), 0),
+		text: selected.length ? route + "[FELIX_SKILLS]\n🧠 ידע נצבר רלוונטי (skills מבניות מאומתות + לקחים מטעויות עבר — השתמש, ואל תחזור על לקח שסומן ⚠️):\n" + blocks.join("\n\n") + "\n[/FELIX_SKILLS]\n\n---\n\n" : "",
+	};
 }
 
 // One-time import into VS Code globalStorage. Older/dev builds could leave the
@@ -108,6 +163,84 @@ class FelixSkills {
 			this._seedPrompt(extensionPath, name, path.join("verticals", f), tags, sector);
 		}
 		return { scrollWorld };
+	}
+
+	runtimeDiagnostics(extensionPath) {
+		const name = "scroll-world-gpt-image";
+		const bundledDir = path.join(extensionPath, "prompts", "scroll-world");
+		const runtimeDir = path.join(this.skillsDir, name);
+		const bundledSkill = path.join(bundledDir, "SKILL.md");
+		const runtimeSkill = path.join(runtimeDir, "SKILL.md");
+		let bundled = [], runtime = [], error = "";
+		try { bundled = portableInventory(bundledDir); } catch (e) { error = `bundled inventory failed: ${e.message}`; }
+		try { runtime = portableInventory(runtimeDir); } catch (e) { error = error || `runtime inventory failed: ${e.message}`; }
+		const bundledByPath = new Map(bundled.map((item) => [item.path, item]));
+		const runtimeByPath = new Map(runtime.map((item) => [item.path, item]));
+		const resources = bundled.map((source) => {
+			const target = runtimeByPath.get(source.path);
+			return {
+				path: source.path,
+				status: !target ? "missing" : source.sha256 === target.sha256 ? "match" : "mismatch",
+				bundledSha256: source.sha256 || "",
+				runtimeSha256: target && target.sha256 || "",
+			};
+		});
+		for (const target of runtime) {
+			if (!bundledByPath.has(target.path)) resources.push({ path: target.path, status: "runtime-only", runtimeSha256: target.sha256 || "" });
+		}
+		const bundledValid = this._validPortableSeed(bundledSkill, name);
+		const runtimeValid = this._validPortableSeed(runtimeSkill, name);
+		const missing = resources.filter((item) => item.status === "missing");
+		const mismatched = resources.filter((item) => item.status === "mismatch");
+		let status = "healthy";
+		if (error || !bundledValid) status = "bundled-error";
+		else if (!runtimeValid) status = fs.existsSync(runtimeDir) ? "runtime-invalid" : "runtime-missing";
+		else if (missing.length) status = "runtime-incomplete";
+		else if (mismatched.length) status = "runtime-modified";
+		return {
+			name, status, error,
+			bundled: { path: bundledDir, valid: bundledValid, files: bundled.length, fingerprint: inventoryFingerprint(bundled) },
+			runtime: { path: runtimeDir, valid: runtimeValid, files: runtime.length, fingerprint: inventoryFingerprint(runtime) },
+			resources,
+		};
+	}
+
+	repairScrollWorld(extensionPath) {
+		const name = "scroll-world-gpt-image";
+		const source = path.join(extensionPath, "prompts", "scroll-world");
+		const target = path.join(this.skillsDir, name);
+		const sourceSkill = path.join(source, "SKILL.md");
+		if (!this._validPortableSeed(sourceSkill, name)) throw new Error("bundled ScrollWorld contract is missing or invalid");
+		const nonce = `${process.pid}-${Date.now().toString(36)}`;
+		const temp = `${target}.repairing-${nonce}`;
+		const backup = path.join(this.dir, "backups", `${name}-${nonce}`);
+		let runtimeMeta = null;
+		try { runtimeMeta = JSON.parse(fs.readFileSync(path.join(target, ".felix-runtime.json"), "utf8")); } catch { }
+		const copy = (from, to) => {
+			fs.mkdirSync(to, { recursive: true });
+			for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+				const src = path.join(from, entry.name);
+				const dest = path.join(to, entry.name);
+				if (entry.isSymbolicLink()) throw new Error("bundled skill contains a symlink");
+				if (entry.isDirectory()) copy(src, dest);
+				else if (entry.isFile()) fs.copyFileSync(src, dest, fs.constants.COPYFILE_EXCL);
+			}
+		};
+		try {
+			copy(source, temp);
+			if (runtimeMeta) fs.writeFileSync(path.join(temp, ".felix-runtime.json"), JSON.stringify(runtimeMeta, null, 2) + "\n");
+			if (!this._validPortableSeed(path.join(temp, "SKILL.md"), name)) throw new Error("repaired contract failed validation");
+			if (fs.existsSync(target)) { fs.mkdirSync(path.dirname(backup), { recursive: true }); fs.renameSync(target, backup); }
+			fs.renameSync(temp, target);
+			this.log(`[skills] repaired ${name}; previous runtime saved at ${backup}`);
+			return { name, status: "repaired", target, backup: fs.existsSync(backup) ? backup : "" };
+		} catch (error) {
+			try { fs.rmSync(temp, { recursive: true, force: true }); } catch { }
+			if (!fs.existsSync(target) && fs.existsSync(backup)) {
+				try { fs.renameSync(backup, target); } catch { }
+			}
+			throw error;
+		}
 	}
 
 	_validPortableSeed(file, name) {
@@ -229,7 +362,21 @@ class FelixSkills {
 				meta[k] = k === "tags" ? v.split(",").map((s) => s.trim()).filter(Boolean) : v;
 			}
 		}
+		if (path.basename(file).toLowerCase() === "skill.md") {
+			try {
+				const runtimeMeta = JSON.parse(fs.readFileSync(path.join(path.dirname(file), ".felix-runtime.json"), "utf8"));
+				if (runtimeMeta && Number.isFinite(Number(runtimeMeta.uses))) meta.uses = String(Math.max(0, parseInt(runtimeMeta.uses, 10) || 0));
+				if (runtimeMeta && runtimeMeta.updatedAt) meta.updatedAt = String(runtimeMeta.updatedAt);
+			} catch { }
+		}
 		return { meta, body, file, skillDir: path.basename(file).toLowerCase() === "skill.md" ? path.dirname(file) : "" };
+	}
+
+	_writePortableRuntimeMeta(skill, meta) {
+		const file = path.join(skill.skillDir, ".felix-runtime.json");
+		const temp = file + `.tmp-${process.pid}-${Date.now().toString(36)}`;
+		fs.writeFileSync(temp, JSON.stringify({ uses: Number(meta.uses || 0), updatedAt: meta.updatedAt || new Date().toISOString() }, null, 2) + "\n");
+		fs.renameSync(temp, file);
 	}
 
 	// active skills only — versioned archives (*.vN.md) are excluded.
@@ -263,6 +410,15 @@ class FelixSkills {
 		if (!skills.length) return [];
 		const explicit = this._explicitMatches(queryText, skills);
 		if (explicit.length) {
+			const scrollWorld = explicit.filter((skill) => String(skill.meta.name || "") === "scroll-world-gpt-image");
+			if (scrollWorld.length && explicitScrollWorldRequest(queryText)) {
+				return scrollWorld.map((skill) => this._withRetrieval(skill, {
+					score: Number.MAX_SAFE_INTEGER,
+					reason: "explicit ScrollWorld route",
+					pinned: true,
+					exclusive: true,
+				}));
+			}
 			const rest = this._keywordRank(queryText, skills.filter((skill) => !explicit.includes(skill)));
 			return [...explicit.map((skill) => this._withRetrieval(skill, {
 				score: Number.MAX_SAFE_INTEGER,
@@ -291,7 +447,7 @@ class FelixSkills {
 			const name = String(skill.meta.name || "");
 			const compactName = name.toLowerCase().replace(/[\s_-]+/g, "");
 			if (compactName.length >= 4 && compact.includes(compactName)) return true;
-			return name === "scroll-world-gpt-image" && (compact.includes("scrollworld") || /סקול\s*וורלד/i.test(String(queryText || "")));
+			return name === "scroll-world-gpt-image" && explicitScrollWorldRequest(queryText);
 		});
 	}
 
@@ -322,7 +478,8 @@ class FelixSkills {
 				const before = skillProgress(s.meta);
 				const uses = (parseInt(s.meta.uses, 10) || 0) + 1;
 				const meta = { ...s.meta, uses, updatedAt: new Date().toISOString() };
-				this._writeFile(s.file, meta, s.body);
+				if (s.skillDir) this._writePortableRuntimeMeta(s, meta);
+				else this._writeFile(s.file, meta, s.body);
 				s.meta = meta;
 				const after = skillProgress(meta);
 				events.push({ item: s, before, after, leveledUp: after.level > before.level });
@@ -411,4 +568,4 @@ class FelixSkills {
 	}
 }
 
-module.exports = { FelixSkills, slug, tokenize, skillProgress, SKILL_LEVELS, migrateLegacyStores, SKILL_STORE_MIGRATION };
+module.exports = { FelixSkills, slug, tokenize, skillProgress, SKILL_LEVELS, migrateLegacyStores, SKILL_STORE_MIGRATION, explicitScrollWorldRequest, hasExclusiveScrollWorldRoute, composeSkillsPrompt };

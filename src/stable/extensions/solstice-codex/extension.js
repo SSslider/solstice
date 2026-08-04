@@ -12,7 +12,8 @@ const { PreviewServer, DevServer, detectDevServerUrl, hasFramework } = require("
 const { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, resolveGrokBinary, grokBundlePresent, killTree } = require("./grok");
 const { ClaudeProvider } = require("./claude");
 const { FleetBridge } = require("./fleetBridge");
-const { FelixSkills, skillProgress } = require("./felixSkills");
+const { FelixSkills, skillProgress, hasExclusiveScrollWorldRoute, composeSkillsPrompt } = require("./felixSkills");
+const { selectVerticalTemplates, buildVerticalTemplatePack } = require("./verticalTemplates");
 const { SkillInstaller } = require("./skillInstaller");
 const { captureBuild, projectContext, workspaceContext, captureAnnotation, ensureScheduledCheck, dueScheduledChecks } = require("./projectBrain");
 const { ManagerWorktrees } = require("./managerWorktrees");
@@ -104,6 +105,37 @@ const PLAN_FILE_RE = /[\\/]\.solstice[\\/]PLAN\.md$/i;
 function workspaceCwd() {
 	const f = vscode.workspace.workspaceFolders;
 	return f && f[0] ? f[0].uri.fsPath : undefined;
+}
+
+function digestText(value) {
+	return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function digestFile(file) {
+	try { return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"); } catch { return ""; }
+}
+
+function sourceCommit(extensionPath) {
+	let dir = path.resolve(extensionPath || ".");
+	for (let depth = 0; depth < 10; depth++) {
+		const git = path.join(dir, ".git");
+		try {
+			if (fs.statSync(git).isDirectory()) {
+				const head = fs.readFileSync(path.join(git, "HEAD"), "utf8").trim();
+				if (!head.startsWith("ref:")) return /^[a-f0-9]{40}$/i.test(head) ? head : "";
+				const ref = head.slice(5).trim();
+				const direct = path.join(git, ref);
+				if (fs.existsSync(direct)) return fs.readFileSync(direct, "utf8").trim();
+				const packed = fs.readFileSync(path.join(git, "packed-refs"), "utf8");
+				const line = packed.split("\n").find((value) => value.endsWith(` ${ref}`));
+				return line ? line.split(" ")[0] : "";
+			}
+		} catch { }
+		const parent = path.dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+	return "";
 }
 
 // roots a webview may load files from: bundled media + the workspace + the
@@ -250,18 +282,8 @@ function xfieldAnimatedWiringPlanText() { return promptText("xfield-animated-wir
 function toolboxRouterText() { return promptText("felix-toolbox-router.md"); }
 function gapAnalysisPlaybookText() { return promptText("gap-analysis-playbook.md"); }
 
-const VERTICAL_TEMPLATE_CATALOG = [
-	{ file: "verticals/medical-clinic.md", tags: ["medical", "clinic", "doctor", "dentist", "dental", "physio", "health", "רופא", "רופאה", "מרפאה", "שיניים", "דנטלי", "פיזיותרפיה", "בריאות"] },
-	{ file: "verticals/law-firm.md", tags: ["law", "lawyer", "legal", "attorney", "notary", "עו\"ד", "עו״ד", "עורך דין", "עורכת דין", "נוטריון", "משפט"] },
-	{ file: "verticals/barber-beauty.md", tags: ["barber", "salon", "beauty", "hair", "nails", "tattoo", "מספרה", "ספר גברים", "יופי", "שיער", "ציפורניים", "קעקוע"] },
-];
-
 function selectedVerticalTemplates(text) {
-	const t = String(text || "").toLowerCase();
-	const wantsLibrary = /\b(template|templates|vertical|verticals|sector|sectors|library|pack)\b|(?:תבנית|תבניות|ורטיקל|ורטיקלים|תחום|תחומים|ספרייה|חבילה)/i.test(t);
-	const hits = VERTICAL_TEMPLATE_CATALOG.filter((v) => v.tags.some((tag) => t.includes(String(tag).toLowerCase())));
-	const chosen = (wantsLibrary && !hits.length) ? VERTICAL_TEMPLATE_CATALOG : hits;
-	return chosen.map((v) => ({ ...v, body: promptText(v.file) })).filter((v) => v.body);
+	return buildVerticalTemplatePack(text, promptText).blocks;
 }
 
 function needsVerticalTemplatePack(text) {
@@ -271,8 +293,7 @@ function needsVerticalTemplatePack(text) {
 }
 
 function verticalTemplatePackText(text) {
-	const blocks = selectedVerticalTemplates(text);
-	return blocks.map((b) => b.body).join("\n\n---\n\n");
+	return buildVerticalTemplatePack(text, promptText).text;
 }
 
 function needsGapAnalysis(text) {
@@ -291,7 +312,7 @@ function needsExplicitToolboxRouter(text) {
 function appendResearchContract(text) {
 	let out = String(text || "");
 	const addResearchContract = needsResearchContract(out);
-	const addAnimatedKit = needsAnimatedWebsiteKit(out);
+	const addAnimatedKit = needsAnimatedWebsiteKit(out) && !hasExclusiveScrollWorldRoute(out);
 	const addVerticalPack = needsVerticalTemplatePack(out);
 	const addGapAnalysis = needsGapAnalysis(out);
 	const addToolboxRouter = needsExplicitToolboxRouter(out);
@@ -378,6 +399,12 @@ class AgentController {
 		this.lastDiff = "";
 		this.webview = null;           // sidebar webview
 		this.manager = null;           // manager panel webview
+		this.skillsSeedResult = null;
+		this.skillsInitError = "";
+		this._lastSkillRoute = null;
+		this._lastVerticalRoute = null;
+		this._lastPromptDiagnostics = null;
+		this._lastDeveloperInstructions = null;
 		this.threads = new Map();      // threadId -> {id, preview, status, activeTurnId, plan, diff, updatedAt}
 		this.loaded = new Set();       // threadIds resumed/started in this server process
 		this.pendingApprovals = new Map(); // approvalKey -> { resolve(decision), creditGate }
@@ -450,6 +477,7 @@ class AgentController {
 				log: (m) => this.output.append(m + "\n"),
 			});
 			const seeded = this.skills.seedFrom(context.extensionPath);
+			this.skillsSeedResult = seeded;
 			if (seeded && seeded.scrollWorld && seeded.scrollWorld.status === "repaired") {
 				vscode.window.showInformationMessage("Felix self-healed the ScrollWorld skill in global storage.");
 			} else if (seeded && seeded.scrollWorld && seeded.scrollWorld.status === "failed") {
@@ -459,7 +487,11 @@ class AgentController {
 				skillsDir: this.skills.skillsDir,
 				log: (m) => this.output.append(m + "\n"),
 			});
-		} catch (e) { this.output.append("[skills] init failed: " + (e && e.message || e) + "\n"); }
+		} catch (e) {
+			this.skillsInitError = String(e && e.message || e);
+			this.output.append("[skills] init failed: " + this.skillsInitError + "\n");
+			vscode.window.showErrorMessage("Felix Skills failed to initialize: " + this.skillsInitError);
+		}
 	}
 
 	startScheduledChecks() {
@@ -2564,6 +2596,7 @@ self.addEventListener("fetch", (e) => {
 		const cwd = workspaceCwd();
 		if (!cwd) { vscode.window.showWarningMessage("Solstice: open a folder first."); return; }
 		const prompt = appendResearchContract(this.withBrandPack(text, cwd));
+		this.recordSkillPrompt("claude", text, prompt);
 		if (!this.claude) {
 			const selected = MODEL_REGISTRY[this.providerKey()] || {};
 			const devServerToolEnv = await this.devServerToolEnv();
@@ -2589,6 +2622,7 @@ self.addEventListener("fetch", (e) => {
 		const cwd = workspaceCwd();
 		if (!cwd) { vscode.window.showWarningMessage("Solstice: open a folder first."); return; }
 		const prompt = appendResearchContract(this.withBrandPack(text, cwd));
+		this.recordSkillPrompt("grok", rawText, prompt);
 		if (!this.grok) {
 			const devServerToolEnv = await this.devServerToolEnv();
 			this.grok = new GrokProvider({
@@ -3079,6 +3113,7 @@ self.addEventListener("fetch", (e) => {
 
 	async startThread(text = "", cwd = workspaceCwd()) {
 		const developerInstructions = this.developerInstructions(text, cwd);
+		this._lastDeveloperInstructions = { bytes: Buffer.byteLength(developerInstructions), sha256: digestText(developerInstructions) };
 		this.logPreambleSize("codex", developerInstructions);
 		const client = await this.ensureClient();
 		const th = await client.request("thread/start", {
@@ -3112,6 +3147,7 @@ self.addEventListener("fetch", (e) => {
 	async startTurn(threadId, text) {
 		const root = this.brandPackRootForThread(threadId);
 		const prompt = appendResearchContract(this.withBrandPack(text, root));
+		this.recordSkillPrompt("codex", text, prompt);
 		const client = await this.ensureClient();
 		await this.ensureRunnable(threadId);
 		const th = this.upsertThread({ id: threadId });
@@ -3167,6 +3203,7 @@ self.addEventListener("fetch", (e) => {
 		}
 		if (text && !String(text).includes("[FELIX_SKILLS]")) {
 			const hint = await this.skillsHint(text);
+			if (this._skillsDispatchBlocked) return;
 			if (hint) text = hint + text;
 		}
 		// remember the last prompt so auto-failover can transparently re-run it
@@ -4427,19 +4464,122 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	// ---- self-improvement loop (Phase 6) -----------------------------------
+	recordSkillPrompt(provider, input, finalPrompt) {
+		const prompt = String(finalPrompt || "");
+		const source = String(input || "");
+		this._lastPromptDiagnostics = {
+			at: new Date().toISOString(), provider: String(provider || "unknown"),
+			inputBytes: Buffer.byteLength(source), inputSha256: digestText(source),
+			finalPromptBytes: Buffer.byteLength(prompt), finalPromptSha256: digestText(prompt),
+			developerInstructionsBytes: this._lastDeveloperInstructions ? this._lastDeveloperInstructions.bytes : 0,
+			developerInstructionsSha256: this._lastDeveloperInstructions ? this._lastDeveloperInstructions.sha256 : "",
+		};
+		pushSkillsPanel(this);
+	}
+
+	skillRuntimeDiagnostics() {
+		let runtime = null;
+		let items = [];
+		let error = this.skillsInitError || "";
+		try {
+			if (this.skills) {
+				runtime = this.skills.runtimeDiagnostics(this.context.extensionPath);
+				items = this.skills.list().map((item) => item.meta.name || path.basename(item.file || ""));
+			} else if (!error) error = "Felix Skills store is unavailable in this session.";
+		} catch (e) { error = String(e && e.message || e); }
+		let extensionVersion = "";
+		try { extensionVersion = String(this.context.extension && this.context.extension.packageJSON && this.context.extension.packageJSON.version || ""); } catch { }
+		return {
+			generatedAt: new Date().toISOString(),
+			build: {
+				productVersion: this.versionLabel() || "unknown",
+				extensionVersion: extensionVersion || "unknown",
+				sourceCommit: sourceCommit(this.context.extensionPath) || "unavailable-in-packaged-build",
+				extensionBundleSha256: digestFile(path.join(this.context.extensionPath, "extension.js")),
+				extensionPath: this.context.extensionPath,
+			},
+			storage: {
+				globalStoragePath: this.context.globalStorageUri && this.context.globalStorageUri.fsPath || "",
+				skillsPath: this.skills && this.skills.skillsDir || "",
+			},
+			seed: this.skillsSeedResult,
+			runtime,
+			list: { ok: !error, count: items.length, names: items, error },
+			selectedRoute: this._lastSkillRoute,
+			verticalRoute: this._lastVerticalRoute,
+			prompt: this._lastPromptDiagnostics,
+		};
+	}
+
+	showSkillsError(message) {
+		const text = String(message || "Felix Skills failed");
+		this.skillsInitError = text;
+		this.output.append("[skills] " + text + "\n");
+		if (this._skillsLastVisibleError !== text) {
+			this._skillsLastVisibleError = text;
+			vscode.window.showErrorMessage(text, "Open Skills").then((choice) => {
+				if (choice === "Open Skills") vscode.commands.executeCommand("solstice.agent.openSkills");
+			});
+		}
+		pushSkillsPanel(this);
+	}
+
 	// Retrieval at dispatch time: pull skills relevant to the task and return a
-	// prompt block to prepend. Read-only and best-effort — never blocks a build.
+	// prompt block to prepend. Explicit ScrollWorld is a fail-loud exclusive route
+	// with its complete portable contract; generic retrieval remains bounded.
 	async skillsHint(task) {
 		try {
-			if (!this.skills) return "";
+			this._skillsDispatchBlocked = false;
+			const vertical = selectVerticalTemplates(task);
+			this._lastVerticalRoute = {
+				at: new Date().toISOString(), requested: vertical.requested,
+				selected: vertical.templates.map((item) => item.file), reason: vertical.reason,
+			};
+			if (vertical.reason === "no confident vertical match") {
+				this.announceAgentMessage("🧭 Vertical: no confident vertical match — no vertical template was injected.");
+			}
+			if (!this.skills) {
+				this.showSkillsError("Felix Skills is unavailable; the requested route cannot be verified.");
+				if (hasExclusiveScrollWorldRoute(task)) this._skillsDispatchBlocked = true;
+				return "";
+			}
+			const runtimeItems = this.skills.list();
+			if (!runtimeItems.length) {
+				this.showSkillsError("Felix Skills runtime store is empty. Open Skills to inspect and repair the installation.");
+				if (hasExclusiveScrollWorldRoute(task)) this._skillsDispatchBlocked = true;
+				return "";
+			}
+			if (hasExclusiveScrollWorldRoute(task)) {
+				const health = this.skills.runtimeDiagnostics(this.context.extensionPath);
+				const listed = runtimeItems.some((item) => item.meta.name === "scroll-world-gpt-image");
+				if (!listed || health.status !== "healthy") {
+					this._skillsDispatchBlocked = true;
+					const message = `ScrollWorld route blocked: runtime status is ${listed ? health.status : "not-listed"}. Open Skills and run Repair ScrollWorld.`;
+					this.showSkillsError(message);
+					this.announceAgentMessage("⛔ " + message);
+					return "";
+				}
+			}
 			const hits = await this.skills.retrieve(task, 4);
-			if (!hits.length) return "";
+			if (!hits.length) {
+				this._lastSkillRoute = { at: new Date().toISOString(), exclusive: false, selected: [], reason: "no relevant skill" };
+				pushSkillsPanel(this);
+				return "";
+			}
+			const composed = composeSkillsPrompt(hits);
+			const exclusive = composed.exclusive;
 			const useEvents = this.skills.recordUse(hits); // proven skills float up over time
 			const reasons = hits.map((h) => {
 				const selection = h.retrieval || {};
 				return `${h.meta.name || "skill"} — ${selection.pinned ? "pinned by explicit name" : selection.reason || "relevant"}`;
 			});
-			this.announceAgentMessage("🧠 Skills selected: " + reasons.join(" · ") + ". To replace: say “use skill <name>” / “השתמש בסקיל <שם>”.");
+			this._lastSkillRoute = {
+				at: new Date().toISOString(), exclusive,
+				selected: hits.map((hit) => ({ name: hit.meta.name || "skill", reason: hit.retrieval && hit.retrieval.reason || "relevant", pinned: !!(hit.retrieval && hit.retrieval.pinned) })),
+				injectedBytes: composed.injectedBytes,
+			};
+			if (exclusive) this.announceAgentMessage("🧭 Route selected: ScrollWorld · exclusive · full SKILL.md contract injected · Animated Website Kit suppressed.");
+			else this.announceAgentMessage("🧠 Skills selected: " + reasons.join(" · ") + ". To replace: say “use skill <name>” / “השתמש בסקיל <שם>”.");
 			for (const event of useEvents) {
 				if (!event.leveledUp) continue;
 				const name = event.item.meta.name || "skill";
@@ -4448,13 +4588,12 @@ self.addEventListener("fetch", (e) => {
 				vscode.window.showInformationMessage(message);
 			}
 			pushSkillsPanel(this);
-			const blocks = hits.map((h) =>
-				"• " + (h.meta.kind === "lesson" ? "⚠️ לקח: " : "") + (h.meta.name || "skill") +
-				(h.meta.tags && h.meta.tags.length ? " [" + h.meta.tags.join(", ") + "]" : "") +
-				(h.skillDir ? "\nResources: " + h.skillDir + " (read SKILL.md and open its referenced files before acting)" : "") +
-				"\n" + h.body.slice(0, 500).trim());
-			return "[FELIX_SKILLS]\n🧠 ידע נצבר רלוונטי (skills מבניות מאומתות + לקחים מטעויות עבר — השתמש, ואל תחזור על לקח שסומן ⚠️):\n" + blocks.join("\n\n") + "\n[/FELIX_SKILLS]\n\n---\n\n";
-		} catch { return ""; }
+			return composed.text;
+		} catch (error) {
+			if (hasExclusiveScrollWorldRoute(task)) this._skillsDispatchBlocked = true;
+			this.showSkillsError("Felix Skills retrieval failed: " + String(error && error.message || error));
+			return "";
+		}
 	}
 
 	// crude sector/tag inference from the task text (bilingual keywords).
@@ -4892,6 +5031,11 @@ self.addEventListener("fetch", (e) => {
 				this.postFleetActivity(agentId, "working", "משגר בנייה ל-Solstice: " + task.slice(0, 50));
 				// Phase 6 retrieval: prepend relevant accrued skills to the task prompt.
 				const hint = await this.skillsHint(task);
+				if (this._skillsDispatchBlocked) {
+					this.sendBuildStatus("failed", { text: "ScrollWorld runtime route is unavailable; repair required before dispatch." });
+					this.postFleetActivity(agentId, "error", "ScrollWorld runtime route blocked; repair required");
+					return;
+				}
 				const text = hint + `\u{1f4e5} \u05de\u05e9\u05d9\u05de\u05d4 \u05de-${name} (\u05e6\u05d9 \u05d4\u05e1\u05d5\u05db\u05e0\u05d9\u05dd):\n\n${task}`;
 				// show the exact prompt the agent is writing into the Solstice builder
 				if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "flowGuidance", from: agentId, prompt: text });
@@ -5284,7 +5428,11 @@ function pushSkillsPanel(controller) {
 			...(progress || {}),
 		};
 	};
-	skillsPanel.webview.postMessage({ type: "skills", items: [...skills.map((x) => map(x, "skill")), ...lessons.map((x) => map(x, "lesson"))] });
+	skillsPanel.webview.postMessage({
+		type: "skills",
+		items: [...skills.map((x) => map(x, "skill")), ...lessons.map((x) => map(x, "lesson"))],
+		diagnostics: controller.skillRuntimeDiagnostics(),
+	});
 }
 function openSkills(controller, extensionUri) {
 	if (skillsPanel) { skillsPanel.reveal(vscode.ViewColumn.One); return; }
@@ -5294,6 +5442,48 @@ function openSkills(controller, extensionUri) {
 	skillsPanel.webview.html = mediaHtml(skillsPanel.webview, extensionUri, "skills.js", "skills.css");
 	skillsPanel.webview.onDidReceiveMessage(async (m) => {
 		if (m.type === "ready" || m.type === "refresh") { pushSkillsPanel(controller); return; }
+		if (m.type === "exportDiagnostics") {
+			try {
+				const diagnostics = controller.skillRuntimeDiagnostics();
+				const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+				const base = workspaceCwd() || controller.context.globalStorageUri.fsPath;
+				const uri = await vscode.window.showSaveDialog({
+					defaultUri: vscode.Uri.file(path.join(base, ".solstice", `felix-runtime-diagnostics-${stamp}.json`)),
+					filters: { JSON: ["json"] },
+					saveLabel: "Export diagnostics",
+				});
+				if (!uri) return;
+				fs.mkdirSync(path.dirname(uri.fsPath), { recursive: true });
+				fs.writeFileSync(uri.fsPath, JSON.stringify(diagnostics, null, 2) + "\n", "utf8");
+				skillsPanel.webview.postMessage({ type: "diagnosticsExported", path: uri.fsPath });
+				vscode.window.showInformationMessage("Felix runtime diagnostics exported.", "Open file").then((choice) => {
+					if (choice === "Open file") vscode.commands.executeCommand("vscode.open", uri);
+				});
+			} catch (error) {
+				skillsPanel.webview.postMessage({ type: "diagnosticsError", message: String(error && error.message || error) });
+			}
+			return;
+		}
+		if (m.type === "repairScrollWorld") {
+			try {
+				if (!controller.skills) throw new Error("Felix Skills store is unavailable.");
+				const accepted = await vscode.window.showWarningMessage(
+					"Repair ScrollWorld from this installed Solstice bundle? The current runtime directory will be preserved as a backup.",
+					{ modal: true }, "Repair ScrollWorld"
+				);
+				if (accepted !== "Repair ScrollWorld") return;
+				const repaired = controller.skills.repairScrollWorld(controller.context.extensionPath);
+				controller.skillsSeedResult = { ...(controller.skillsSeedResult || {}), scrollWorld: repaired };
+				controller.skillsInitError = "";
+				controller._skillsLastVisibleError = "";
+				pushSkillsPanel(controller);
+				skillsPanel.webview.postMessage({ type: "repairDone", backup: repaired.backup || "" });
+				vscode.window.showInformationMessage("ScrollWorld runtime contract repaired and re-verified.");
+			} catch (error) {
+				controller.showSkillsError("ScrollWorld repair failed: " + String(error && error.message || error));
+			}
+			return;
+		}
 		if (!controller.skillInstaller) {
 			skillsPanel.webview.postMessage({ type: "installError", message: "Skill installer is unavailable in this session." });
 			return;
