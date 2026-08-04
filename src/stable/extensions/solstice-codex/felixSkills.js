@@ -53,9 +53,11 @@ function explicitScrollWorldRequest(text) {
 	return compact.includes("scrollworld") || /סקול\s*וורלד/i.test(raw);
 }
 
+// Exclusive suppression (Animated Kit silence + fail-closed) requires the
+// unambiguous route marker only. A bare mention of "ScrollWorld" may still
+// pin/rank via explicitScrollWorldRequest — never suppress alternatives.
 function hasExclusiveScrollWorldRoute(text) {
-	return /\[FELIX_ROUTE\s+name="scroll-world-gpt-image"\s+exclusive="true"\]/.test(String(text || ""))
-		|| explicitScrollWorldRequest(text);
+	return /\[FELIX_ROUTE\s+name="scroll-world-gpt-image"\s+exclusive="true"\]/.test(String(text || ""));
 }
 
 function composeSkillsPrompt(hits) {

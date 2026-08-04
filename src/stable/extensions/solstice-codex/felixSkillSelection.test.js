@@ -4,7 +4,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { FelixSkills, composeSkillsPrompt, hasExclusiveScrollWorldRoute } = require("./felixSkills");
+const { FelixSkills, composeSkillsPrompt, explicitScrollWorldRequest, hasExclusiveScrollWorldRoute } = require("./felixSkills");
 
 let checks = 0;
 function ok(value, message) { checks++; assert.ok(value, message); }
@@ -42,12 +42,33 @@ function ok(value, message) { checks++; assert.ok(value, message); }
 		const composed = composeSkillsPrompt(hits);
 		ok(composed.exclusive && composed.text.startsWith("[FELIX_ROUTE name=\"scroll-world-gpt-image\" exclusive=\"true\"]"), "exclusive prompt carries an unambiguous route marker for downstream contract suppression");
 		ok(composed.injectedBytes === Buffer.byteLength(hits[0].body.trim()) && composed.text.includes("No copied website source when visual references are used."), "explicit route injects the complete SKILL.md contract, including its final boundary");
-		ok(hasExclusiveScrollWorldRoute(composed.text) && hasExclusiveScrollWorldRoute("בנה אתר ScrollWorld מונפש"), "animated contract routing recognizes both the raw explicit request and composed route marker");
+		ok(hasExclusiveScrollWorldRoute(composed.text), "composed route marker still activates exclusive suppression downstream");
+		ok(!hasExclusiveScrollWorldRoute("בנה אתר ScrollWorld מונפש"), "raw ScrollWorld mention is ranking-only — never exclusive without the FELIX_ROUTE marker");
 		const bundledContract = fs.readFileSync(path.join(__dirname, "prompts", "scroll-world", "SKILL.md"), "utf8");
 		skills.recordUse(explicitHits);
 		ok(fs.readFileSync(path.join(partial, "SKILL.md"), "utf8") === bundledContract, "recording runtime use does not rewrite or dilute the portable SKILL.md contract");
 		ok(skills.list().find((item) => item.meta.name === "scroll-world-gpt-image").meta.uses === "1", "portable usage metadata persists in a sidecar and remains visible to ranking");
 		ok(skills.runtimeDiagnostics(__dirname).status === "healthy", "managed usage metadata does not create a false bundled/runtime drift alarm");
+
+		// Orion 8-case intent matrix: exclusive ONLY on the explicit marker.
+		// Verbal mention / negation / question / comparison / critique → not exclusive.
+		const exclusiveMarker = '[FELIX_ROUTE name="scroll-world-gpt-image" exclusive="true"]';
+		const nonExclusiveMentions = [
+			"בנה לי אתר עם ScrollWorld",
+			"אל תשתמש ב-ScrollWorld, רוצה פשוט",
+			"do NOT use ScrollWorld for this",
+			"למה ScrollWorld נכשל אתמול?",
+			"מה ההבדל בין ScrollWorld ל-GSAP?",
+			"ראיתי אתר עם scroll world, אבל תבנה לי לנדינג פשוט",
+			"ScrollWorld היה רעיון גרוע",
+		];
+		ok(hasExclusiveScrollWorldRoute(exclusiveMarker), "case 1/8: explicit FELIX_ROUTE marker remains exclusive");
+		for (const request of nonExclusiveMentions) {
+			ok(!hasExclusiveScrollWorldRoute(request), `non-exclusive mention does not suppress Animated Kit: ${request}`);
+		}
+		ok(!hasExclusiveScrollWorldRoute("בנה לי אתר אנימציה יפה"), "plain animation request stays non-exclusive");
+		// ranking still pins on an explicit name ask (separate from exclusive gate)
+		ok(explicitScrollWorldRequest("בנה לי אתר עם ScrollWorld") && !hasExclusiveScrollWorldRoute("בנה לי אתר עם ScrollWorld"), "mention still ranks via explicitScrollWorldRequest but never exclusive-suppresses");
 
 		hits = await skills.retrieve("בנה אתר סקול וורלד למועדון כושר", 4);
 		ok(hits[0].meta.name === "scroll-world-gpt-image" && hits[0].retrieval.pinned, "Hebrew ScrollWorld alias pins the same skill");
