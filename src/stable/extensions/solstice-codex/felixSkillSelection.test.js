@@ -50,8 +50,28 @@ function ok(value, message) { checks++; assert.ok(value, message); }
 		ok(skills.list().find((item) => item.meta.name === "scroll-world-gpt-image").meta.uses === "1", "portable usage metadata persists in a sidecar and remains visible to ranking");
 		ok(skills.runtimeDiagnostics(__dirname).status === "healthy", "managed usage metadata does not create a false bundled/runtime drift alarm");
 
-		// Orion 8-case intent matrix: exclusive ONLY on the explicit marker.
-		// Verbal mention / negation / question / comparison / critique → not exclusive.
+		// The marker reader consumes composed prompt output. Intent acceptance must
+		// exercise explicitScrollWorldRequest(), which is the real user-text gate.
+		const intentCases = [
+			["בנה לי אתר עם ScrollWorld", true],
+			["אל תשתמש ב-ScrollWorld, רוצה פשוט", false],
+			["do NOT use ScrollWorld for this", false],
+			["למה ScrollWorld נכשל אתמול?", false],
+			["מה ההבדל בין ScrollWorld ל-GSAP?", false],
+			["ראיתי אתר עם scroll world, אבל תבנה לי לנדינג פשוט", false],
+			["ScrollWorld היה רעיון גרוע", false],
+			["בנה לי אתר אנימציה יפה", false],
+			["", false],
+			["build a ScrollWorld site for a fitness coach", true],
+		];
+		for (const [request, expected] of intentCases) {
+			ok(explicitScrollWorldRequest(request) === expected,
+				`real intent gate returns ${expected} for: ${request || "<empty>"}`);
+		}
+
+		// The marker remains an output-only contract for downstream suppression.
+		// Expanded negation pack (Orion 2026-08-05): בלי / במקום / חוץ מ- / rather than / skip
+		// — locks the invariant at the real user-text decision point.
 		const exclusiveMarker = '[FELIX_ROUTE name="scroll-world-gpt-image" exclusive="true"]';
 		const nonExclusiveMentions = [
 			"בנה לי אתר עם ScrollWorld",
@@ -61,14 +81,42 @@ function ok(value, message) { checks++; assert.ok(value, message); }
 			"מה ההבדל בין ScrollWorld ל-GSAP?",
 			"ראיתי אתר עם scroll world, אבל תבנה לי לנדינג פשוט",
 			"ScrollWorld היה רעיון גרוע",
+			// additional negation phrasings — surface form must never flip exclusive
+			"בנה אתר בלי ScrollWorld",
+			"בלי ScrollWorld, רק לנדינג נקי",
+			"במקום ScrollWorld תבנה לי לנדינג רגיל",
+			"תבנה GSAP במקום ScrollWorld",
+			"חוץ מ-ScrollWorld, כל דבר אחר בסדר",
+			"הכל חוץ מ-ScrollWorld",
+			"use simple animation rather than ScrollWorld",
+			"rather than ScrollWorld, keep it a plain landing",
+			"skip ScrollWorld, just a simple landing",
+			"please skip ScrollWorld for this task",
 		];
-		ok(hasExclusiveScrollWorldRoute(exclusiveMarker), "case 1/8: explicit FELIX_ROUTE marker remains exclusive");
+		ok(hasExclusiveScrollWorldRoute(exclusiveMarker), "case 1: explicit FELIX_ROUTE marker remains exclusive");
 		for (const request of nonExclusiveMentions) {
 			ok(!hasExclusiveScrollWorldRoute(request), `non-exclusive mention does not suppress Animated Kit: ${request}`);
 		}
 		ok(!hasExclusiveScrollWorldRoute("בנה לי אתר אנימציה יפה"), "plain animation request stays non-exclusive");
-		// ranking still pins on an explicit name ask (separate from exclusive gate)
-		ok(explicitScrollWorldRequest("בנה לי אתר עם ScrollWorld") && !hasExclusiveScrollWorldRoute("בנה לי אתר עם ScrollWorld"), "mention still ranks via explicitScrollWorldRequest but never exclusive-suppresses");
+		ok(explicitScrollWorldRequest("בנה לי אתר עם ScrollWorld") && !hasExclusiveScrollWorldRoute("בנה לי אתר עם ScrollWorld"), "direct build request selects ScrollWorld while raw user text remains marker-free");
+		// Negation may remain eligible for ordinary semantic ranking, but it must
+		// never pin the skill or create an exclusive route marker.
+		const negationMentionsRankOnly = [
+			"בנה אתר בלי ScrollWorld",
+			"במקום ScrollWorld תבנה לי לנדינג רגיל",
+			"חוץ מ-ScrollWorld, כל דבר אחר בסדר",
+			"use simple animation rather than ScrollWorld",
+			"skip ScrollWorld, just a simple landing",
+		];
+		for (const request of negationMentionsRankOnly) {
+			ok(!explicitScrollWorldRequest(request) && !hasExclusiveScrollWorldRoute(request),
+				`negation cannot pin or exclusive-suppress: ${request}`);
+		}
+
+		hits = await skills.retrieve("אל תשתמש ב-ScrollWorld, רוצה משהו פשוט", 4);
+		const negatedPrompt = composeSkillsPrompt(hits);
+		ok(!hits.some((hit) => hit.retrieval && hit.retrieval.exclusive), "negated request does not create an exclusive retrieval hit");
+		ok(!negatedPrompt.exclusive && !hasExclusiveScrollWorldRoute(negatedPrompt.text), "negated request stays non-exclusive through retrieve and compose");
 
 		hits = await skills.retrieve("בנה אתר סקול וורלד למועדון כושר", 4);
 		ok(hits[0].meta.name === "scroll-world-gpt-image" && hits[0].retrieval.pinned, "Hebrew ScrollWorld alias pins the same skill");

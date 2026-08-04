@@ -49,8 +49,26 @@ function inventoryFingerprint(files) {
 
 function explicitScrollWorldRequest(text) {
 	const raw = String(text || "");
-	const compact = raw.toLowerCase().replace(/[\s_-]+/g, "");
-	return compact.includes("scrollworld") || /סקול\s*וורלד/i.test(raw);
+	const mention = /scroll[\s_-]*world/i;
+	const hebrewMention = /סקול\s*וורלד/i;
+	if (!mention.test(raw) && !hebrewMention.test(raw)) return false;
+
+	// A named skill becomes exclusive only for a direct build request. Merely
+	// mentioning it in a question, comparison or critique stays on normal
+	// ranking and must never suppress the generic animation route.
+	const buildBeforeMention = /\b(?:build|create|make)\b[^.!?\n]{0,80}scroll[\s_-]*world/i.test(raw)
+		|| /(?:^|[\s,;:])(?:בנה|תבנה|צור)(?=$|[\s,;:])[\s\S]{0,80}?(?:scroll[\s_-]*world|סקול\s*וורלד)/i.test(raw);
+	if (!buildBeforeMention) return false;
+
+	return !negatedScrollWorldRequest(raw);
+}
+
+function negatedScrollWorldRequest(text) {
+	const raw = String(text || "");
+	const named = "(?:scroll[\\s_-]*world|סקול\\s*וורלד)";
+	const hebrewNegation = new RegExp("(?:אל\\s+תשתמש(?:ו)?|בלי|לא\\s+רוצה|במקום|חוץ\\s*מ[-־]?)\\s*(?:ב[-־]?)?" + named, "i");
+	const englishNegation = new RegExp("(?:\\b(?:do\\s+not|don't|dont|not)\\b[^.!?\\n]{0,40}|\\b(?:without|instead\\s+of|rather\\s+than|skip|avoid)\\s+(?:using\\s+)?)" + named, "i");
+	return hebrewNegation.test(raw) || englishNegation.test(raw);
 }
 
 // Exclusive suppression (Animated Kit silence + fail-closed) requires the
