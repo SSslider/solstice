@@ -47,28 +47,25 @@ function inventoryFingerprint(files) {
 	return crypto.createHash("sha256").update(JSON.stringify(files)).digest("hex");
 }
 
-function explicitScrollWorldRequest(text) {
-	const raw = String(text || "");
-	const mention = /scroll[\s_-]*world/i;
-	const hebrewMention = /סקול\s*וורלד/i;
-	if (!mention.test(raw) && !hebrewMention.test(raw)) return false;
-
-	// A named skill becomes exclusive only for a direct build request. Merely
-	// mentioning it in a question, comparison or critique stays on normal
-	// ranking and must never suppress the generic animation route.
-	const buildBeforeMention = /\b(?:build|create|make)\b[^.!?\n]{0,80}scroll[\s_-]*world/i.test(raw)
-		|| /(?:^|[\s,;:])(?:בנה|תבנה|צור)(?=$|[\s,;:])[\s\S]{0,80}?(?:scroll[\s_-]*world|סקול\s*וורלד)/i.test(raw);
-	if (!buildBeforeMention) return false;
-
-	return !negatedScrollWorldRequest(raw);
-}
-
+// "Do not use X" must never route to X. A closed list of build verbs was tried
+// on 05/08 and rejected 8 of 12 legitimate requests — "תשתמש ב-ScrollWorld
+// בבקשה" and "use ScrollWorld for this project" both missed, which is the
+// two-week generic-site bug in a new form. So mention is the trigger and
+// negation the only veto: a missed request fails silently, while an unwanted
+// route is visible and recovers on retry.
 function negatedScrollWorldRequest(text) {
 	const raw = String(text || "");
 	const named = "(?:scroll[\\s_-]*world|סקול\\s*וורלד)";
 	const hebrewNegation = new RegExp("(?:אל\\s+תשתמש(?:ו)?|בלי|לא\\s+רוצה|במקום|חוץ\\s*מ[-־]?)\\s*(?:ב[-־]?)?" + named, "i");
 	const englishNegation = new RegExp("(?:\\b(?:do\\s+not|don't|dont|not)\\b[^.!?\\n]{0,40}|\\b(?:without|instead\\s+of|rather\\s+than|skip|avoid)\\s+(?:using\\s+)?)" + named, "i");
 	return hebrewNegation.test(raw) || englishNegation.test(raw);
+}
+
+function explicitScrollWorldRequest(text) {
+	const raw = String(text || "");
+	const mention = /scroll[\s_-]*world/i.test(raw) || /סקול\s*וורלד/i.test(raw);
+	if (!mention) return false;
+	return !negatedScrollWorldRequest(raw);
 }
 
 // Exclusive suppression (Animated Kit silence + fail-closed) requires the
@@ -430,15 +427,6 @@ class FelixSkills {
 		if (!skills.length) return [];
 		const explicit = this._explicitMatches(queryText, skills);
 		if (explicit.length) {
-			const scrollWorld = explicit.filter((skill) => String(skill.meta.name || "") === "scroll-world-gpt-image");
-			if (scrollWorld.length && explicitScrollWorldRequest(queryText)) {
-				return scrollWorld.map((skill) => this._withRetrieval(skill, {
-					score: Number.MAX_SAFE_INTEGER,
-					reason: "explicit ScrollWorld route",
-					pinned: true,
-					exclusive: true,
-				}));
-			}
 			const rest = this._keywordRank(queryText, skills.filter((skill) => !explicit.includes(skill)));
 			return [...explicit.map((skill) => this._withRetrieval(skill, {
 				score: Number.MAX_SAFE_INTEGER,
