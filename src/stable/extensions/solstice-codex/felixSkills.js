@@ -427,6 +427,21 @@ class FelixSkills {
 		if (!skills.length) return [];
 		const explicit = this._explicitMatches(queryText, skills);
 		if (explicit.length) {
+			// Asking for ScrollWorld by name is a ROUTE, not just a ranking boost.
+			// Without this branch composeSkillsPrompt truncates it to 500 chars and
+			// never emits the marker, so the generic Animated Website Kit is injected
+			// whole beside it — the exact behaviour that made every "ScrollWorld"
+			// build come out looking like an ordinary animated site for two weeks.
+			// The assignment existed, was dropped in e076d28, and nothing replaced it.
+			const scrollWorld = explicit.filter((skill) => String(skill.meta.name || "") === "scroll-world-gpt-image");
+			if (scrollWorld.length && explicitScrollWorldRequest(queryText)) {
+				return scrollWorld.map((skill) => this._withRetrieval(skill, {
+					score: Number.MAX_SAFE_INTEGER,
+					reason: "explicit ScrollWorld route",
+					pinned: true,
+					exclusive: true,
+				}));
+			}
 			const rest = this._keywordRank(queryText, skills.filter((skill) => !explicit.includes(skill)));
 			return [...explicit.map((skill) => this._withRetrieval(skill, {
 				score: Number.MAX_SAFE_INTEGER,

@@ -37,12 +37,17 @@ function ok(value, message) { checks++; assert.ok(value, message); }
 		let hits = await skills.retrieve("בנה אתר ScrollWorld למועדון כושר", 4);
 		const explicitHits = hits;
 		ok(hits[0].meta.name === "scroll-world-gpt-image", "explicit ScrollWorld name pins the skill above a heavily-used older skill");
-		ok(hits[0].retrieval.pinned && !hits[0].retrieval.exclusive, "explicit ScrollWorld mention pins ranking without creating an exclusive route");
-		ok(hits[0].retrieval.reason === "explicit skill name", "explicit selection carries a human-readable ranking reason");
+		// Asking for the skill by name is a route, not a ranking hint. The earlier
+		// "pins without creating an exclusive route" contract is unreachable in
+		// practice: nothing else in the extension produces the FELIX_ROUTE marker,
+		// so under it ScrollWorld could only ever receive a 500-char excerpt while
+		// the generic Animated Website Kit was injected whole — the two-week bug.
+		ok(hits[0].retrieval.pinned && hits[0].retrieval.exclusive, "explicit ScrollWorld request takes the exclusive route, not just a ranking boost");
+		ok(hits[0].retrieval.reason === "explicit ScrollWorld route", "routed selection carries a human-readable reason");
 		const composed = composeSkillsPrompt(hits);
-		ok(!composed.exclusive && !hasExclusiveScrollWorldRoute(composed.text), "ranked ScrollWorld mention does not emit an exclusive route marker");
-		ok(composed.injectedBytes > 0, "ranked ScrollWorld selection still injects relevant skill context");
-		ok(!hasExclusiveScrollWorldRoute("בנה אתר ScrollWorld מונפש"), "raw ScrollWorld mention is ranking-only — never exclusive without the FELIX_ROUTE marker");
+		ok(composed.exclusive && hasExclusiveScrollWorldRoute(composed.text), "routed ScrollWorld emits the marker that suppresses the generic kit");
+		ok(composed.injectedBytes > 500, "routed ScrollWorld injects more than the 500-char ranking excerpt");
+		ok(!hasExclusiveScrollWorldRoute("בנה אתר ScrollWorld מונפש"), "raw user text never carries the marker — it is emitted downstream, not typed");
 		const bundledContract = fs.readFileSync(path.join(__dirname, "prompts", "scroll-world", "SKILL.md"), "utf8");
 		skills.recordUse(explicitHits);
 		ok(fs.readFileSync(path.join(partial, "SKILL.md"), "utf8") === bundledContract, "recording runtime use does not rewrite or dilute the portable SKILL.md contract");
@@ -110,10 +115,28 @@ function ok(value, message) { checks++; assert.ok(value, message); }
 		ok(!hasExclusiveScrollWorldRoute("בנה לי אתר אנימציה יפה"), "plain animation request stays non-exclusive");
 		ok(explicitScrollWorldRequest("בנה לי אתר עם ScrollWorld") && !hasExclusiveScrollWorldRoute("בנה לי אתר עם ScrollWorld"), "direct build request selects ScrollWorld while raw user text remains marker-free");
 
+		// The two-week bug, stated so it can FAIL. Until 05/08 the only assertion
+		// about injected content was `injectedBytes > 0`, which passes on the
+		// 500-char excerpt AND on the full contract — so 638 checks could go green
+		// while ScrollWorld was silently truncated and the generic Animated Website
+		// Kit was injected whole beside it. That is exactly what shipped in 04099.
+		// Compare against the skill's own body, not a byte threshold: a number would
+		// drift the moment the contract is edited, and "> 500" would pass on a 501-
+		// char excerpt. Equality is the only form that says "nothing was cut".
+		const wholeContract = Buffer.byteLength(skills.list().find((item) => item.meta.name === "scroll-world-gpt-image").body.trim());
+		hits = await skills.retrieve("בנה לי אתר ScrollWorld למאמן כושר", 4);
+		const routedPrompt = composeSkillsPrompt(hits);
+		ok(routedPrompt.exclusive, "a legitimate ScrollWorld request takes the exclusive route");
+		ok(routedPrompt.injectedBytes === wholeContract,
+			`routed ScrollWorld injects the whole contract, not a 500-char excerpt (got ${routedPrompt.injectedBytes}B of ${wholeContract}B)`);
+		ok(hasExclusiveScrollWorldRoute(routedPrompt.text), "routed ScrollWorld emits the marker that suppresses the generic Animated Website Kit");
+
 		hits = await skills.retrieve("אל תשתמש ב-ScrollWorld, רוצה משהו פשוט", 4);
 		const negatedPrompt = composeSkillsPrompt(hits);
 		ok(!hits.some((hit) => hit.retrieval && hit.retrieval.exclusive), "negated request does not create an exclusive retrieval hit");
 		ok(!negatedPrompt.exclusive && !hasExclusiveScrollWorldRoute(negatedPrompt.text), "negated request stays non-exclusive through retrieve and compose");
+		ok(negatedPrompt.injectedBytes < wholeContract,
+			"negated request never receives the full ScrollWorld contract");
 
 		hits = await skills.retrieve("בנה אתר סקול וורלד למועדון כושר", 4);
 		ok(hits[0].meta.name === "scroll-world-gpt-image" && hits[0].retrieval.pinned, "Hebrew ScrollWorld alias pins the same skill");
