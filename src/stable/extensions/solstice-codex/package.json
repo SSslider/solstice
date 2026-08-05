@@ -95,6 +95,12 @@
         "icon": "$(book)"
       },
       {
+        "command": "solstice.agent.openBrandDna",
+        "title": "Open Brand-DNA",
+        "category": "Solstice",
+        "icon": "$(symbol-color)"
+      },
+      {
         "command": "solstice.agent.loadBrandPack",
         "title": "Load Brand Pack (BrandDNA JSON)",
         "category": "Solstice",
@@ -207,9 +213,14 @@
           "group": "navigation@4.6"
         },
         {
-          "command": "solstice.agent.loadBrandPack",
+          "command": "solstice.agent.openBrandDna",
           "when": "view == solstice.agentPanel",
           "group": "navigation@4.7"
+        },
+        {
+          "command": "solstice.agent.loadBrandPack",
+          "when": "view == solstice.agentPanel",
+          "group": "navigation@4.8"
         },
         {
           "command": "solstice.agent.selectModel",

@@ -6,8 +6,10 @@ const os = require("os");
 const path = require("path");
 const {
 	CANONICAL_BRAND_PACK,
+	BRAND_PACK_APPROVAL,
 	brandPackContext,
 	installBrandPack,
+	installBrandDnaDocument,
 	loadBrandPack,
 	parseBrandPack,
 } = require("./brandPack");
@@ -77,13 +79,18 @@ const fixture = {
 	ok(installed.compact.imagery.hero === "/hero.webp", "hero imagery is present");
 	ok(/^[a-f0-9]{64}$/.test(installed.sha256), "loaded pack has a stable SHA-256 identity");
 
+	const attached = installBrandDnaDocument(root, fixture, { serviceVersion: "0.4.0", sourceUrl: "https://client.example" });
+	ok(attached.approval.status === "approved" && attached.approval.sha256 === attached.sha256, "live DNA attach records the exact project snapshot SHA");
+	ok(fs.existsSync(path.join(root, BRAND_PACK_APPROVAL)), "approval manifest is stored beside canonical BrandDNA JSON");
+	ok(JSON.parse(fs.readFileSync(path.join(root, BRAND_PACK_APPROVAL), "utf8")).service_version === "0.4.0", "approval manifest records service provenance");
+
 	const context = brandPackContext(root);
 	ok(context.startsWith("[FELIX_BRAND_PACK]"), "prompt context has an explicit boundary");
 	ok(context.includes("READ-ONLY") && context.includes("Never edit, delete, regenerate"), "Felix receives the read-only contract");
 	ok(context.includes("untrusted brand content") && context.includes("prompt-injection"), "captured brand data cannot become model instructions");
 	ok(context.includes("מותג לדוגמה") && context.includes("#111111") && context.includes("Heebo"), "identity, palette and typography reach generation context");
 	ok(context.includes("ישיר, חם וסמכותי") && context.includes("שמור על RTL"), "voice and RTL design rules reach generation context");
-	ok(context.includes("do not call or depend on an external Brand-DNA service"), "runtime stays independent from Jasper's service");
+	ok(context.includes("never call the service during generation"), "generation stays independent from the live service after approval");
 	ok(context.endsWith("[/FELIX_BRAND_PACK]\n"), "prompt context closes cleanly");
 
 	fs.writeFileSync(path.join(root, "brand-dna.json"), JSON.stringify({ ...fixture, name: { effective: "root fallback" } }));

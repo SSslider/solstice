@@ -15,6 +15,8 @@ const { FleetBridge } = require("./fleetBridge");
 const { FelixSkills, skillProgress, hasExclusiveScrollWorldRoute, composeSkillsPrompt } = require("./felixSkills");
 const { selectVerticalTemplates, buildVerticalTemplatePack } = require("./verticalTemplates");
 const { SkillInstaller } = require("./skillInstaller");
+const { BrandDnaClient } = require("./brandDnaClient");
+const { FelixLearning } = require("./felixLearning");
 const { captureBuild, projectContext, workspaceContext, captureAnnotation, ensureScheduledCheck, dueScheduledChecks } = require("./projectBrain");
 const { ManagerWorktrees } = require("./managerWorktrees");
 const { createReviewHandler } = require("./reviewShare");
@@ -23,7 +25,7 @@ const { listenOnFirstAvailable } = require("./companionPort");
 const { discoverCodexModels, discoverGrokModels, groupModels } = require("./modelDiscovery");
 const { grokApprovalDescriptor, isSafeGrokTool } = require("./grokApprovalBridge");
 const { listArtifacts } = require("./artifactStore");
-const { CANONICAL_BRAND_PACK, brandPackContext, installBrandPack } = require("./brandPack");
+const { BRAND_PACK_APPROVAL, CANONICAL_BRAND_PACK, brandPackContext, installBrandDnaDocument, installBrandPack, loadBrandPack } = require("./brandPack");
 const {
 	normalizeBrowserReport,
 	selfCheckRoundDir,
@@ -437,6 +439,9 @@ class AgentController {
 		this.output = vscode.window.createOutputChannel("Felix");
 		this.skills = null;            // Felix's private self-improvement store (Phase 6)
 		this.skillInstaller = null;     // reviewed GitHub -> runtime skill directory installer
+		this.learning = null;          // shadow-only learning drafts; never injected before approval
+		this._learningSignals = new Map(); // externally verified evidence keyed by build/task id
+		this.brandDnaClient = new BrandDnaClient(); // live loopback Brand-DNA Engine v0.4 HTTP client
 		this.scheduledCheckTimer = null;
 		this._scheduledCheckRunning = false;
 		this.activeCliChildren = new Set(); // walkthrough/deploy/helper processes stopped by global Stop
@@ -467,6 +472,10 @@ class AgentController {
 			return {};
 		});
 		try {
+			this.learning = new FelixLearning({
+				dir: path.join(context.globalStorageUri.fsPath, "felix-learning"),
+				log: (m) => this.output.append(m + "\n"),
+			});
 			this.skills = new FelixSkills({
 				dir: path.join(context.globalStorageUri.fsPath, "felix-skills"),
 				legacyDirs: [
@@ -836,7 +845,9 @@ class AgentController {
 		this.ensureCompanionRelay();
 		if (this._companionServer) { vscode.window.showInformationMessage(`📱 Companion 2.0 מחובר ל-Vega. אבחון מקומי: 127.0.0.1:${this._companionPort}`); return this._companionPort; }
 		const http = require("http");
-		const ports = [8794, 8795, 8796, 8797, 8798, 8799];
+		// 8794 is the Brand-DNA Engine; 8797-8799 are reserved by other local
+		// services. Companion diagnostics live in their own explicit range.
+		const ports = [8800, 8801, 8802, 8803, 8804, 8805, 8806, 8807, 8808, 8809];
 		const reviewHandler = createReviewHandler(workspaceCwd(), (_root, artifact, note) => this.queueArtifactAnnotation(artifact, note));
 		const srv = http.createServer(async (req, res) => {
 			const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type" };
@@ -2885,7 +2896,7 @@ self.addEventListener("fetch", (e) => {
 				browserCheckStarted = this.maybeRunBrowserSelfCheck();
 				if (!browserCheckStarted) this.fleetFlow("done");
 			}
-			if (tid === this.threadId) this.learnFromFidelityFile();
+			if (tid === this.threadId) this.noteFidelityDraftEligibility();
 			if (tid === this.threadId) {
 				try { captureBuild(workspaceCwd(), { prompt: this._lastUserPrompt, provider: this.providerLabel(), previewUrl: this.previewUrl }); }
 				catch (e) { this.output.append("[project-brain] capture failed: " + (e && e.message || e) + "\n"); }
@@ -4139,12 +4150,11 @@ self.addEventListener("fetch", (e) => {
 			if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "flowStage", stage: "building", from: (extra && extra.from) || this.builderAgent(), ts: Date.now(), note: "Bugbot review" });
 			return;
 		}
-		// Phase 6 write-back: a "done" reaching here is past the self-verify gate
-		// (verify ran for this build), so it is verified-good — distill a skill.
-		// If self-verify never ran (disabled / no preview), _verifyTaskId stays
-		// unset and Felix learns nothing, per "learn only from verified builds".
+		// R4 shadow learning: a completed build may create DRAFT candidates only
+		// when a durable external browser/CI/critic signal was recorded. Retrieval
+		// or a model saying "done" is never a learning signal (52% < 60% rule).
 		if (stage === "done" && this._activeBuild && this._verifyTaskId === this._activeBuild.taskId) {
-			this.learnFromBuild(this._activeBuild);
+			this.draftLearningFromBuild(this._activeBuild);
 		}
 		// Round-trip the lifecycle back to the dispatching agent (Phase 1).
 		// "dispatch" already reports "started" from the build handler, so map
@@ -4295,6 +4305,15 @@ self.addEventListener("fetch", (e) => {
 		normalized = saved.report;
 		this.output.append(`[browser-check] round=${state.round} ok=${normalized.ok} findings=${normalized.findings.length} report=${saved.file}\n`);
 		if (normalized.ok) {
+			this._learningSignals.set(state.id, {
+				type: "browser-functional-check",
+				verified: true,
+				verified_by: "Solstice browser functional check",
+				evidence: saved.file,
+				sha256: digestFile(saved.file),
+				observed_at: normalized.checkedAt || new Date().toISOString(),
+				summary: normalized.summary || {},
+			});
 			this._walkthroughTaskId = state.id;
 			this._browserSelfCheck = null;
 			this._browserSelfCheckRunning = false;
@@ -4508,6 +4527,13 @@ self.addEventListener("fetch", (e) => {
 			selectedRoute: this._lastSkillRoute,
 			verticalRoute: this._lastVerticalRoute,
 			prompt: this._lastPromptDiagnostics,
+			learning: {
+				mode: "shadow",
+				autoActivation: false,
+				drafts: this.learning ? this.learning.listDrafts().filter((draft) => draft.status === "DRAFT").length : 0,
+				requiresExternalSuccessSignal: true,
+				requiresDoesNotApply: true,
+			},
 		};
 	}
 
@@ -4568,7 +4594,8 @@ self.addEventListener("fetch", (e) => {
 			}
 			const composed = composeSkillsPrompt(hits);
 			const exclusive = composed.exclusive;
-			const useEvents = this.skills.recordUse(hits); // proven skills float up over time
+			// Retrieval count is telemetry, not learning. R4 intentionally does not
+			// call recordUse(): only an external outcome may create a shadow draft.
 			const reasons = hits.map((h) => {
 				const selection = h.retrieval || {};
 				return `${h.meta.name || "skill"} — ${selection.pinned ? "pinned by explicit name" : selection.reason || "relevant"}`;
@@ -4580,13 +4607,6 @@ self.addEventListener("fetch", (e) => {
 			};
 			if (exclusive) this.announceAgentMessage("🧭 Route selected: ScrollWorld · exclusive · full SKILL.md contract injected · Animated Website Kit suppressed.");
 			else this.announceAgentMessage("🧠 Skills selected: " + reasons.join(" · ") + ". To replace: say “use skill <name>” / “השתמש בסקיל <שם>”.");
-			for (const event of useEvents) {
-				if (!event.leveledUp) continue;
-				const name = event.item.meta.name || "skill";
-				const message = "⬆️ Skill leveled up: " + name + " · Lv." + event.after.level;
-				this.announceAgentMessage(message);
-				vscode.window.showInformationMessage(message);
-			}
 			pushSkillsPanel(this);
 			return composed.text;
 		} catch (error) {
@@ -4604,6 +4624,7 @@ self.addEventListener("fetch", (e) => {
 				medical: ["medical", "clinic", "doctor", "physio", "aesthetic", "health", "רופא", "מרפאה", "פיזיותרפיה", "אסתטיקה", "בריאות"],
 				legal: ["law", "lawyer", "legal", "attorney", "notary", "עו\"ד", "עורך דין", "עורכת דין", "נוטריון", "משפט"],
 				barber: ["barber", "salon", "beauty", "hair", "nails", "מספרה", "ספר גברים", "יופי", "שיער", "ציפורניים"],
+				fitness: ["fitness", "gym", "coach", "trainer", "כושר", "חדר כושר", "מאמן", "מאמנת", "אימונים"],
 				restaurant: ["restaurant", "menu", "מסעדה", "תפריט"],
 				crm: ["crm", "leads", "לידים", "פלקון"],
 				ecommerce: ["shop", "store", "ecommerce", "cart", "checkout", "חנות", "מוצרים"],
@@ -4620,62 +4641,47 @@ self.addEventListener("fetch", (e) => {
 	}
 	inferSkillSector(task) { const tags = this.inferSkillTags(task); return tags[0] || ""; }
 
-	// GATED write-back: only invoked from the post-verify "done" path, so the
-	// build was screenshot-verified before Felix distills a skill from it.
-	learnFromBuild(b) {
+	// Shadow-only learning. A real external gate may create candidates, never an
+	// active skill. Human approval in the Skills panel is the sole activation path.
+	draftLearningFromBuild(b) {
 		try {
-			if (!this.skills || !b || !b.task) return;
-			const task = b.task;
-			const sector = this.inferSkillSector(task);
-			const tags = this.inferSkillTags(task);
-			const name = "build-" + (sector || "app");
-			const body = [
-				"# Playbook: " + name,
-				"",
-				"Reusable approach distilled from a verified-good build (self-verify passed).",
-				"",
-				"## Task pattern",
-				task.slice(0, 600),
-				"",
-				"## Outcome",
-				"- provider: " + this.providerLabel(),
-				"- preview: " + (this.previewUrl || "(n/a)"),
-				"- build mode: " + (this.buildMode || "site"),
-				"- verified at: " + new Date().toISOString(),
-				"",
-			].join("\n");
-			const learned = this.skills.learn({ name, tags, sector, body, provenance: b.taskId || "" });
-			this.announceAgentMessage("🧠 למדתי skill חדש: " + name + " v" + learned.version);
-			vscode.window.showInformationMessage("🧠 Felix למד skill חדש: " + name + " v" + learned.version);
-			if (learned.leveledUp) {
-				const message = "⬆️ Skill leveled up: " + name + " · Lv." + learned.after.level;
+			if (!this.learning || !b || !b.task || !b.taskId) return;
+			const signal = this._learningSignals.get(b.taskId);
+			if (!signal || signal.verified !== true || !signal.sha256) {
+				this.output.append(`[learning-shadow] skipped ${b.taskId}: no verified external success signal\n`);
+				return;
+			}
+			const proposed = this.learning.proposeFromBuild({
+				taskId: b.taskId,
+				task: b.task,
+				tags: this.inferSkillTags(b.task),
+				buildMode: this.buildMode || "site",
+				provider: this.providerLabel(),
+				preview: this.previewUrl || "",
+				client: workspaceCwd() ? path.basename(workspaceCwd()) : "",
+			}, signal);
+			this._learningSignals.delete(b.taskId);
+			const created = proposed.filter((item) => item && item.created).map((item) => item.draft);
+			if (created.length) {
+				const message = `🧪 Felix יצר ${created.length} טיוטות למידה ב־shadow mode · ממתינות לאישור ב־Skills.`;
 				this.announceAgentMessage(message);
-				vscode.window.showInformationMessage(message);
+				vscode.window.showInformationMessage(message, "Open Skills").then((choice) => {
+					if (choice === "Open Skills") vscode.commands.executeCommand("solstice.agent.openSkills");
+				});
 			}
 			pushSkillsPanel(this);
-		} catch (e) { this.output.append("[skills] learn failed: " + (e && e.message || e) + "\n"); }
+		} catch (e) { this.output.append("[learning-shadow] draft failed: " + (e && e.message || e) + "\n"); }
 	}
 
-	// A fidelity loop is itself a verified learning signal when it records an
-	// explicit round and concrete fixes. Distill that lesson even for an
-	// interactive (non-fleet) build, where _activeBuild/self-verify may not exist.
-	learnFromFidelityFile() {
+	// Fidelity prose is evidence context, not a success signal. It remains on
+	// disk for review but can never write memory/skills on its own (52% rule).
+	noteFidelityDraftEligibility() {
 		try {
-			if (!this.skills) return;
 			const cwd = workspaceCwd(); if (!cwd) return;
 			const file = path.join(cwd, ".solstice", "FIDELITY.md");
 			if (!fs.existsSync(file)) return;
-			const body = fs.readFileSync(file, "utf8").slice(0, 6000);
-			if (!/(?:round\s*\d+|סבב\s*\d+)/i.test(body) || !/(?:fix|fixed|closed|resolved|תוקן|נסגר)/i.test(body)) return;
-			const digest = crypto.createHash("sha256").update(body).digest("hex");
-			if (digest === this.lastFidelityLessonHash) return;
-			this.lastFidelityLessonHash = digest;
-			const tags = ["fidelity", "visual", ...this.inferSkillTags(this._lastUserPrompt || "")];
-			const name = "fidelity-" + (this.inferSkillSector(this._lastUserPrompt || "") || "general");
-			const learned = this.skills.rememberLesson({ name, tags, sector: this.inferSkillSector(this._lastUserPrompt || ""), body: "# לקח מלולאת fidelity מאומתת\n\n" + body, provenance: digest.slice(0, 12), change_note: "distilled from completed fidelity rounds" });
-			this.announceAgentMessage("🧠 למדתי לקח fidelity: " + name + " v" + learned.version);
-			vscode.window.showInformationMessage("🧠 Felix למד לקח fidelity: " + name + " v" + learned.version);
-		} catch (e) { this.output.append("[skills] fidelity learn failed: " + (e && e.message || e) + "\n"); }
+			this.output.append(`[learning-shadow] fidelity candidate observed sha=${digestFile(file).slice(0, 12)}; awaiting external gate\n`);
+		} catch (e) { this.output.append("[learning-shadow] fidelity observation failed: " + (e && e.message || e) + "\n"); }
 	}
 
 	resolveWalkthroughRuntime(platform = process.platform) {
@@ -5420,6 +5426,7 @@ function pushSkillsPanel(controller) {
 	if (!skillsPanel) return;
 	const skills = controller.skills ? controller.skills.list() : [];
 	const lessons = controller.skills ? controller.skills.listLessons() : [];
+	const learningDrafts = controller.learning ? controller.learning.listDrafts() : [];
 	const map = (x, kind) => {
 		const progress = kind === "skill" ? skillProgress(x.meta) : null;
 		return {
@@ -5432,6 +5439,7 @@ function pushSkillsPanel(controller) {
 		type: "skills",
 		items: [...skills.map((x) => map(x, "skill")), ...lessons.map((x) => map(x, "lesson"))],
 		diagnostics: controller.skillRuntimeDiagnostics(),
+		learning: { mode: "shadow", drafts: learningDrafts },
 	});
 }
 function openSkills(controller, extensionUri) {
@@ -5442,6 +5450,37 @@ function openSkills(controller, extensionUri) {
 	skillsPanel.webview.html = mediaHtml(skillsPanel.webview, extensionUri, "skills.js", "skills.css");
 	skillsPanel.webview.onDidReceiveMessage(async (m) => {
 		if (m.type === "ready" || m.type === "refresh") { pushSkillsPanel(controller); return; }
+		if (m.type === "approveLearning") {
+			try {
+				if (!controller.learning) throw new Error("Felix shadow learning is unavailable.");
+				const draft = controller.learning.getDraft(String(m.id || ""));
+				if (!draft || draft.status !== "DRAFT") throw new Error("Learning draft is missing or no longer pending.");
+				const detail = `${draft.claim}\n\nDoes not apply:\n${draft.does_not_apply.map((item) => `• ${item}`).join("\n")}\n\nEvidence SHA: ${draft.success_signal.sha256}`;
+				const accepted = await vscode.window.showWarningMessage(
+					`Activate learning draft '${draft.title}'?`,
+					{ modal: true, detail },
+					"Approve and activate"
+				);
+				if (accepted !== "Approve and activate") return;
+				const result = controller.learning.approve(draft.id, controller.skills, "Thomas · Solstice operator approval");
+				skillsPanel.webview.postMessage({ type: "learningDecision", message: `${draft.title} אושר והופעל כ־v${result.activated.version}.` });
+				pushSkillsPanel(controller);
+			} catch (error) { skillsPanel.webview.postMessage({ type: "learningError", message: String(error && error.message || error) }); }
+			return;
+		}
+		if (m.type === "rejectLearning") {
+			try {
+				if (!controller.learning) throw new Error("Felix shadow learning is unavailable.");
+				const draft = controller.learning.getDraft(String(m.id || ""));
+				if (!draft || draft.status !== "DRAFT") throw new Error("Learning draft is missing or no longer pending.");
+				const accepted = await vscode.window.showWarningMessage(`Reject learning draft '${draft.title}'?`, { modal: true }, "Reject draft");
+				if (accepted !== "Reject draft") return;
+				controller.learning.reject(draft.id, "Rejected by Thomas in Solstice Skills");
+				skillsPanel.webview.postMessage({ type: "learningDecision", message: `${draft.title} נדחה ולא יוזרק.` });
+				pushSkillsPanel(controller);
+			} catch (error) { skillsPanel.webview.postMessage({ type: "learningError", message: String(error && error.message || error) }); }
+			return;
+		}
 		if (m.type === "exportDiagnostics") {
 			try {
 				const diagnostics = controller.skillRuntimeDiagnostics();
@@ -5509,6 +5548,95 @@ function openSkills(controller, extensionUri) {
 		}
 	});
 	skillsPanel.onDidDispose(() => { skillsPanel = null; });
+}
+
+let brandDnaPanel = null;
+function brandDnaAttachedState(root) {
+	if (!root) return null;
+	try {
+		const pack = loadBrandPack(root);
+		if (!pack) return null;
+		let approval = null;
+		try { approval = JSON.parse(fs.readFileSync(path.join(root, BRAND_PACK_APPROVAL), "utf8")); } catch { }
+		return {
+			sha256: pack.sha256,
+			bytes: pack.bytes,
+			domain: pack.compact.domain,
+			approved_at: approval && approval.sha256 === pack.sha256 ? approval.approved_at : "manual import · approval SHA unavailable",
+		};
+	} catch (error) {
+		return { error: String(error && error.message || error) };
+	}
+}
+function postBrandDnaState(state) {
+	if (brandDnaPanel) brandDnaPanel.webview.postMessage({ type: "state", state });
+}
+function postBrandDnaError(error) {
+	const request = error && error.requestId ? ` · request ${error.requestId}` : "";
+	const statusCode = error && (error.statusCode || error.status);
+	const status = statusCode ? `HTTP ${statusCode} · ` : "";
+	const message = `${status}${String(error && error.message || error || "Brand-DNA request failed")}${request}`;
+	if (brandDnaPanel) brandDnaPanel.webview.postMessage({ type: "error", message });
+	vscode.window.showErrorMessage("Brand-DNA: " + message);
+}
+function openBrandDna(controller, extensionUri) {
+	if (brandDnaPanel) { brandDnaPanel.reveal(vscode.ViewColumn.One); return; }
+	brandDnaPanel = vscode.window.createWebviewPanel("solstice.brandDna", "◉ Brand‑DNA", vscode.ViewColumn.One, {
+		enableScripts: true, retainContextWhenHidden: true, localResourceRoots: webviewResourceRoots(extensionUri),
+	});
+	brandDnaPanel.webview.html = mediaHtml(brandDnaPanel.webview, extensionUri, "brand-dna.js", "brand-dna.css");
+	let currentProfile = null;
+	let health = null;
+	const refreshHealth = async () => {
+		health = await controller.brandDnaClient.health();
+		postBrandDnaState({ health, attached: brandDnaAttachedState(workspaceCwd()) });
+	};
+	brandDnaPanel.webview.onDidReceiveMessage(async (message) => {
+		try {
+			if (message.type === "ready" || message.type === "health") { await refreshHealth(); return; }
+			if (message.type === "extract") {
+				if (!health || health.status !== "ok") await refreshHealth();
+				currentProfile = await controller.brandDnaClient.extract(message.url, false);
+				postBrandDnaState({ profile: currentProfile, domain: currentProfile.domain || "", url: currentProfile.source_url || message.url, moodboard: null, moodboardImage: "", notice: `Brand DNA חולץ מ־${currentProfile.domain}.` });
+				return;
+			}
+			if (message.type === "recrawl") {
+				const result = await controller.brandDnaClient.recrawl(message.domain);
+				currentProfile = result && result.profile || await controller.brandDnaClient.profile(message.domain);
+				postBrandDnaState({ profile: currentProfile, notice: `החילוץ עודכן: ${result.status || "refreshed"}.` });
+				return;
+			}
+			if (message.type === "moodboard") {
+				const moodboard = await controller.brandDnaClient.moodboard(message.domain);
+				const moodboardImage = moodboard.passed ? await controller.brandDnaClient.moodboardPng(message.domain) : "";
+				postBrandDnaState({ moodboard, moodboardImage, notice: moodboard.passed ? "Moodboard מאושר נטען מהמנוע." : "Moodboard לא עבר critic gate." });
+				return;
+			}
+			if (message.type === "visualBrief") {
+				const visualBrief = await controller.brandDnaClient.visualBrief(message.clientSlug);
+				postBrandDnaState({ visualBrief, clientSlug: message.clientSlug, notice: `Visual Brief נטען עם ${visualBrief.evidence_count || 0} אותות.` });
+				return;
+			}
+			if (message.type === "attach") {
+				if (!currentProfile) throw new Error("Extract or load a BrandDNA profile before attaching it");
+				const root = workspaceCwd();
+				if (!root) throw new Error("Open a project before attaching Brand DNA");
+				const existing = brandDnaAttachedState(root);
+				const detail = `${currentProfile.domain || "unknown domain"}\n${currentProfile.source_url || ""}${existing ? `\n\nExisting project SHA: ${existing.sha256}` : ""}`;
+				const accepted = await vscode.window.showWarningMessage(
+					"Attach this approved Brand DNA snapshot as the project's source of truth?",
+					{ modal: true, detail },
+					"Attach approved DNA"
+				);
+				if (accepted !== "Attach approved DNA") { brandDnaPanel.webview.postMessage({ type: "notice", message: "הצירוף בוטל; לא נכתב דבר." }); return; }
+				const installed = installBrandDnaDocument(root, currentProfile, { serviceVersion: health && health.version, sourceUrl: currentProfile.source_url });
+				postBrandDnaState({ attached: { ...installed.approval }, notice: `DNA מאושר צורף לפרויקט · SHA ${installed.sha256.slice(0, 12)}.` });
+				vscode.window.showInformationMessage(`Brand DNA attached: ${installed.compact.name || installed.compact.domain} · ${installed.sha256.slice(0, 12)}`);
+				return;
+			}
+		} catch (error) { postBrandDnaError(error); }
+	});
+	brandDnaPanel.onDidDispose(() => { brandDnaPanel = null; });
 }
 
 let galleryPanel = null;
@@ -6016,6 +6144,7 @@ function activate(context) {
 		vscode.commands.registerCommand("solstice.agent.showDevServers", () => controller.showDevServers()),
 		vscode.commands.registerCommand("solstice.agent.deployVercel", () => controller.deployCurrentProject()),
 		vscode.commands.registerCommand("solstice.agent.openSkills", () => openSkills(controller, context.extensionUri)),
+		vscode.commands.registerCommand("solstice.agent.openBrandDna", () => openBrandDna(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.loadBrandPack", () => controller.loadBrandPackIntoWorkspace()),
 		vscode.commands.registerCommand("solstice.agent.scaffoldApp", () => controller.scaffoldAppIntoWorkspace()),
 		vscode.commands.registerCommand("solstice.agent.selectModel", () => controller.selectModel()),

@@ -5,6 +5,8 @@
 	let items = [];
 	let diagnostics = null;
 	let diagnosticsMessage = "";
+	let learning = { mode: "shadow", drafts: [] };
+	let learningMessage = "";
 	let install = { status: "idle", url: "", message: "", preview: null, candidates: [] };
 	function esc(s) { return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
 	function skillCards() {
@@ -12,8 +14,16 @@
 		const lessons = items.filter((x) => x.kind === "lesson");
 		return `<header><div><small>FELIX MEMORY</small><h1>🧠 Skills</h1><p>${skills.length} skills · ${lessons.length} lessons</p></div><button id="refresh">↻ רענן</button></header>` +
 			diagnosticsHtml() +
+			learningHtml() +
 			installerHtml() +
-			`<main>${items.map((x) => `<article class="${x.kind === "lesson" ? "lesson" : ""}"><div class="row"><span class="kind">${x.kind === "lesson" ? "לקח" : "SKILL"}</span><span class="uses">${Number(x.uses || 0)} שימושים</span></div><h2>${esc(x.name)}</h2>${x.kind !== "lesson" ? `<div class="level"><strong>Lv.${Number(x.level || 1)} · ${esc(x.title || "Foundation")}</strong><span>${Number(x.xp || 0)} XP</span></div><div class="xp" title="${Number(x.progress || 0)}%"><i style="width:${Math.max(0, Math.min(100, Number(x.progress || 0)))}%"></i></div><div class="next">${x.nextXp ? `${Number(x.nextXp) - Number(x.xp || 0)} XP לשלב הבא` : "רמה מקסימלית"}</div>` : ""}<div class="tags">${(x.tags || []).map((t) => `<span>${esc(t)}</span>`).join("")}</div><p>${esc(x.preview)}</p><footer>v${esc(x.version || 1)} · ${esc(x.updatedAt || "")}</footer></article>`).join("") || '<div class="empty">עדיין אין skills שמורים.</div>'}</main>`;
+			`<main>${items.map((x) => `<article class="${x.kind === "lesson" ? "lesson" : ""}"><div class="row"><span class="kind">${x.kind === "lesson" ? "לקח" : "SKILL"}</span><span class="uses">${Number(x.uses || 0)} שליפות</span></div><h2>${esc(x.name)}</h2>${x.kind !== "lesson" ? `<div class="level"><strong>Lv.${Number(x.level || 1)} · ${esc(x.title || "Foundation")}</strong><span>${Number(x.xp || 0)} XP</span></div><div class="xp" title="${Number(x.progress || 0)}%"><i style="width:${Math.max(0, Math.min(100, Number(x.progress || 0)))}%"></i></div><div class="next">${x.nextXp ? `${Number(x.nextXp) - Number(x.xp || 0)} XP לשלב הבא` : "רמה מקסימלית"}</div>` : ""}<div class="tags">${(x.tags || []).map((t) => `<span>${esc(t)}</span>`).join("")}</div><p>${esc(x.preview)}</p><footer>v${esc(x.version || 1)} · ${esc(x.updatedAt || "")}</footer></article>`).join("") || '<div class="empty">עדיין אין skills שמורים.</div>'}</main>`;
+	}
+	function learningHtml() {
+		const drafts = learning.drafts || [];
+		const pending = drafts.filter((draft) => draft.status === "DRAFT");
+		const decided = drafts.filter((draft) => draft.status !== "DRAFT");
+		const message = learningMessage ? `<div class="learning-message">${esc(learningMessage)}</div>` : "";
+		return `<section class="learning"><div class="learning-head"><div><small>OUTCOME LEARNING · SHADOW MODE</small><h2>Felix לומד, אבל לא מפעיל לבד</h2><p>טיוטה נוצרת רק אחרי אות הצלחה חיצוני עם SHA. שליפה או “Done” אינם למידה. כל טיוטה חייבת <code>does_not_apply</code> ואישור אנושי לפני activation.</p></div><span class="shadow">SHADOW · ${pending.length} pending</span></div>${message}<div class="drafts">${pending.map((draft) => `<article class="draft"><div class="row"><span class="kind">${esc(draft.level)}</span><code>${esc(draft.id)}</code></div><h3>${esc(draft.title)}</h3><p class="claim">${esc(draft.claim)}</p><div class="hierarchy">${[draft.hierarchy && draft.hierarchy.principle, draft.hierarchy && draft.hierarchy.capability, draft.hierarchy && draft.hierarchy.vertical, draft.hierarchy && draft.hierarchy.client].filter(Boolean).map((x) => `<span>${esc(x)}</span>`).join(" → ")}</div><details open><summary>מתי לא להחיל</summary><ul>${(draft.does_not_apply || []).map((x) => `<li>${esc(x)}</li>`).join("")}</ul></details><div class="signal"><strong>${esc(draft.success_signal && draft.success_signal.type)}</strong><code>${esc(String(draft.success_signal && draft.success_signal.sha256 || "").slice(0, 16))}</code><small>${esc(draft.success_signal && draft.success_signal.evidence)}</small></div><div class="draft-actions"><button data-reject="${esc(draft.id)}">דחה</button><button class="primary" data-approve="${esc(draft.id)}">אשר והפעל</button></div></article>`).join("") || `<div class="learning-empty">אין טיוטות ממתינות. Felix לא ממציא למידה בלי תוצאה חיצונית.</div>`}</div>${decided.length ? `<details class="history"><summary>${decided.length} החלטות קודמות</summary><div>${decided.slice(-8).reverse().map((draft) => `<span>${esc(draft.title)} · ${esc(draft.status)}</span>`).join("")}</div></details>` : ""}</section>`;
 	}
 	function diagnosticsHtml() {
 		if (!diagnostics) return `<section class="runtime error"><strong>Runtime diagnostics unavailable</strong><p>Felix has not returned storage health yet.</p></section>`;
@@ -80,11 +90,13 @@
 		};
 		const confirm = document.getElementById("confirmInstall");
 		if (confirm) confirm.onclick = () => vscode.postMessage({ type: "confirmInstall", id: install.preview.id });
+		for (const button of document.querySelectorAll("[data-approve]")) button.onclick = () => vscode.postMessage({ type: "approveLearning", id: button.dataset.approve });
+		for (const button of document.querySelectorAll("[data-reject]")) button.onclick = () => vscode.postMessage({ type: "rejectLearning", id: button.dataset.reject });
 	}
 	function render() { app.innerHTML = skillCards(); bind(); }
 	window.addEventListener("message", (event) => {
 		const data = event.data || {};
-		if (data.type === "skills") { items = data.items || []; diagnostics = data.diagnostics || null; }
+		if (data.type === "skills") { items = data.items || []; diagnostics = data.diagnostics || null; learning = data.learning || { mode: "shadow", drafts: [] }; }
 		else if (data.type === "diagnosticsExported") diagnosticsMessage = `הדיאגנוסטיקה יוצאה אל ${data.path}`;
 		else if (data.type === "diagnosticsError") diagnosticsMessage = `ייצוא נכשל: ${data.message || "unknown error"}`;
 		else if (data.type === "repairDone") diagnosticsMessage = data.backup ? `ScrollWorld תוקן; העותק הקודם נשמר ב־${data.backup}` : "ScrollWorld תוקן ואומת.";
@@ -94,6 +106,8 @@
 		else if (data.type === "installDone") { install = { status: "done", url: "", message: `הותקן ${data.name} בזמן ריצה — בלי build נוסף.`, preview: null, candidates: [] }; }
 		else if (data.type === "installCancelled") { install.status = "idle"; install.message = "ההתקנה בוטלה; לא נכתב דבר."; }
 		else if (data.type === "installError") { install.status = "error"; install.message = data.message || "ההתקנה נכשלה."; install.preview = null; }
+		else if (data.type === "learningDecision") learningMessage = data.message || "החלטת הלמידה נשמרה.";
+		else if (data.type === "learningError") learningMessage = `שגיאת למידה: ${data.message || "unknown"}`;
 		render();
 	});
 	render(); vscode.postMessage({ type: "ready" });

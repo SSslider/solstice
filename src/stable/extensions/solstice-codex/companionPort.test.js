@@ -27,8 +27,9 @@ function close(server) { return new Promise((resolve) => server.close(resolve));
 	await close(occupied);
 
 	const extension = fs.readFileSync(path.join(__dirname, "extension.js"), "utf8");
-	assert.match(extension, /const ports = \[8794, 8795, 8796, 8797, 8798, 8799\]/);
+	assert.match(extension, /const ports = \[8800, 8801, 8802, 8803, 8804, 8805, 8806, 8807, 8808, 8809\]/);
+	assert.doesNotMatch(extension, /const ports = \[[^\]]*8794/);
 	assert.match(extension, /127\.0\.0\.1:\$\{port\}/);
 	assert.match(extension, /showErrorMessage\(`Companion 2\.0 relay/);
-	console.log("companionPort.test.js: 7/7 checks passed");
+	console.log("companionPort.test.js: 8/8 checks passed");
 })().catch((error) => { console.error(error); process.exit(1); });
