@@ -26,5 +26,10 @@ assert.match(learning, /status: "DRAFT"/);
 assert.match(learning, /const LEARNING_MODE = "gated-active"/);
 assert.match(learning, /A verified external success signal is required/);
 assert.match(learning, /does_not_apply is required/);
+assert.match(learning, /const MAX_AUTO_ACTIVATION_ATTEMPTS = 3/);
+assert.match(learning, /automatic_activation/);
+assert.match(extension, /reached the automatic retry limit/);
+assert.match(extension, /stopped automatic activation/);
+assert.match(panel, /AUTO RETRY STOPPED · MANUAL ONLY/);
 
-console.log("felixLearningIntegration.test.js: 18/18 checks passed");
+console.log("felixLearningIntegration.test.js: 23/23 checks passed");

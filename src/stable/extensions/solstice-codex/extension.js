@@ -494,6 +494,9 @@ class AgentController {
 			if (resumedLearning.failed.length) {
 				this.output.append(`[learning-active] ${resumedLearning.failed.length} verified record(s) still need activation attention\n`);
 			}
+			if (resumedLearning.exhausted.length) {
+				this.output.append(`[learning-active] ${resumedLearning.exhausted.length} verified record(s) reached the automatic retry limit; manual review is required\n`);
+			}
 			if (seeded && seeded.scrollWorld && seeded.scrollWorld.status === "repaired") {
 				vscode.window.showInformationMessage("Felix self-healed the ScrollWorld skill in global storage.");
 			} else if (seeded && seeded.scrollWorld && seeded.scrollWorld.status === "failed") {
@@ -4681,6 +4684,13 @@ self.addEventListener("fetch", (e) => {
 				const message = `Felix learning activation failed for ${result.failed.length} record(s); the drafts remain available in Skills.`;
 				this.output.append(`[learning-active] ${message}\n`);
 				vscode.window.showErrorMessage(message, "Open Skills").then((choice) => {
+					if (choice === "Open Skills") vscode.commands.executeCommand("solstice.agent.openSkills");
+				});
+			}
+			if (result.exhausted.length) {
+				const message = `Felix stopped automatic activation for ${result.exhausted.length} record(s) after the retry limit; review them manually in Skills.`;
+				this.output.append(`[learning-active] ${message}\n`);
+				vscode.window.showWarningMessage(message, "Open Skills").then((choice) => {
 					if (choice === "Open Skills") vscode.commands.executeCommand("solstice.agent.openSkills");
 				});
 			}

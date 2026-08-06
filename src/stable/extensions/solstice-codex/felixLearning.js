@@ -6,6 +6,7 @@ const path = require("path");
 
 const LEARNING_MODE = "gated-active";
 const DRAFT_SCHEMA_VERSION = "1.0";
+const MAX_AUTO_ACTIVATION_ATTEMPTS = 3;
 const DRAFT_STATUSES = new Set(["DRAFT", "ACTIVE", "APPROVED", "REJECTED"]);
 const HIERARCHY_LEVELS = new Set(["principle", "capability", "vertical", "client"]);
 const EXTERNAL_SIGNAL_TYPES = new Set([
@@ -89,6 +90,11 @@ function normalizeDraft(candidate) {
 		transfer_probe: Array.isArray(candidate.transfer_probe) ? candidate.transfer_probe.map((x) => cleanText(x, 500)).filter(Boolean) : [],
 		success_signal: signal,
 		origin: candidate.origin && typeof candidate.origin === "object" ? candidate.origin : {},
+		automatic_activation: {
+			attempts: 0,
+			max_attempts: MAX_AUTO_ACTIVATION_ATTEMPTS,
+			exhausted: false,
+		},
 		created_at: cleanText(candidate.created_at || new Date().toISOString(), 80),
 		updated_at: cleanText(candidate.updated_at || new Date().toISOString(), 80),
 	};
@@ -307,14 +313,36 @@ class FelixLearning {
 	activatePending(results, skills, activator = "Felix verified outcome gate") {
 		const activated = [];
 		const failed = [];
+		const exhausted = [];
 		for (const item of results || []) {
 			// Retry durable drafts left by an earlier skill-store failure. Restricting
 			// activation to newly created records would strand verified outcomes.
 			if (!item || !item.draft || item.draft.status !== "DRAFT") continue;
-			try { activated.push(this.activate(item.draft.id, skills, activator)); }
-			catch (error) { failed.push({ draft: item.draft, error: String(error && error.message || error) }); }
+			const draft = this.getDraft(item.draft.id);
+			if (!draft || draft.status !== "DRAFT") continue;
+			const attempts = Number(draft.automatic_activation && draft.automatic_activation.attempts || 0);
+			if (attempts >= MAX_AUTO_ACTIVATION_ATTEMPTS) {
+				exhausted.push({ draft, error: cleanText(draft.automatic_activation && draft.automatic_activation.last_error, 1000) });
+				continue;
+			}
+			try { activated.push(this.activate(draft.id, skills, activator)); }
+			catch (error) {
+				const message = String(error && error.message || error);
+				const latest = this.getDraft(draft.id) || draft;
+				const nextAttempts = Number(latest.automatic_activation && latest.automatic_activation.attempts || 0) + 1;
+				latest.updated_at = new Date().toISOString();
+				latest.automatic_activation = {
+					attempts: nextAttempts,
+					max_attempts: MAX_AUTO_ACTIVATION_ATTEMPTS,
+					exhausted: nextAttempts >= MAX_AUTO_ACTIVATION_ATTEMPTS,
+					last_attempt_at: latest.updated_at,
+					last_error: cleanText(message, 1000),
+				};
+				atomicJson(path.join(this.draftsDir, `${latest.id}.json`), latest);
+				failed.push({ draft: latest, error: message });
+			}
 		}
-		return { activated, failed };
+		return { activated, failed, exhausted };
 	}
 
 	activateAllPending(skills, activator = "Felix gated-active startup") {
@@ -341,6 +369,7 @@ module.exports = {
 	EXTERNAL_SIGNAL_TYPES,
 	FelixLearning,
 	LEARNING_MODE,
+	MAX_AUTO_ACTIVATION_ATTEMPTS,
 	assertExternalSignal,
 	inferLearningShape,
 	normalizeDraft,

@@ -4,7 +4,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { FelixLearning, LEARNING_MODE, inferLearningShape, normalizeDraft, renderApprovedSkill } = require("./felixLearning");
+const { FelixLearning, LEARNING_MODE, MAX_AUTO_ACTIVATION_ATTEMPTS, inferLearningShape, normalizeDraft, renderApprovedSkill } = require("./felixLearning");
 
 const sha = (char) => char.repeat(64);
 const signal = (char, evidence) => ({
@@ -65,7 +65,27 @@ const signal = (char, evidence) => ({
 	const rejectable = learning.listDrafts().find((draft) => draft.status === "DRAFT" && draft.level === "vertical");
 	assert.equal(learning.reject(rejectable.id, "too client-specific").status, "REJECTED");
 	assert.equal(learning.getDraft(rejectable.id).rejection.reason, "too client-specific");
+	const exhaustible = learning.listDrafts().find((draft) => draft.status === "DRAFT");
+	let exhaustedCalls = 0;
+	for (let attempt = 0; attempt < MAX_AUTO_ACTIVATION_ATTEMPTS; attempt++) {
+		const result = learning.activatePending([{ draft: exhaustible, created: false }], { learn() { exhaustedCalls++; throw new Error("persistent store failure"); } });
+		assert.equal(result.failed.length, 1);
+		assert.equal(result.exhausted.length, 0);
+	}
+	const capped = learning.activatePending([{ draft: exhaustible, created: false }], { learn() { exhaustedCalls++; throw new Error("must not run"); } });
+	assert.equal(capped.failed.length, 0);
+	assert.equal(capped.exhausted.length, 1);
+	assert.equal(exhaustedCalls, MAX_AUTO_ACTIVATION_ATTEMPTS);
+	const exhaustedDraft = learning.getDraft(exhaustible.id);
+	assert.match(exhaustedDraft.automatic_activation.last_attempt_at, /^\d{4}-\d{2}-\d{2}T/);
+	assert.deepEqual({ ...exhaustedDraft.automatic_activation, last_attempt_at: "recorded" }, {
+		attempts: MAX_AUTO_ACTIVATION_ATTEMPTS,
+		max_attempts: MAX_AUTO_ACTIVATION_ATTEMPTS,
+		exhausted: true,
+		last_attempt_at: "recorded",
+		last_error: "persistent store failure",
+	});
 	assert.equal(fs.readdirSync(path.join(root, "outcome-records")).filter((file) => file.endsWith(".json")).length, 6);
 	fs.rmSync(root, { recursive: true, force: true });
-	console.log("felixLearning.test.js: 28/28 checks passed");
+	console.log("felixLearning.test.js: 40/40 checks passed");
 })();
