@@ -16,7 +16,7 @@ const { FelixSkills, skillProgress, hasExclusiveScrollWorldRoute, composeSkillsP
 const { selectVerticalTemplates, buildVerticalTemplatePack } = require("./verticalTemplates");
 const { SkillInstaller } = require("./skillInstaller");
 const { BrandDnaClient } = require("./brandDnaClient");
-const { FelixLearning } = require("./felixLearning");
+const { FelixLearning, LEARNING_MODE } = require("./felixLearning");
 const { captureBuild, projectContext, workspaceContext, captureAnnotation, ensureScheduledCheck, dueScheduledChecks } = require("./projectBrain");
 const { ManagerWorktrees } = require("./managerWorktrees");
 const { createReviewHandler } = require("./reviewShare");
@@ -439,7 +439,7 @@ class AgentController {
 		this.output = vscode.window.createOutputChannel("Felix");
 		this.skills = null;            // Felix's private self-improvement store (Phase 6)
 		this.skillInstaller = null;     // reviewed GitHub -> runtime skill directory installer
-		this.learning = null;          // shadow-only learning drafts; never injected before approval
+		this.learning = null;          // verified-outcome learning; activates only after an external gate
 		this._learningSignals = new Map(); // externally verified evidence keyed by build/task id
 		this.brandDnaClient = new BrandDnaClient(); // live loopback Brand-DNA Engine v0.4 HTTP client
 		this.scheduledCheckTimer = null;
@@ -487,6 +487,13 @@ class AgentController {
 			});
 			const seeded = this.skills.seedFrom(context.extensionPath);
 			this.skillsSeedResult = seeded;
+			const resumedLearning = this.learning.activateAllPending(this.skills);
+			if (resumedLearning.activated.length) {
+				this.output.append(`[learning-active] activated ${resumedLearning.activated.length} verified record(s) during startup\n`);
+			}
+			if (resumedLearning.failed.length) {
+				this.output.append(`[learning-active] ${resumedLearning.failed.length} verified record(s) still need activation attention\n`);
+			}
 			if (seeded && seeded.scrollWorld && seeded.scrollWorld.status === "repaired") {
 				vscode.window.showInformationMessage("Felix self-healed the ScrollWorld skill in global storage.");
 			} else if (seeded && seeded.scrollWorld && seeded.scrollWorld.status === "failed") {
@@ -4150,11 +4157,11 @@ self.addEventListener("fetch", (e) => {
 			if (this.fleetPanel) this.fleetPanel.webview.postMessage({ type: "flowStage", stage: "building", from: (extra && extra.from) || this.builderAgent(), ts: Date.now(), note: "Bugbot review" });
 			return;
 		}
-		// R4 shadow learning: a completed build may create DRAFT candidates only
-		// when a durable external browser/CI/critic signal was recorded. Retrieval
-		// or a model saying "done" is never a learning signal (52% < 60% rule).
+		// Gated-active learning: a completed build may write and activate candidates
+		// only when a durable external browser/CI/critic signal was recorded.
+		// Retrieval or a model saying "done" is never a learning signal (52% < 60%).
 		if (stage === "done" && this._activeBuild && this._verifyTaskId === this._activeBuild.taskId) {
-			this.draftLearningFromBuild(this._activeBuild);
+			this.learnFromVerifiedBuild(this._activeBuild);
 		}
 		// Round-trip the lifecycle back to the dispatching agent (Phase 1).
 		// "dispatch" already reports "started" from the build handler, so map
@@ -4528,8 +4535,8 @@ self.addEventListener("fetch", (e) => {
 			verticalRoute: this._lastVerticalRoute,
 			prompt: this._lastPromptDiagnostics,
 			learning: {
-				mode: "shadow",
-				autoActivation: false,
+				mode: LEARNING_MODE,
+				autoActivation: true,
 				drafts: this.learning ? this.learning.listDrafts().filter((draft) => draft.status === "DRAFT").length : 0,
 				requiresExternalSuccessSignal: true,
 				requiresDoesNotApply: true,
@@ -4594,8 +4601,8 @@ self.addEventListener("fetch", (e) => {
 			}
 			const composed = composeSkillsPrompt(hits);
 			const exclusive = composed.exclusive;
-			// Retrieval count is telemetry, not learning. R4 intentionally does not
-			// call recordUse(): only an external outcome may create a shadow draft.
+			// Retrieval count is telemetry, not learning. Only an externally verified
+			// outcome may create and activate a learning record.
 			const reasons = hits.map((h) => {
 				const selection = h.retrieval || {};
 				return `${h.meta.name || "skill"} — ${selection.pinned ? "pinned by explicit name" : selection.reason || "relevant"}`;
@@ -4641,14 +4648,15 @@ self.addEventListener("fetch", (e) => {
 	}
 	inferSkillSector(task) { const tags = this.inferSkillTags(task); return tags[0] || ""; }
 
-	// Shadow-only learning. A real external gate may create candidates, never an
-	// active skill. Human approval in the Skills panel is the sole activation path.
-	draftLearningFromBuild(b) {
+	// Gated-active learning. A verified external outcome creates an auditable
+	// record and activates it in the existing versioned skill store. If activation
+	// fails, the DRAFT remains visible in Skills for an explicit retry or reject.
+	learnFromVerifiedBuild(b) {
 		try {
 			if (!this.learning || !b || !b.task || !b.taskId) return;
 			const signal = this._learningSignals.get(b.taskId);
 			if (!signal || signal.verified !== true || !signal.sha256) {
-				this.output.append(`[learning-shadow] skipped ${b.taskId}: no verified external success signal\n`);
+				this.output.append(`[learning-active] skipped ${b.taskId}: no verified external success signal\n`);
 				return;
 			}
 			const proposed = this.learning.proposeFromBuild({
@@ -4661,16 +4669,23 @@ self.addEventListener("fetch", (e) => {
 				client: workspaceCwd() ? path.basename(workspaceCwd()) : "",
 			}, signal);
 			this._learningSignals.delete(b.taskId);
-			const created = proposed.filter((item) => item && item.created).map((item) => item.draft);
-			if (created.length) {
-				const message = `🧪 Felix יצר ${created.length} טיוטות למידה ב־shadow mode · ממתינות לאישור ב־Skills.`;
+			const result = this.learning.activatePending(proposed, this.skills, "Felix verified browser outcome gate");
+			if (result.activated.length) {
+				const message = `🧠 Felix הפעיל ${result.activated.length} למידות מאומתות · אות דפדפן חיצוני + SHA + does_not_apply.`;
 				this.announceAgentMessage(message);
 				vscode.window.showInformationMessage(message, "Open Skills").then((choice) => {
 					if (choice === "Open Skills") vscode.commands.executeCommand("solstice.agent.openSkills");
 				});
 			}
+			if (result.failed.length) {
+				const message = `Felix learning activation failed for ${result.failed.length} record(s); the drafts remain available in Skills.`;
+				this.output.append(`[learning-active] ${message}\n`);
+				vscode.window.showErrorMessage(message, "Open Skills").then((choice) => {
+					if (choice === "Open Skills") vscode.commands.executeCommand("solstice.agent.openSkills");
+				});
+			}
 			pushSkillsPanel(this);
-		} catch (e) { this.output.append("[learning-shadow] draft failed: " + (e && e.message || e) + "\n"); }
+		} catch (e) { this.output.append("[learning-active] outcome learning failed: " + (e && e.message || e) + "\n"); }
 	}
 
 	// Fidelity prose is evidence context, not a success signal. It remains on
@@ -4680,8 +4695,8 @@ self.addEventListener("fetch", (e) => {
 			const cwd = workspaceCwd(); if (!cwd) return;
 			const file = path.join(cwd, ".solstice", "FIDELITY.md");
 			if (!fs.existsSync(file)) return;
-			this.output.append(`[learning-shadow] fidelity candidate observed sha=${digestFile(file).slice(0, 12)}; awaiting external gate\n`);
-		} catch (e) { this.output.append("[learning-shadow] fidelity observation failed: " + (e && e.message || e) + "\n"); }
+			this.output.append(`[learning-active] fidelity candidate observed sha=${digestFile(file).slice(0, 12)}; awaiting external gate\n`);
+		} catch (e) { this.output.append("[learning-active] fidelity observation failed: " + (e && e.message || e) + "\n"); }
 	}
 
 	resolveWalkthroughRuntime(platform = process.platform) {
@@ -5439,7 +5454,7 @@ function pushSkillsPanel(controller) {
 		type: "skills",
 		items: [...skills.map((x) => map(x, "skill")), ...lessons.map((x) => map(x, "lesson"))],
 		diagnostics: controller.skillRuntimeDiagnostics(),
-		learning: { mode: "shadow", drafts: learningDrafts },
+		learning: { mode: LEARNING_MODE, drafts: learningDrafts },
 	});
 }
 function openSkills(controller, extensionUri) {
@@ -5452,7 +5467,7 @@ function openSkills(controller, extensionUri) {
 		if (m.type === "ready" || m.type === "refresh") { pushSkillsPanel(controller); return; }
 		if (m.type === "approveLearning") {
 			try {
-				if (!controller.learning) throw new Error("Felix shadow learning is unavailable.");
+				if (!controller.learning) throw new Error("Felix outcome learning is unavailable.");
 				const draft = controller.learning.getDraft(String(m.id || ""));
 				if (!draft || draft.status !== "DRAFT") throw new Error("Learning draft is missing or no longer pending.");
 				const detail = `${draft.claim}\n\nDoes not apply:\n${draft.does_not_apply.map((item) => `• ${item}`).join("\n")}\n\nEvidence SHA: ${draft.success_signal.sha256}`;
@@ -5470,7 +5485,7 @@ function openSkills(controller, extensionUri) {
 		}
 		if (m.type === "rejectLearning") {
 			try {
-				if (!controller.learning) throw new Error("Felix shadow learning is unavailable.");
+				if (!controller.learning) throw new Error("Felix outcome learning is unavailable.");
 				const draft = controller.learning.getDraft(String(m.id || ""));
 				if (!draft || draft.status !== "DRAFT") throw new Error("Learning draft is missing or no longer pending.");
 				const accepted = await vscode.window.showWarningMessage(`Reject learning draft '${draft.title}'?`, { modal: true }, "Reject draft");

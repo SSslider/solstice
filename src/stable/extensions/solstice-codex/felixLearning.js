@@ -4,9 +4,9 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
-const LEARNING_MODE = "shadow";
+const LEARNING_MODE = "gated-active";
 const DRAFT_SCHEMA_VERSION = "1.0";
-const DRAFT_STATUSES = new Set(["DRAFT", "APPROVED", "REJECTED"]);
+const DRAFT_STATUSES = new Set(["DRAFT", "ACTIVE", "APPROVED", "REJECTED"]);
 const HIERARCHY_LEVELS = new Set(["principle", "capability", "vertical", "client"]);
 const EXTERNAL_SIGNAL_TYPES = new Set([
 	"browser-functional-check",
@@ -19,7 +19,9 @@ const EXTERNAL_SIGNAL_TYPES = new Set([
 // R4 follows Whetstone Layer-2's principle-card shape without copying its
 // domain scars: claim + mechanism + applies_when + first-class does_not_apply
 // + transfer_probe + origin. Unlike the 19 converted advisory cards, Felix's
-// candidates remain local DRAFT records until an operator approves activation.
+// candidates are activated only after the caller supplies a verified external
+// outcome. The DRAFT state is still durable so an activation failure is visible
+// and recoverable instead of silently losing the learning record.
 
 function cleanText(value, max = 1200) {
 	return String(value === undefined || value === null ? "" : value).replace(/\s+/g, " ").trim().slice(0, max);
@@ -143,9 +145,30 @@ function inferLearningShape(task, tags = [], buildMode = "site") {
 class FelixLearning {
 	constructor(options = {}) {
 		this.dir = options.dir;
-		this.draftsDir = path.join(this.dir, "shadow-drafts");
+		this.draftsDir = path.join(this.dir, "outcome-records");
+		this.legacyDraftsDir = path.join(this.dir, "shadow-drafts");
 		this.log = options.log || (() => { });
 		fs.mkdirSync(this.draftsDir, { recursive: true });
+		this.migrateShadowDrafts();
+	}
+
+	migrateShadowDrafts() {
+		let files = [];
+		try { files = fs.readdirSync(this.legacyDraftsDir).filter((file) => file.endsWith(".json")); } catch { }
+		for (const file of files) {
+			const target = path.join(this.draftsDir, file);
+			if (fs.existsSync(target)) continue;
+			try {
+				const document = JSON.parse(fs.readFileSync(path.join(this.legacyDraftsDir, file), "utf8"));
+				document.mode = LEARNING_MODE;
+				document.migrated_from = "shadow";
+				document.updated_at = new Date().toISOString();
+				atomicJson(target, document);
+				this.log(`[learning-active] migrated ${document.id || file} for gated activation review`);
+			} catch (error) {
+				this.log(`[learning-active] legacy record migration failed for ${file}: ${error && error.message || error}`);
+			}
+		}
 	}
 
 	listDrafts() {
@@ -166,7 +189,7 @@ class FelixLearning {
 		const file = path.join(this.draftsDir, `${draft.id}.json`);
 		if (fs.existsSync(file)) return { draft: JSON.parse(fs.readFileSync(file, "utf8")), file, created: false };
 		atomicJson(file, draft);
-		this.log(`[learning-shadow] drafted ${draft.id}; never injected until human approval`);
+		this.log(`[learning-active] staged ${draft.id}; awaiting verified-outcome activation`);
 		return { draft, file, created: true };
 	}
 
@@ -234,7 +257,7 @@ class FelixLearning {
 	}
 
 	proposeCrossDomainPrinciple(capability) {
-		const source = this.listDrafts().filter((draft) => draft.status === "DRAFT" && draft.level === "vertical" && draft.hierarchy.capability === capability);
+		const source = this.listDrafts().filter((draft) => ["DRAFT", "ACTIVE", "APPROVED"].includes(draft.status) && draft.level === "vertical" && draft.hierarchy.capability === capability);
 		const verticals = [...new Set(source.map((draft) => draft.hierarchy.vertical).filter(Boolean))];
 		if (verticals.length < 2) return null;
 		const evidence = source.slice(0, 4);
@@ -250,7 +273,7 @@ class FelixLearning {
 			does_not_apply: ["Only one vertical has verified evidence", "The successful behavior depends on client identity or content", "The target cannot run an equivalent external gate"],
 			transfer_probe: [`Run ${capability} in a third vertical and compare the same machine-gated outcome`],
 			success_signal: {
-				type: "ci-test-suite", verified: true, verified_by: "felix-shadow-cross-domain-gate",
+				type: "ci-test-suite", verified: true, verified_by: "felix-active-cross-domain-gate",
 				evidence: evidence.map((draft) => draft.success_signal.evidence).join(" | "), sha256: combinedSha,
 				observed_at: new Date().toISOString(), summary: { verticals },
 			},
@@ -259,6 +282,10 @@ class FelixLearning {
 	}
 
 	approve(id, skills, approver = "operator") {
+		return this.activate(id, skills, approver, "APPROVED");
+	}
+
+	activate(id, skills, activator = "Felix verified outcome gate", status = "ACTIVE") {
 		const draft = this.getDraft(id);
 		if (!draft || draft.status !== "DRAFT") throw new Error("Learning draft is missing or no longer pending");
 		if (!skills || typeof skills.learn !== "function") throw new Error("Felix active skill store is unavailable");
@@ -269,11 +296,33 @@ class FelixLearning {
 			body: renderApprovedSkill(draft),
 			provenance: `${draft.id}:${draft.success_signal.sha256.slice(0, 12)}`,
 		});
-		draft.status = "APPROVED";
+		draft.status = status;
 		draft.updated_at = new Date().toISOString();
-		draft.approval = { approved_by: cleanText(approver, 120), approved_at: draft.updated_at, active_file: activated.file, active_version: activated.version };
+		draft.activation = { activated_by: cleanText(activator, 120), activated_at: draft.updated_at, active_file: activated.file, active_version: activated.version };
+		if (status === "APPROVED") draft.approval = { approved_by: cleanText(activator, 120), approved_at: draft.updated_at, active_file: activated.file, active_version: activated.version };
 		atomicJson(path.join(this.draftsDir, `${draft.id}.json`), draft);
 		return { draft, activated };
+	}
+
+	activatePending(results, skills, activator = "Felix verified outcome gate") {
+		const activated = [];
+		const failed = [];
+		for (const item of results || []) {
+			// Retry durable drafts left by an earlier skill-store failure. Restricting
+			// activation to newly created records would strand verified outcomes.
+			if (!item || !item.draft || item.draft.status !== "DRAFT") continue;
+			try { activated.push(this.activate(item.draft.id, skills, activator)); }
+			catch (error) { failed.push({ draft: item.draft, error: String(error && error.message || error) }); }
+		}
+		return { activated, failed };
+	}
+
+	activateAllPending(skills, activator = "Felix gated-active startup") {
+		return this.activatePending(
+			this.listDrafts().filter((draft) => draft.status === "DRAFT").map((draft) => ({ draft, created: false })),
+			skills,
+			activator,
+		);
 	}
 
 	reject(id, reason = "Rejected by operator") {
