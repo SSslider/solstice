@@ -18,6 +18,7 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 	const businessId = "11111111-1111-4111-8111-111111111111";
 	const received = [];
 	const remote = [];
+	const boardRequests = [];
 	let cursorCounter = 0;
 	const server = http.createServer((req, res) => {
 		const chunks = [];
@@ -26,7 +27,8 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 			res.setHeader("content-type", "application/json");
 			const url = new URL(req.url, "http://127.0.0.1");
 			if (url.pathname === "/api/foundation/businesses") {
-				assert.equal(req.headers["x-studio-key"], "test-studio-key");
+				boardRequests.push({ key: req.headers["x-studio-key"] || "", dev: url.searchParams.get("dev") || "" });
+				assert.ok(req.headers["x-studio-key"] === "test-studio-key" || url.searchParams.get("dev") === "studio");
 				res.end(JSON.stringify({ ok: true, layer: "VL-1", businesses: [{ id: businessId, slug: "rafael", name: "Rafael", events: 3 }] }));
 				return;
 			}
@@ -81,7 +83,21 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 	assert.equal(received[0].payload.value, "Rafael from Solstice");
 	const board = await client.listBusinesses();
 	assert.equal(board.businesses[0].name, "Rafael");
-	assert.equal(foundationBusinessesUrl(client.endpoint), `http://127.0.0.1:${server.address().port}/api/foundation/businesses`);
+	assert.equal(foundationBusinessesUrl(client.endpoint, "test-studio-key"), `http://127.0.0.1:${server.address().port}/api/foundation/businesses`);
+	assert.equal(boardRequests[0].key, "test-studio-key");
+	assert.equal(boardRequests[0].dev, "");
+	const keylessBoardClient = new FoundationClient({
+		endpoint: `http://127.0.0.1:${server.address().port}/api/foundation/events`,
+		storageDir: path.join(root, "keyless-storage"),
+		businessFile: path.join(root, "keyless-workspace", ".solstice", "foundation.json"),
+		studioKey: "",
+		timeout: 1000,
+	});
+	const keylessBoard = await keylessBoardClient.listBusinesses();
+	assert.equal(keylessBoard.businesses[0].name, "Rafael");
+	assert.equal(foundationBusinessesUrl(keylessBoardClient.endpoint), `http://127.0.0.1:${server.address().port}/api/foundation/businesses?dev=studio`);
+	assert.equal(boardRequests[1].key, "");
+	assert.equal(boardRequests[1].dev, "studio");
 
 	cursorCounter += 1;
 	remote.push({
@@ -127,5 +143,5 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 	assert.equal(fs.readFileSync(path.join(corruptDir, "outbox.json"), "utf8"), "{broken-json\n");
 	corruptClient.dispose();
 	fs.rmSync(root, { recursive: true, force: true });
-	console.log("foundationClient.test.js: 28/28 checks passed");
+	console.log("foundationClient.test.js: 34/34 checks passed");
 })().catch((error) => { console.error(error); process.exit(1); });

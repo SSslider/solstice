@@ -148,12 +148,13 @@ function requestJson(endpoint, options = {}) {
 	});
 }
 
-function foundationBusinessesUrl(endpoint) {
+function foundationBusinessesUrl(endpoint, studioKey = "") {
 	let url;
 	try { url = new URL(String(endpoint || FOUNDATION_EVENTS_URL)); }
 	catch { throw new FoundationSyncError("Foundation events URL is invalid.", { code: "invalid_url" }); }
 	url.pathname = "/api/foundation/businesses";
 	url.search = "";
+	if (!String(studioKey || "").trim()) url.searchParams.set("dev", "studio");
 	url.hash = "";
 	return url.toString();
 }
@@ -171,7 +172,9 @@ class FoundationClient {
 		// acceptable. Fall back to the key Atrium mints on disk so a local
 		// Solstice keeps working without anyone having to paste a secret.
 		this.studioKey = String(
-			options.studioKey || readStudioKeyFromDisk() || "",
+			Object.prototype.hasOwnProperty.call(options, "studioKey")
+				? options.studioKey
+				: readStudioKeyFromDisk(),
 		).trim();
 		this.pollMs = Math.max(1000, Number(options.pollMs) || 5000);
 		this.timeout = Math.max(250, Number(options.timeout) || 10000);
@@ -269,7 +272,7 @@ class FoundationClient {
 	}
 
 	async listBusinesses() {
-		const response = await requestJson(foundationBusinessesUrl(this.endpoint), {
+		const response = await requestJson(foundationBusinessesUrl(this.endpoint, this.studioKey), {
 			headers: this._headers(),
 			timeout: this.timeout,
 		});
