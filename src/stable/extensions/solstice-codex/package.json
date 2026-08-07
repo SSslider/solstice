@@ -339,6 +339,16 @@
           "default": "",
           "description": "Root directory the Projects Gallery scans for projects built on this server. Empty = auto-detect (~/solstice-deploys, then ~/Projects). Each immediate subfolder that looks like a project (package.json / index.html / .git / .solstice) becomes a gallery card."
         },
+        "solstice.codex.foundationApiUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:5180/api/foundation/events?dev=studio",
+          "description": "Foundation event-sync endpoint. Remote Atrium deployments require an x-studio-key supplied through SOLSTICE_FOUNDATION_STUDIO_KEY or ~/.solstice/foundation-studio-key."
+        },
+        "solstice.codex.foundationBusinessId": {
+          "type": "string",
+          "default": "",
+          "description": "The single Foundation business UUID synchronized by this workspace during CP-1. The same id may be stored in .solstice/foundation.json."
+        },
         "solstice.codex.failoverChain": {
           "type": "array",
           "items": {

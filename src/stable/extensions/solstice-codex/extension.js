@@ -16,6 +16,7 @@ const { FelixSkills, skillProgress, hasExclusiveScrollWorldRoute, composeSkillsP
 const { selectVerticalTemplates, buildVerticalTemplatePack } = require("./verticalTemplates");
 const { SkillInstaller } = require("./skillInstaller");
 const { BrandDnaClient } = require("./brandDnaClient");
+const { FoundationClient } = require("./foundationClient");
 const { FelixLearning, LEARNING_MODE } = require("./felixLearning");
 const { captureBuild, projectContext, workspaceContext, captureAnnotation, ensureScheduledCheck, dueScheduledChecks } = require("./projectBrain");
 const { ManagerWorktrees } = require("./managerWorktrees");
@@ -442,6 +443,37 @@ class AgentController {
 		this.learning = null;          // verified-outcome learning; activates only after an external gate
 		this._learningSignals = new Map(); // externally verified evidence keyed by build/task id
 		this.brandDnaClient = new BrandDnaClient(); // live loopback Brand-DNA Engine v0.4 HTTP client
+		this.foundationClient = null;
+		this._foundationReady = null;
+		try {
+			const root = workspaceCwd();
+			if (root) {
+				let foundationStudioKey = process.env.SOLSTICE_FOUNDATION_STUDIO_KEY || "";
+				if (!foundationStudioKey) {
+					try { foundationStudioKey = fs.readFileSync(path.join(os.homedir(), ".solstice", "foundation-studio-key"), "utf8").trim(); }
+					catch { }
+				}
+				this.foundationClient = new FoundationClient({
+					endpoint: process.env.SOLSTICE_FOUNDATION_API_URL || this.cfg().get("foundationApiUrl") || undefined,
+					storageDir: path.join(context.globalStorageUri.fsPath, "foundation-sync"),
+					businessFile: path.join(root, ".solstice", "foundation.json"),
+					businessId: process.env.SOLSTICE_FOUNDATION_BUSINESS_ID || this.cfg().get("foundationBusinessId") || "",
+					studioKey: foundationStudioKey,
+					log: (message) => this.output.append(message + "\n"),
+				});
+				// Startup performs drain -> pull, then arms a five-second poll. A failed
+				// request is deliberately non-fatal: the disk outbox remains authoritative.
+				this._foundationReady = this.foundationClient.start().then((status) => {
+					this.output.append(`[foundation] ready business=${status.business_id || "unconfigured"} queued=${status.queued}\n`);
+					return status;
+				}).catch((error) => {
+					this.output.append(`[foundation] start failed: ${error && error.message || error}\n`);
+					return null;
+				});
+			}
+		} catch (error) {
+			this.output.append(`[foundation] init failed: ${error && error.message || error}\n`);
+		}
 		this.scheduledCheckTimer = null;
 		this._scheduledCheckRunning = false;
 		this.activeCliChildren = new Set(); // walkthrough/deploy/helper processes stopped by global Stop
@@ -5285,6 +5317,7 @@ self.addEventListener("fetch", (e) => {
 		if (this.grok) this.grok.interrupt();
 		if (this.claude) this.claude.interrupt();
 		if (this.client) this.client.stop();
+		if (this.foundationClient) this.foundationClient.dispose();
 		if (this.skillInstaller) this.skillInstaller.dispose();
 		this.closeFleetBridges();
 	}
