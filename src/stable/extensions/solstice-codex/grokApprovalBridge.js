@@ -11,8 +11,10 @@ const APPROVAL_TOKEN_ENV = "SOLSTICE_GROK_APPROVAL_TOKEN";
 const HOOK_FILE_NAME = "solstice-felix-approval.json";
 const SAFE_GROK_TOOLS = new Set([
 	"read_file",
+	"list_files",
 	"list_dir",
 	"grep",
+	"search_text",
 	"web_search",
 	"web_fetch",
 	"view_image",
@@ -68,10 +70,10 @@ function grokApprovalDescriptor(input, threadId) {
 		reason,
 	};
 	if (command) params.command = command;
-	if (/^(?:run_terminal_command|shell|bash)$/.test(lower)) {
+	if (/^(?:run_terminal_command|run_command|shell|bash)$/.test(lower)) {
 		return { method: "item/commandExecution/requestApproval", params };
 	}
-	if (/^(?:search_replace|write|edit|str_replace|apply_patch|edit_notebook|delete)$/.test(lower)) {
+	if (/^(?:search_replace|replace_in_file|write|write_file|edit|str_replace|apply_patch|edit_notebook|delete)$/.test(lower)) {
 		params.localFileEdit = true;
 		return { method: "item/fileChange/requestApproval", params };
 	}

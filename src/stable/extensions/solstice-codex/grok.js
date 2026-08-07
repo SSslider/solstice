@@ -147,7 +147,7 @@ function unifiedDiff(relPath, oldText, newText) {
 
 // Declarative model registry — the single source of truth for every provider
 // Felix can drive. Slotting in a newer/stronger model is one entry here:
-//   runner: which CLI spawns it (codex | grok | claude)
+//   runner: which engine serves it (codex | grok | claude | moonshot)
 //   grokId: the model id passed to the grok CLI (grok runner only)
 //   gated:  true => hidden unless explicitly opted in (e.g. claudeAllowed())
 //   order:  display order in the model picker
@@ -156,11 +156,14 @@ function unifiedDiff(relPath, oldText, newText) {
 const MODEL_REGISTRY = {
 	"gpt-5.6": { label: "GPT-5.6 Sol (Codex)", desc: "Compatibility alias via Codex CLI >=0.144", runner: "codex", codexId: "gpt-5.6", provider: "gpt", order: 0 },
 	"gpt-5.5": { label: "GPT-5.5 (Codex)", desc: "ChatGPT subscription — full agent: plans, approvals, image gen", runner: "codex", codexId: "gpt-5.5", order: 1 },
-	"claude-opus": { label: "Opus", desc: "Manual Thomas testing only", runner: "claude", claudeId: "opus", provider: "claude", gated: true, manualOnly: true, order: 2 },
-	"claude-sonnet": { label: "Sonnet", desc: "Manual Thomas testing only", runner: "claude", claudeId: "sonnet", provider: "claude", gated: true, manualOnly: true, order: 3 },
+	"claude-fable-5": { label: "Claude Fable 5", desc: "Claude Code CLI — manual selection only", runner: "claude", claudeId: "claude-fable-5", provider: "claude", gated: true, manualOnly: true, order: 2 },
+	"claude-opus-4-8": { label: "Claude Opus 4.8", desc: "Claude Code CLI — manual selection only", runner: "claude", claudeId: "claude-opus-4-8", provider: "claude", gated: true, manualOnly: true, order: 3 },
+	"claude-opus-4-7": { label: "Claude Opus 4.7", desc: "Claude Code CLI — manual selection only", runner: "claude", claudeId: "claude-opus-4-7", provider: "claude", gated: true, manualOnly: true, order: 4 },
+	"claude-sonnet-5": { label: "Claude Sonnet 5", desc: "Claude Code CLI — manual selection only", runner: "claude", claudeId: "claude-sonnet-5", provider: "claude", gated: true, manualOnly: true, order: 5 },
 	// Grok CLI >=0.2.93 advertises this exact id via `grok models`.
-	"grok-4.5": { label: "Grok 4.5 Build", desc: "grok-4.5 via the grok CLI — agentic fallback", runner: "grok", grokId: "grok-4.5", provider: "grok", order: 4 },
-	"composer-2.5": { label: "Composer 2.5 Fast", desc: "grok CLI — fast builder", runner: "grok", grokId: "grok-composer-2.5-fast", provider: "composer", order: 5 },
+	"grok-4.5": { label: "Grok 4.5 Build", desc: "grok-4.5 via the grok CLI — agentic fallback", runner: "grok", grokId: "grok-4.5", provider: "grok", order: 6 },
+	"composer-2.5": { label: "Composer 2.5 Fast", desc: "grok CLI — fast builder", runner: "grok", grokId: "grok-composer-2.5-fast", provider: "composer", order: 7 },
+	"kimi-k3": { label: "Kimi K3", desc: "Moonshot direct API — connects when selected", runner: "moonshot", moonshotId: "kimi-k3", provider: "moonshot", manualOnly: true, order: 8 },
 };
 
 // Which CLI runner serves a given model key (defaults to codex).

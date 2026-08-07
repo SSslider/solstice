@@ -9,10 +9,12 @@ const PROVIDER_LABELS = {
 	grok: "Grok",
 	composer: "Composer",
 	claude: "Claude",
+	moonshot: "Moonshot",
 };
 
 function providerForModel(id, runner) {
 	if (runner === "claude") return "claude";
+	if (runner === "moonshot") return "moonshot";
 	if (runner === "grok") return /^grok-composer-/i.test(id) ? "composer" : "grok";
 	return "gpt";
 }
@@ -111,14 +113,8 @@ function discoverGrokModels(bin, timeoutMs = 6000) {
 }
 
 function groupModels(models, allowClaude) {
-	const list = [...(models || [])];
-	if (allowClaude && !list.some((model) => model.provider === "claude")) {
-		list.push(
-			{ key: "claude-opus", modelId: "opus", label: "Opus", description: "Manual Thomas testing only", runner: "claude", provider: "claude", manualOnly: true },
-			{ key: "claude-sonnet", modelId: "sonnet", label: "Sonnet", description: "Manual Thomas testing only", runner: "claude", provider: "claude", manualOnly: true },
-		);
-	}
-	const order = ["gpt", "grok", "composer", "claude"];
+	const list = [...(models || [])].filter((model) => allowClaude || model.provider !== "claude");
+	const order = ["gpt", "grok", "composer", "claude", "moonshot"];
 	return order.map((key) => ({
 		key,
 		label: PROVIDER_LABELS[key],

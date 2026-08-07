@@ -11,6 +11,8 @@ const { isPureLaunchIntent, runtimeStopIntent } = require("./intent");
 const { PreviewServer, DevServer, detectDevServerUrl, hasFramework } = require("./preview");
 const { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, resolveGrokBinary, grokBundlePresent, killTree } = require("./grok");
 const { ClaudeProvider } = require("./claude");
+const { MoonshotProvider } = require("./moonshot");
+const { ensureProviderConnection, providerCredential } = require("./providerOnboarding");
 const { FleetBridge } = require("./fleetBridge");
 const { FelixSkills, skillProgress, hasExclusiveScrollWorldRoute, composeSkillsPrompt } = require("./felixSkills");
 const { selectVerticalTemplates, buildVerticalTemplatePack } = require("./verticalTemplates");
@@ -421,6 +423,7 @@ class AgentController {
 		this.previewBuildTimer = null;
 		this.grok = null;
 		this.claude = null;
+		this.moonshot = null;
 		this.grokWatcher = null;
 		this.grokChanged = null;
 		this.fallbackPrompted = false;
@@ -1973,6 +1976,14 @@ self.addEventListener("fetch", (e) => {
 
 	providerKey() {
 		let k = this.cfg().get("provider") || "composer-2.5";
+		const legacyClaude = { "claude-opus": "claude-opus-4-8", "claude-sonnet": "claude-sonnet-5" };
+		if (legacyClaude[k]) {
+			k = legacyClaude[k];
+			if (!this._legacyClaudeProviderMigrated) {
+				this._legacyClaudeProviderMigrated = true;
+				Promise.resolve(this.cfg().update("provider", k, this.cfgTarget())).catch(() => {});
+			}
+		}
 		// Migrate the pre-04096 persisted key without keeping the removed model id
 		// in the active registry or selector defaults.
 		const legacyGrokBuildKey = ["grok", "build"].join("-");
@@ -1996,6 +2007,7 @@ self.addEventListener("fetch", (e) => {
 	runnerBin(runner) {
 		if (runner === "codex") return resolveCodexBinary(this.context.extensionPath, this.cfg().get("path"));
 		if (runner === "claude") return this.cfg().get("claudePath") || "claude";
+		if (runner === "moonshot") return "Moonshot direct API";
 		// grok runner (grok-4.5 / composer-2.5): explicit setting → bundled engine → PATH.
 		return resolveGrokBinary(this.context.extensionPath, this.cfg().get("grokPath"));
 	}
@@ -2012,6 +2024,10 @@ self.addEventListener("fetch", (e) => {
 			let bin = "";
 			let found = null;
 			try {
+				if (meta.runner === "moonshot") {
+					list.push({ key, runner: meta.runner, label: meta.label, ok: true, detail: "Direct API — connects securely when selected" });
+					continue;
+				}
 				bin = this.runnerBin(meta.runner) || "";
 				found = bin ? whichFull(bin) : null;
 			} catch { /* status only — never throw */ }
@@ -2039,6 +2055,11 @@ self.addEventListener("fetch", (e) => {
 		const lines = [];
 		for (const meta of Object.values(MODEL_REGISTRY)) {
 			const runner = meta.runner;
+			if (runner === "moonshot") {
+				const connected = !!(await providerCredential(this.context, "moonshot"));
+				lines.push(`${meta.label} [${runner}]`, "  engine: built-in direct API", `  auth  : ${connected ? "connected" : "connects when selected"}`);
+				continue;
+			}
 			let bin = "";
 			try { bin = this.runnerBin(runner) || "<none>"; } catch (e) { bin = `<resolve failed: ${e.message}>`; }
 			const found = whichFull(bin);
@@ -2058,6 +2079,7 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	runnerAvailable(runner) {
+		if (runner === "moonshot") return true;
 		// grok ships its engine bundled (brotli payload) — count it as available
 		// WITHOUT forcing a decompression on every availability probe.
 		if (runner === "grok") {
@@ -2208,10 +2230,14 @@ self.addEventListener("fetch", (e) => {
 		if (this._discoveredModelChoices) {
 			const list = [...this._discoveredModelChoices];
 			if (this.claudeAllowed()) {
-				for (const key of ["claude-opus", "claude-sonnet"]) {
+				for (const key of ["claude-fable-5", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5"]) {
 					const m = MODEL_REGISTRY[key];
 					list.push({ key, modelId: m.claudeId, label: m.label, description: m.desc, runner: m.runner, provider: "claude", manualOnly: true });
 				}
+			}
+			for (const [key, m] of Object.entries(MODEL_REGISTRY)) {
+				if (m.runner !== "moonshot" || list.some((item) => item.key === key)) continue;
+				list.push({ key, modelId: m.moonshotId, label: m.label, description: m.desc, runner: m.runner, provider: "moonshot", manualOnly: true });
 			}
 			return list;
 		}
@@ -2251,7 +2277,9 @@ self.addEventListener("fetch", (e) => {
 		this.client = null;
 		try { if (this.claude && typeof this.claude.stop === "function") this.claude.stop(); } catch { }
 		try { if (this.claude && typeof this.claude.dispose === "function") this.claude.dispose(); } catch { }
+		try { if (this.moonshot && typeof this.moonshot.dispose === "function") this.moonshot.dispose(); } catch { }
 		this.claude = null;
+		this.moonshot = null;
 		this.grok = null;
 		this.threadId = null;
 		this._failoverTried = null;
@@ -2259,7 +2287,8 @@ self.addEventListener("fetch", (e) => {
 
 	// True while a build/turn is actively running (don't switch model mid-build).
 	agentBusy() {
-		const prov = runnerFor(this.providerKey()) === "claude" ? this.claude : this.grok;
+		const runner = runnerFor(this.providerKey());
+		const prov = runner === "claude" ? this.claude : runner === "moonshot" ? this.moonshot : this.grok;
 		return !!(prov && prov.busy);
 	}
 
@@ -2277,13 +2306,24 @@ self.addEventListener("fetch", (e) => {
 		// Don't switch to a model whose CLI isn't installed on THIS machine — building
 		// on it would spawn-EPERM (the npm shim doesn't exist). Tell the user how to
 		// enable it instead of crashing. (Thomas: "spawn EPERM" switching to Grok/Composer.)
-		if (!this.runnerAvailable(runnerFor(key))) {
+		const nextRunner = runnerFor(key);
+		if (nextRunner === "moonshot") {
+			try {
+				const connection = await ensureProviderConnection(vscode, this.context, "moonshot");
+				if (!connection.ok) { this.applyProviderToWebviews(); return; }
+			} catch (error) {
+				vscode.window.showErrorMessage(`Solstice: Moonshot connection failed — ${error && error.message || error}`);
+				this.applyProviderToWebviews();
+				return;
+			}
+		}
+		if (!this.runnerAvailable(nextRunner)) {
 			const label = (this.modelChoices().find((it) => it.key === key) || {}).label || key;
 			vscode.window.showWarningMessage(`Solstice: ${label} isn't available on this machine — its CLI isn't installed, so it can't run here (that's the "spawn EPERM"). Install its CLI and sign in once, or stay on the current model.`);
 			this.applyProviderToWebviews(); // snap the picker back to the real provider
 			return;
 		}
-		this._manualClaudeSelected = runnerFor(key) === "claude";
+		this._manualClaudeSelected = nextRunner === "claude";
 		await this.cfg().update("provider", key, this.cfgTarget());
 		this.resetAgentSession();
 		this.applyProviderToWebviews();
@@ -2321,7 +2361,8 @@ self.addEventListener("fetch", (e) => {
 		this.refreshModelCatalog().catch(() => { });
 		this.postEngineStatus();
 		if (runnerFor(this.providerKey()) !== "codex") {
-			const auth = { type: "auth", authMethod: runnerFor(this.providerKey()) === "claude" ? "claude-cli" : "grok-cli" };
+			const runner = runnerFor(this.providerKey());
+			const auth = { type: "auth", authMethod: runner === "claude" ? "claude-cli" : runner === "moonshot" ? "moonshot-api" : "grok-cli" };
 			this.post(auth);
 			this.postManager(auth);
 		} else {
@@ -2345,7 +2386,7 @@ self.addEventListener("fetch", (e) => {
 		let chain = this.cfg().get("failoverChain");
 		if (!Array.isArray(chain) || !chain.length) chain = def;
 		// hard guard: claude can never enter the automatic chain
-		return chain.map((s) => String(s)).filter((k) => k && runnerFor(k) !== "claude");
+		return chain.map((s) => String(s)).filter((k) => k && !(MODEL_REGISTRY[k] && MODEL_REGISTRY[k].manualOnly));
 	}
 
 	// Auto-failover: on a quota/rate-limit error, transparently advance to the
@@ -2700,9 +2741,48 @@ self.addEventListener("fetch", (e) => {
 		this.flushGrokChanges();
 	}
 
+	async sendMoonshot(text) {
+		const cwd = workspaceCwd();
+		if (!cwd) { vscode.window.showWarningMessage("Solstice: open a folder first."); return; }
+		const connection = await ensureProviderConnection(vscode, this.context, "moonshot");
+		if (!connection.ok) return;
+		const prompt = appendResearchContract(this.withBrandPack(text, cwd));
+		this.recordSkillPrompt("moonshot", text, prompt);
+		if (!this.moonshot) {
+			const selected = MODEL_REGISTRY[this.providerKey()] || {};
+			const apiKey = connection.credential || await providerCredential(this.context, "moonshot");
+			this.moonshot = new MoonshotProvider({
+				cwd,
+				apiKey,
+				model: selected.moonshotId || "kimi-k3",
+				reasoningEffort: this.cfg().get("moonshotReasoningEffort") || "high",
+				authorizeTool: (input) => this.authorizeMoonshotTool(input),
+				log: (value) => this.output.append(value),
+				notify: (method, params) => this.onNotification(method, params),
+			});
+			this.threadId = this.moonshot.threadId;
+			const thread = this.upsertThread({ id: this.threadId });
+			thread.preview = text;
+			this.post({ type: "thread", threadId: this.threadId, model: this.providerLabel() });
+		}
+		await this.moonshot.send(prompt, this.claudePreamble(text));
+	}
+
 	async authorizeGrokTool(input) {
 		if (isSafeGrokTool(input)) return { decision: "allow" };
 		const descriptor = grokApprovalDescriptor(input, this.grok && this.grok.threadId || this.threadId);
+		const result = await this.handleServerRequest(descriptor.method, descriptor.params);
+		const decision = result && (result.decision || result.action);
+		return {
+			decision: ["accept", "approved", "approved_for_session"].includes(decision) ? "allow" : "deny",
+			reason: decision === "decline" || decision === "denied" ? "Denied by Thomas in Felix." : undefined,
+		};
+	}
+
+	async authorizeMoonshotTool(input) {
+		if (isSafeGrokTool(input)) return { decision: "allow" };
+		const descriptor = grokApprovalDescriptor(input, this.moonshot && this.moonshot.threadId || this.threadId);
+		descriptor.params.source = "moonshot";
 		const result = await this.handleServerRequest(descriptor.method, descriptor.params);
 		const decision = result && (result.decision || result.action);
 		return {
@@ -3091,7 +3171,8 @@ self.addEventListener("fetch", (e) => {
 	async refreshAccount(target) {
 		if (runnerFor(this.providerKey()) !== "codex") {
 			// grok/claude CLI auth lives in the CLI itself — no codex login flow needed
-			const method = runnerFor(this.providerKey()) === "claude" ? "claude-cli" : "grok-cli";
+			const runner = runnerFor(this.providerKey());
+			const method = runner === "claude" ? "claude-cli" : runner === "moonshot" ? "moonshot-api" : "grok-cli";
 			const msg = { type: "auth", authMethod: method };
 			const mt = { type: "thread", model: this.providerLabel() };
 			if (target === "manager") { this.postManager(msg); this.postManager(mt); }
@@ -3274,10 +3355,11 @@ self.addEventListener("fetch", (e) => {
 		// reject ("a turn is already running") and silently drop the prompt —
 		// route it to the steer queue so it drains into the next turn.
 		if (runner !== "codex") {
-			const prov = runner === "claude" ? this.claude : this.grok;
+			const prov = runner === "claude" ? this.claude : runner === "moonshot" ? this.moonshot : this.grok;
 			if (prov && prov.busy) return this.steer(this.threadId, text);
 		}
 		if (runner === "claude") return this.sendClaude(text);
+		if (runner === "moonshot") return this.sendMoonshot(text);
 		if (runner === "grok") return this.sendGrok(text, rawText);
 		if (!this.threadId) {
 			const { id, model } = await this.startThread(text);
@@ -3295,7 +3377,8 @@ self.addEventListener("fetch", (e) => {
 		// While they're busy, queue the steer and drain it into a follow-up turn
 		// the moment the current turn completes (re-prioritised next).
 		if (runnerFor(provider) !== "codex") {
-			const prov = runnerFor(provider) === "claude" ? this.claude : this.grok;
+			const runner = runnerFor(provider);
+			const prov = runner === "claude" ? this.claude : runner === "moonshot" ? this.moonshot : this.grok;
 			if (prov && prov.busy) {
 				this.steerQueue.push(text);
 				const r = this.liveRec("_builder"); r.queued = this.steerQueue.length;
@@ -3354,12 +3437,13 @@ self.addEventListener("fetch", (e) => {
 		}
 		this.steerQueue = [];
 		if (this.claude && (!threadId || threadId === this.claude.threadId)) stopped = this.claude.interrupt() || stopped;
+		if (this.moonshot && (!threadId || threadId === this.moonshot.threadId)) stopped = this.moonshot.interrupt() || stopped;
 		if (this.grok && (!threadId || threadId === this.grok.threadId)) stopped = this.grok.interrupt() || stopped;
 		if (!threadId) for (const child of this.activeCliChildren) { killTree(child); stopped = true; }
 		const active = [...this.threads.values()].filter((th) => th && th.activeTurnId).map((th) => th.id);
 		const requested = threadId ? [threadId] : [this.activeCodexThreadId, ...active, this.threadId];
 		const tids = [...new Set(requested.filter((tid) =>
-			tid && !String(tid).startsWith("grok-") && !String(tid).startsWith("claude-")))];
+			tid && !String(tid).startsWith("grok-") && !String(tid).startsWith("claude-") && !String(tid).startsWith("moonshot-")))];
 		if (this.client && this.client.running && tids.length) {
 			stopped = true;
 			const interruptOne = (tid) => new Promise((resolve) => {
@@ -3428,6 +3512,7 @@ self.addEventListener("fetch", (e) => {
 		this.lastDiff = "";
 		// drop the claude session so the next send starts a fresh conversation
 		if (this.claude && !this.claude.busy) this.claude = null;
+		if (this.moonshot && !this.moonshot.busy) this.moonshot = null;
 		this.post({ type: "reset" });
 	}
 
@@ -5330,6 +5415,7 @@ self.addEventListener("fetch", (e) => {
 		if (this.grokWatcher) this.grokWatcher.dispose();
 		if (this.grok) this.grok.interrupt();
 		if (this.claude) this.claude.interrupt();
+		if (this.moonshot) this.moonshot.interrupt();
 		if (this.client) this.client.stop();
 		if (this.foundationClient) this.foundationClient.dispose();
 		if (this.skillInstaller) this.skillInstaller.dispose();

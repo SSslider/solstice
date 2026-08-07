@@ -256,12 +256,12 @@
         "solstice.codex.provider": {
           "type": "string",
           "default": "composer-2.5",
-          "description": "Which model drives the Solstice agent. The picker discovers installed CLI tiers at runtime. Claude is gated and manual-only; it is never a default or failover target."
+          "description": "Which model drives the Solstice agent. The picker discovers local CLI tiers and always exposes connectable API providers. Claude and Moonshot remain manual-only; neither is a default or failover target."
         },
         "solstice.codex.allowClaude": {
           "type": "boolean",
-          "default": false,
-          "description": "Explicit opt-in gate for Thomas's manual Claude tests. Even when enabled, Claude can only be activated manually from the staged model picker and is never used by defaults, Felix automation, or failover."
+          "default": true,
+          "description": "Show Claude models in the model picker. Claude remains manual-only and is never used by defaults, Felix automation, or failover."
         },
         "solstice.codex.groqApiKey": {
           "type": "string",
@@ -339,6 +339,16 @@
           ],
           "default": "acceptEdits",
           "description": "Permission mode passed to the claude CLI. In headless --print mode tools that would prompt are denied; raise to bypassPermissions if shell commands get blocked."
+        },
+        "solstice.codex.moonshotReasoningEffort": {
+          "type": "string",
+          "enum": [
+            "low",
+            "high",
+            "max"
+          ],
+          "default": "high",
+          "description": "Reasoning effort for Kimi K3 direct API turns."
         },
         "solstice.codex.designElevation": {
           "type": "boolean",
