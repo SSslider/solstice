@@ -4,9 +4,27 @@ const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
 const https = require("https");
+const os = require("os");
 const path = require("path");
 
-const FOUNDATION_EVENTS_URL = "http://127.0.0.1:5180/api/foundation/events?dev=studio";
+
+const STUDIO_KEY_PATHS = [
+	process.env.SOLSTICE_FOUNDATION_STUDIO_KEY_FILE,
+	path.join(os.homedir(), ".solstice", "foundation-studio-key"),
+	"/home/thomas/Julius-cc-x/agents/atrium/output/_marketing/_agent_access/key",
+].filter(Boolean);
+
+function readStudioKeyFromDisk() {
+	for (const candidate of STUDIO_KEY_PATHS) {
+		try {
+			const value = fs.readFileSync(candidate, "utf-8").trim();
+			if (value) return value;
+		} catch { /* try the next candidate */ }
+	}
+	return "";
+}
+
+const FOUNDATION_EVENTS_URL = "https://srv1404664.tailf3ebe4.ts.net:10000/api/foundation/events";
 const BUSINESS_NAME_EVENT = "business.name_updated";
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
@@ -130,6 +148,16 @@ function requestJson(endpoint, options = {}) {
 	});
 }
 
+function foundationBusinessesUrl(endpoint) {
+	let url;
+	try { url = new URL(String(endpoint || FOUNDATION_EVENTS_URL)); }
+	catch { throw new FoundationSyncError("Foundation events URL is invalid.", { code: "invalid_url" }); }
+	url.pathname = "/api/foundation/businesses";
+	url.search = "";
+	url.hash = "";
+	return url.toString();
+}
+
 class FoundationClient {
 	constructor(options = {}) {
 		this.endpoint = options.endpoint || FOUNDATION_EVENTS_URL;
@@ -137,7 +165,14 @@ class FoundationClient {
 		this.businessFile = path.resolve(options.businessFile || path.join(process.cwd(), ".solstice", "foundation.json"));
 		this.businessId = String(options.businessId || "").trim();
 		this.businessName = "";
-		this.studioKey = String(options.studioKey || "").trim();
+		// Reads accept the ?dev=studio bypass; writes no longer do — the events
+		// endpoint appends to every business's history and the dev server sits
+		// behind a Tailscale funnel, so an unauthenticated write path was not
+		// acceptable. Fall back to the key Atrium mints on disk so a local
+		// Solstice keeps working without anyone having to paste a secret.
+		this.studioKey = String(
+			options.studioKey || readStudioKeyFromDisk() || "",
+		).trim();
 		this.pollMs = Math.max(1000, Number(options.pollMs) || 5000);
 		this.timeout = Math.max(250, Number(options.timeout) || 10000);
 		this.log = typeof options.log === "function" ? options.log : () => {};
@@ -231,6 +266,17 @@ class FoundationClient {
 			cursor: this.cursor,
 			queued: this.outbox.length,
 		};
+	}
+
+	async listBusinesses() {
+		const response = await requestJson(foundationBusinessesUrl(this.endpoint), {
+			headers: this._headers(),
+			timeout: this.timeout,
+		});
+		if (!response || response.ok !== true || !Array.isArray(response.businesses)) {
+			throw new FoundationSyncError("Foundation returned an invalid businesses board.", { code: "invalid_businesses_response" });
+		}
+		return response;
 	}
 
 	async updateBusinessName(businessId, name) {
@@ -352,6 +398,7 @@ module.exports = {
 	FoundationSyncError,
 	eventBusinessName,
 	eventId,
+	foundationBusinessesUrl,
 	normalizeBusinessId,
 	normalizeBusinessName,
 };

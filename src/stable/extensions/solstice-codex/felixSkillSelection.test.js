@@ -83,8 +83,6 @@ function ok(value, message) { checks++; assert.ok(value, message); }
 		// locked in as required behaviour twice on 05/08.
 		const nonExclusiveMentions = [
 			"בנה לי אתר עם ScrollWorld",
-			"למה ScrollWorld נכשל אתמול?",
-			"מה ההבדל בין ScrollWorld ל-GSAP?",
 			"ראיתי אתר עם scroll world, אבל תבנה לי לנדינג פשוט",
 			"ScrollWorld היה רעיון גרוע",
 		];
@@ -102,6 +100,10 @@ function ok(value, message) { checks++; assert.ok(value, message); }
 			"rather than ScrollWorld, keep it a plain landing",
 			"skip ScrollWorld, just a simple landing",
 			"please skip ScrollWorld for this task",
+			"no ScrollWorld please",
+			"למה ScrollWorld נכשל?",
+			"מה ההבדל בין ScrollWorld ל-GSAP?",
+			"why did ScrollWorld fail?",
 		];
 		ok(hasExclusiveScrollWorldRoute(exclusiveMarker), "case 1: explicit FELIX_ROUTE marker remains exclusive");
 		for (const request of nonExclusiveMentions) {

@@ -5,7 +5,7 @@ const fs = require("fs");
 const http = require("http");
 const os = require("os");
 const path = require("path");
-const { FoundationClient } = require("./foundationClient");
+const { FoundationClient, foundationBusinessesUrl } = require("./foundationClient");
 
 function listen(server) { return new Promise((resolve) => server.listen(0, "127.0.0.1", resolve)); }
 function close(server) { return new Promise((resolve) => server.close(resolve)); }
@@ -22,9 +22,14 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 	const server = http.createServer((req, res) => {
 		const chunks = [];
 		req.on("data", (chunk) => chunks.push(chunk));
-		req.on("end", () => {
+			req.on("end", () => {
 			res.setHeader("content-type", "application/json");
 			const url = new URL(req.url, "http://127.0.0.1");
+			if (url.pathname === "/api/foundation/businesses") {
+				assert.equal(req.headers["x-studio-key"], "test-studio-key");
+				res.end(JSON.stringify({ ok: true, layer: "VL-1", businesses: [{ id: businessId, slug: "rafael", name: "Rafael", events: 3 }] }));
+				return;
+			}
 			if (req.method === "POST") {
 				const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 				received.push(...body.events);
@@ -67,12 +72,16 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 		businessFile,
 		pollMs: 60000,
 		timeout: 1000,
+		studioKey: "test-studio-key",
 	});
 	const resumed = await client.start();
 	assert.equal(resumed.queued, 0);
 	assert.equal(client.status().queued, 0);
 	assert.equal(received.length, 1);
 	assert.equal(received[0].payload.value, "Rafael from Solstice");
+	const board = await client.listBusinesses();
+	assert.equal(board.businesses[0].name, "Rafael");
+	assert.equal(foundationBusinessesUrl(client.endpoint), `http://127.0.0.1:${server.address().port}/api/foundation/businesses`);
 
 	cursorCounter += 1;
 	remote.push({
@@ -118,5 +127,5 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 	assert.equal(fs.readFileSync(path.join(corruptDir, "outbox.json"), "utf8"), "{broken-json\n");
 	corruptClient.dispose();
 	fs.rmSync(root, { recursive: true, force: true });
-	console.log("foundationClient.test.js: 25/25 checks passed");
+	console.log("foundationClient.test.js: 28/28 checks passed");
 })().catch((error) => { console.error(error); process.exit(1); });

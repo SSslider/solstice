@@ -16,7 +16,7 @@ const { FelixSkills, skillProgress, hasExclusiveScrollWorldRoute, composeSkillsP
 const { selectVerticalTemplates, buildVerticalTemplatePack } = require("./verticalTemplates");
 const { SkillInstaller } = require("./skillInstaller");
 const { BrandDnaClient } = require("./brandDnaClient");
-const { FoundationClient } = require("./foundationClient");
+const { FoundationClient, foundationBusinessesUrl } = require("./foundationClient");
 const { FelixLearning, LEARNING_MODE } = require("./felixLearning");
 const { captureBuild, projectContext, workspaceContext, captureAnnotation, ensureScheduledCheck, dueScheduledChecks } = require("./projectBrain");
 const { ManagerWorktrees } = require("./managerWorktrees");
@@ -42,7 +42,7 @@ const {
 	stopAllOwnedDevServers,
 	stopOwnedDevServer,
 } = require("./devServerTools");
-const { capabilityInstructions: imageCapabilityInstructions } = require("./webtools/image-bridge");
+const { capabilityInstructions: imageCapabilityInstructions, imageBridgeStatus } = require("./webtools/image-bridge");
 
 // Resolve a bare CLI name against PATH the same way child_process.spawn would,
 // so we can tell BEFORE spawning whether the model binary actually exists on
@@ -442,7 +442,9 @@ class AgentController {
 		this.skillInstaller = null;     // reviewed GitHub -> runtime skill directory installer
 		this.learning = null;          // verified-outcome learning; activates only after an external gate
 		this._learningSignals = new Map(); // externally verified evidence keyed by build/task id
-		this.brandDnaClient = new BrandDnaClient(); // live loopback Brand-DNA Engine v0.4 HTTP client
+		this.brandDnaClient = new BrandDnaClient({
+			baseUrl: process.env.SOLSTICE_BRAND_DNA_URL || this.cfg().get("brandDnaUrl") || undefined,
+		});
 		this.foundationClient = null;
 		this._foundationReady = null;
 		try {
@@ -4636,6 +4638,18 @@ self.addEventListener("fetch", (e) => {
 			}
 			const composed = composeSkillsPrompt(hits);
 			const exclusive = composed.exclusive;
+			if (exclusive) {
+				const bridge = imageBridgeStatus({
+					extensionPath: this.context.extensionPath,
+					configuredPath: this.cfg().get("codexPath") || "",
+				});
+				if (!bridge.ok) {
+					this._skillsDispatchBlocked = true;
+					this.showSkillsError(bridge.message);
+					this.announceAgentMessage("⛔ " + bridge.message);
+					return "";
+				}
+			}
 			// Retrieval count is telemetry, not learning. Only an externally verified
 			// outcome may create and activate a learning record.
 			const reasons = hits.map((h) => {
@@ -5697,6 +5711,44 @@ function openBrandDna(controller, extensionUri) {
 	brandDnaPanel.onDidDispose(() => { brandDnaPanel = null; });
 }
 
+let foundationPanel = null;
+function postFoundationError(error) {
+	const statusCode = error && (error.statusCode || error.status);
+	const status = statusCode ? `HTTP ${statusCode} · ` : "";
+	const message = `${status}${String(error && error.message || error || "Foundation request failed")}`;
+	if (foundationPanel) foundationPanel.webview.postMessage({ type: "error", message });
+	vscode.window.showErrorMessage("Foundation: " + message);
+}
+function openFoundation(controller, extensionUri) {
+	if (foundationPanel) { foundationPanel.reveal(vscode.ViewColumn.One); return; }
+	foundationPanel = vscode.window.createWebviewPanel("solstice.foundation", "Foundation", vscode.ViewColumn.One, {
+		enableScripts: true, retainContextWhenHidden: true, localResourceRoots: webviewResourceRoots(extensionUri),
+	});
+	foundationPanel.webview.html = mediaHtml(foundationPanel.webview, extensionUri, "foundation.js", "foundation.css");
+	const boardClient = controller.foundationClient || new FoundationClient({
+		endpoint: process.env.SOLSTICE_FOUNDATION_API_URL || controller.cfg().get("foundationApiUrl") || undefined,
+		storageDir: path.join(controller.context.globalStorageUri.fsPath, "foundation-board"),
+		businessFile: path.join(controller.context.globalStorageUri.fsPath, "foundation-board.json"),
+	});
+	const refresh = async () => {
+		const board = await boardClient.listBusinesses();
+		foundationPanel.webview.postMessage({
+			type: "state",
+			state: {
+				board,
+				endpoint: foundationBusinessesUrl(boardClient.endpoint),
+				connectedAt: new Date().toISOString(),
+			},
+		});
+	};
+	foundationPanel.webview.onDidReceiveMessage(async (message) => {
+		try {
+			if (message.type === "ready" || message.type === "refresh") await refresh();
+		} catch (error) { postFoundationError(error); }
+	});
+	foundationPanel.onDidDispose(() => { foundationPanel = null; });
+}
+
 let galleryPanel = null;
 
 // Fetch a URL with the host's Node http(s) stack (webview CSP blocks remote
@@ -6203,6 +6255,7 @@ function activate(context) {
 		vscode.commands.registerCommand("solstice.agent.deployVercel", () => controller.deployCurrentProject()),
 		vscode.commands.registerCommand("solstice.agent.openSkills", () => openSkills(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.openBrandDna", () => openBrandDna(controller, context.extensionUri)),
+		vscode.commands.registerCommand("solstice.agent.openFoundation", () => openFoundation(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.loadBrandPack", () => controller.loadBrandPackIntoWorkspace()),
 		vscode.commands.registerCommand("solstice.agent.scaffoldApp", () => controller.scaffoldAppIntoWorkspace()),
 		vscode.commands.registerCommand("solstice.agent.selectModel", () => controller.selectModel()),

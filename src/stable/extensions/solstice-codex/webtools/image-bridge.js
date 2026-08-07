@@ -11,7 +11,7 @@ const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { resolveCodexBinary } = require("../codexClient");
-const { resolveWinSpawn } = require("../winspawn");
+const { resolveWinSpawn, whichFull } = require("../winspawn");
 
 const RASTER_EXT = /\.(png|jpe?g|webp)$/i;
 const DEFAULT_TIMEOUT_MS = 12 * 60 * 1000;
@@ -162,6 +162,26 @@ function resolveBridgeCodex(extensionPath, configuredPath, env = process.env) {
 	return resolveCodexBinary(extensionPath, explicit);
 }
 
+function imageBridgeStatus({ extensionPath, configuredPath, env = process.env } = {}) {
+	if (configuredPath && !fs.existsSync(configuredPath)) {
+		return {
+			ok: false,
+			code: "SCROLLWORLD_ENGINE_UNAVAILABLE",
+			message: `ScrollWorld image engine unavailable: the configured Codex path does not exist (${configuredPath}).`,
+		};
+	}
+	const requested = resolveBridgeCodex(extensionPath || path.resolve(__dirname, ".."), configuredPath, env);
+	const bin = whichFull(requested);
+	if (!bin) {
+		return {
+			ok: false,
+			code: "SCROLLWORLD_ENGINE_UNAVAILABLE",
+			message: "ScrollWorld image engine unavailable: Solstice cannot find the Codex/GPT-Image-2 bridge executable. Install or configure Codex, then run the request again.",
+		};
+	}
+	return { ok: true, bin };
+}
+
 function generateImage(options) {
 	const { root, destination, rel } = assertWorkspaceDestination(options.workspace, options.output);
 	const prompt = String(options.prompt || "").trim();
@@ -169,7 +189,9 @@ function generateImage(options) {
 	const extensionPath = options.extensionPath || path.resolve(__dirname, "..");
 	const codexHome = options.codexHome || process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 	const generatedRoot = options.generatedRoot || path.join(codexHome, "generated_images");
-	const bin = resolveBridgeCodex(extensionPath, options.codexBin, options.env || process.env);
+	const readiness = options.runCodex ? null : imageBridgeStatus({ extensionPath, configuredPath: options.codexBin, env: options.env || process.env });
+	if (readiness && !readiness.ok) throw bridgeError(readiness.message, readiness.code);
+	const bin = readiness ? readiness.bin : resolveBridgeCodex(extensionPath, options.codexBin, options.env || process.env);
 	const contract = [
 		"Use the built-in image generation tool backed by GPT-Image-2.",
 		"Generate exactly ONE raster image for the specification below.",
@@ -183,8 +205,8 @@ function generateImage(options) {
 	const run = options.runCodex || defaultCodexRun;
 	const startedAt = Date.now();
 	const result = run(bin, args, { cwd: root, env: { ...(options.env || {}), CODEX_HOME: codexHome }, timeoutMs: options.timeoutMs || DEFAULT_TIMEOUT_MS, input: contract });
-	if (result.error) throw bridgeError(`Codex image process failed: ${result.error.message || result.error}`, "CODEX_SPAWN_FAILED");
-	if (result.signal || result.code !== 0) throw bridgeError(`Codex image process exited ${result.signal || result.code}: ${String(result.stderr || result.stdout || "").slice(-800)}`, "CODEX_FAILED");
+	if (result.error) throw bridgeError(`ScrollWorld image engine unavailable: Codex/GPT-Image-2 failed to start (${result.error.message || result.error}).`, "SCROLLWORLD_ENGINE_UNAVAILABLE");
+	if (result.signal || result.code !== 0) throw bridgeError(`ScrollWorld image engine/model unavailable: Codex/GPT-Image-2 exited ${result.signal || result.code}: ${String(result.stderr || result.stdout || "").slice(-800)}`, "SCROLLWORLD_ENGINE_UNAVAILABLE");
 	const sessionId = parseSessionId(result.stdout);
 	if (!sessionId) throw bridgeError("Codex exited without a parseable session id", "MISSING_SESSION");
 	const sessionDir = path.join(generatedRoot, sessionId);
@@ -265,6 +287,7 @@ module.exports = {
 	assertWorkspaceDestination,
 	capabilityInstructions,
 	generateImage,
+	imageBridgeStatus,
 	listRasterFiles,
 	parseSessionId,
 	resolveBridgeCodex,

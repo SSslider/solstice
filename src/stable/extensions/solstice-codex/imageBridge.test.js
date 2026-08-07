@@ -8,6 +8,7 @@ const {
 	assertWorkspaceDestination,
 	capabilityInstructions,
 	generateImage,
+	imageBridgeStatus,
 	parseSessionId,
 	resolveBridgeCodex,
 	validateRaster,
@@ -84,6 +85,10 @@ assert.equal(resolveBridgeCodex(path.join(root, "extension"), explicit), explici
 const bundledDir = path.join(root, "extension", "bin"); fs.mkdirSync(bundledDir, { recursive: true });
 const bundled = path.join(bundledDir, process.platform === "win32" ? "codex.exe" : "codex"); fs.writeFileSync(bundled, "");
 assert.equal(resolveBridgeCodex(path.join(root, "extension"), ""), bundled);
+assert.equal(imageBridgeStatus({ extensionPath: path.join(root, "extension") }).ok, true);
+const missingStatus = imageBridgeStatus({ extensionPath: path.join(root, "missing-extension"), configuredPath: path.join(root, "missing-codex"), env: { PATH: "" } });
+assert.equal(missingStatus.ok, false);
+assert.match(missingStatus.message, /ScrollWorld image engine unavailable/);
 
 const capability = capabilityInstructions({ extensionPath: "/opt/solstice/extension", nodePath: "/opt/solstice/node", platform: "linux" });
 assert.match(capability, /agent \+ GPT-Image-2/);
@@ -103,4 +108,4 @@ assert.match(animated, /generateImage\(\{ workspace: root/);
 assert.doesNotMatch(animated, /function codexBinary|run\(codexBinary/);
 
 fs.rmSync(root, { recursive: true, force: true });
-console.log("imageBridge.test.js: 36/36 checks passed");
+console.log("imageBridge.test.js: 39/39 checks passed");

@@ -57,8 +57,10 @@ function negatedScrollWorldRequest(text) {
 	const raw = String(text || "");
 	const named = "(?:scroll[\\s_-]*world|סקול\\s*וורלד)";
 	const hebrewNegation = new RegExp("(?:אל\\s+תשתמש(?:ו)?|בלי|לא\\s+רוצה|במקום|חוץ\\s*מ[-־]?)\\s*(?:ב[-־]?)?" + named, "i");
-	const englishNegation = new RegExp("(?:\\b(?:do\\s+not|don't|dont|not)\\b[^.!?\\n]{0,40}|\\b(?:without|instead\\s+of|rather\\s+than|skip|avoid)\\s+(?:using\\s+)?)" + named, "i");
-	return hebrewNegation.test(raw) || englishNegation.test(raw);
+	const englishNegation = new RegExp("(?:\\b(?:do\\s+not|don't|dont|not)\\b[^.!?\\n]{0,40}|\\b(?:no|without|instead\\s+of|rather\\s+than|skip|avoid)\\s+(?:using\\s+)?)" + named, "i");
+	const hebrewQuestion = new RegExp("(?:\\b(?:למה|מדוע|מה|איך|האם|מתי|איפה)\\b[^.!?\\n]{0,80}" + named + "|" + named + "[^.!?\\n]{0,80}\\?)", "i");
+	const englishQuestion = new RegExp("(?:\\b(?:why|what|how|whether|when|where|does|did|is|can|should)\\b[^.!?\\n]{0,80}" + named + "|" + named + "[^.!?\\n]{0,80}\\?)", "i");
+	return hebrewNegation.test(raw) || englishNegation.test(raw) || hebrewQuestion.test(raw) || englishQuestion.test(raw);
 }
 
 function explicitScrollWorldRequest(text) {

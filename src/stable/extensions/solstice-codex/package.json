@@ -101,6 +101,12 @@
         "icon": "$(symbol-color)"
       },
       {
+        "command": "solstice.agent.openFoundation",
+        "title": "Open Foundation",
+        "category": "Solstice",
+        "icon": "$(database)"
+      },
+      {
         "command": "solstice.agent.loadBrandPack",
         "title": "Load Brand Pack (BrandDNA JSON)",
         "category": "Solstice",
@@ -216,6 +222,11 @@
           "command": "solstice.agent.openBrandDna",
           "when": "view == solstice.agentPanel",
           "group": "navigation@4.7"
+        },
+        {
+          "command": "solstice.agent.openFoundation",
+          "when": "view == solstice.agentPanel",
+          "group": "navigation@4.75"
         },
         {
           "command": "solstice.agent.loadBrandPack",
@@ -341,8 +352,13 @@
         },
         "solstice.codex.foundationApiUrl": {
           "type": "string",
-          "default": "http://127.0.0.1:5180/api/foundation/events?dev=studio",
-          "description": "Foundation event-sync endpoint. Remote Atrium deployments require an x-studio-key supplied through SOLSTICE_FOUNDATION_STUDIO_KEY or ~/.solstice/foundation-studio-key."
+          "default": "https://srv1404664.tailf3ebe4.ts.net:10000/api/foundation/events",
+          "description": "Foundation event-sync endpoint over Tailscale. Override with SOLSTICE_FOUNDATION_API_URL; authentication comes from SOLSTICE_FOUNDATION_STUDIO_KEY or ~/.solstice/foundation-studio-key."
+        },
+        "solstice.codex.brandDnaUrl": {
+          "type": "string",
+          "default": "http://100.88.154.26:8794",
+          "description": "Brand-DNA service over Tailscale. Override with SOLSTICE_BRAND_DNA_URL; authentication comes from SOLSTICE_BRAND_DNA_AUTH_KEY or ~/.solstice/brand-dna-key."
         },
         "solstice.codex.foundationBusinessId": {
           "type": "string",
