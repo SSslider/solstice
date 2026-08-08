@@ -36,7 +36,12 @@ assert.match(client, /x-brand-dna-key/);
 assert.match(client, /Brand-DNA is unavailable/);
 assert.match(foundationPanel, /\/api\/foundation\/businesses/);
 assert.match(foundationPanel, /אין fallback לנתוני mock/);
+assert.match(foundationPanel, /show_business/);
+assert.match(foundationPanel, /AI Influencers/);
+assert.match(foundationPanel, /מחקר ופעילות/);
+assert.match(extension, /boardClient\.getBusinessDetail\(slug\)/);
+assert.match(extension, /message\.type === "open_surface"/);
 assert.equal(manifest.contributes.configuration.properties["solstice.codex.brandDnaUrl"].default, "http://100.88.154.26:8794");
 assert.match(manifest.contributes.configuration.properties["solstice.codex.foundationApiUrl"].default, /^https:\/\/srv1404664\.tailf3ebe4\.ts\.net:10000/);
 
-console.log("brandDnaIntegration.test.js: 29/29 checks passed");
+console.log("brandDnaIntegration.test.js: 34/34 checks passed");

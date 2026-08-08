@@ -207,8 +207,11 @@ class FelixSkills {
 		for (const target of runtime) {
 			if (!bundledByPath.has(target.path)) resources.push({ path: target.path, status: "runtime-only", runtimeSha256: target.sha256 || "" });
 		}
-		const bundledValid = this._validPortableSeed(bundledSkill, name);
-		const runtimeValid = this._validPortableSeed(runtimeSkill, name);
+		const bundledProblem = this._portableSeedProblem(bundledSkill, name, "bundle");
+		const runtimeProblem = this._portableSeedProblem(runtimeSkill, name, "runtime");
+		const bundledValid = !bundledProblem;
+		const runtimeValid = !runtimeProblem;
+		if (bundledProblem) error = error || bundledProblem;
 		const missing = resources.filter((item) => item.status === "missing");
 		const mismatched = resources.filter((item) => item.status === "mismatch");
 		let status = "healthy";
@@ -218,8 +221,8 @@ class FelixSkills {
 		else if (mismatched.length) status = "runtime-modified";
 		return {
 			name, status, error,
-			bundled: { path: bundledDir, valid: bundledValid, files: bundled.length, fingerprint: inventoryFingerprint(bundled) },
-			runtime: { path: runtimeDir, valid: runtimeValid, files: runtime.length, fingerprint: inventoryFingerprint(runtime) },
+			bundled: { path: bundledDir, valid: bundledValid, files: bundled.length, fingerprint: inventoryFingerprint(bundled), error: bundledProblem },
+			runtime: { path: runtimeDir, valid: runtimeValid, files: runtime.length, fingerprint: inventoryFingerprint(runtime), error: runtimeProblem },
 			resources,
 		};
 	}
@@ -229,7 +232,8 @@ class FelixSkills {
 		const source = path.join(extensionPath, "prompts", "scroll-world");
 		const target = path.join(this.skillsDir, name);
 		const sourceSkill = path.join(source, "SKILL.md");
-		if (!this._validPortableSeed(sourceSkill, name)) throw new Error("bundled ScrollWorld contract is missing or invalid");
+		const sourceProblem = this._portableSeedProblem(sourceSkill, name, "bundle");
+		if (sourceProblem) throw new Error(sourceProblem);
 		const nonce = `${process.pid}-${Date.now().toString(36)}`;
 		const temp = `${target}.repairing-${nonce}`;
 		const backup = path.join(this.dir, "backups", `${name}-${nonce}`);
@@ -263,10 +267,19 @@ class FelixSkills {
 	}
 
 	_validPortableSeed(file, name) {
+		return !this._portableSeedProblem(file, name);
+	}
+
+	_portableSeedProblem(file, name, location = "skill") {
 		try {
+			if (!fs.existsSync(file)) return `SKILL.md missing from ${location} at ${file}`;
 			const parsed = this._parse(file);
-			return slug(parsed.meta.name) === slug(name) && parsed.body.trim().length > 100;
-		} catch { return false; }
+			if (parsed.body.trim().length <= 100) return `SKILL.md in ${location} is empty or truncated at ${file}`;
+			if (slug(parsed.meta.name) !== slug(name)) return `SKILL.md in ${location} has unexpected name at ${file}`;
+			return "";
+		} catch (error) {
+			return `SKILL.md in ${location} is unreadable at ${file}: ${error.message}`;
+		}
 	}
 
 	_seedDirectory(extensionPath, name, rel) {
@@ -274,8 +287,9 @@ class FelixSkills {
 		const target = path.join(this.skillsDir, slug(name));
 		const sourceSkill = path.join(source, "SKILL.md");
 		const targetSkill = path.join(target, "SKILL.md");
-		if (!this._validPortableSeed(sourceSkill, name)) {
-			const result = { name, status: "failed", error: "bundled SKILL.md is missing or invalid" };
+		const sourceProblem = this._portableSeedProblem(sourceSkill, name, "bundle");
+		if (sourceProblem) {
+			const result = { name, status: "failed", error: sourceProblem };
 			this.log(`[skills] directory seed failed for ${name}: ${result.error}`);
 			return result;
 		}

@@ -61,7 +61,7 @@
 			<div class="runtime-detail"><span>Last route</span><strong>${esc(selected)}${route.exclusive ? " · exclusive" : ""}</strong></div>
 			<div class="runtime-detail"><span>Last vertical</span><strong>${esc((vertical.selected || []).join(", ") || vertical.reason || "No vertical evaluated in this session")}</strong></div>
 			<div class="runtime-detail"><span>Final prompt proof</span><code>${prompt.finalPromptBytes ? `${Number(prompt.finalPromptBytes).toLocaleString()} bytes · ${esc(String(prompt.finalPromptSha256 || "").slice(0, 12))}` : "No prompt dispatched in this session"}</code></div>
-			${!healthy ? `<div class="runtime-alert">The runtime skill state is incomplete or unverifiable. Repair it before relying on ScrollWorld.</div>` : ""}
+			${!healthy ? `<div class="runtime-alert">${esc(runtime.error || runtime.bundled && runtime.bundled.error || runtime.runtime && runtime.runtime.error || "The runtime skill state is incomplete or unverifiable. Repair it before relying on ScrollWorld.")}</div>` : ""}
 			${message}
 			<div class="runtime-actions"><button id="exportDiagnostics">ייצא diagnostics</button><button class="primary" id="repairScrollWorld">תקן ScrollWorld</button></div>
 		</section>`;

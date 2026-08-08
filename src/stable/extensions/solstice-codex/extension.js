@@ -5827,9 +5827,24 @@ function openFoundation(controller, extensionUri) {
 			},
 		});
 	};
+	const showBusiness = async (slug) => {
+		foundationPanel.webview.postMessage({ type: "detailBusy", slug: String(slug || "") });
+		const detail = await boardClient.getBusinessDetail(slug);
+		foundationPanel.webview.postMessage({
+			type: "detail",
+			detail,
+			connectedAt: new Date().toISOString(),
+		});
+	};
 	foundationPanel.webview.onDidReceiveMessage(async (message) => {
 		try {
 			if (message.type === "ready" || message.type === "refresh") await refresh();
+			else if (message.type === "show_business") await showBusiness(message.slug);
+			else if (message.type === "open_surface") {
+				const target = new URL(String(message.href || ""), boardClient.endpoint);
+				if (!/^https?:$/.test(target.protocol)) throw new Error("Foundation surface URL must use HTTP(S).");
+				await vscode.env.openExternal(vscode.Uri.parse(target.toString()));
+			}
 		} catch (error) { postFoundationError(error); }
 	});
 	foundationPanel.onDidDispose(() => { foundationPanel = null; });

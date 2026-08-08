@@ -157,6 +157,29 @@ function ok(value, message) { checks++; assert.ok(value, message); }
 		ok(diagnostics.status === "healthy" && diagnostics.bundled.fingerprint === diagnostics.runtime.fingerprint, "repair restores a byte-identical healthy runtime contract");
 		ok(skills.list().filter((item) => item.meta.name === "scroll-world-gpt-image").length === 1, "repair backup is kept outside the active skills list and cannot create duplicate routes");
 
+		const runtimeSkill = path.join(partial, "SKILL.md");
+		fs.rmSync(runtimeSkill);
+		diagnostics = skills.runtimeDiagnostics(__dirname);
+		ok(diagnostics.status === "runtime-invalid" && diagnostics.bundled.valid && diagnostics.runtime.error.includes("SKILL.md missing from runtime at"), "missing runtime contract is blamed on the runtime path, not the valid bundle");
+		fs.writeFileSync(runtimeSkill, "");
+		diagnostics = skills.runtimeDiagnostics(__dirname);
+		ok(diagnostics.runtime.error.includes("SKILL.md in runtime is empty or truncated at"), "empty runtime contract receives a precise runtime diagnostic");
+		fs.writeFileSync(runtimeSkill, bundledContract.replace("name: scroll-world-gpt-image", "name: wrong-scroll-world-name"));
+		diagnostics = skills.runtimeDiagnostics(__dirname);
+		ok(diagnostics.runtime.error.includes("SKILL.md in runtime has unexpected name at"), "renamed runtime contract receives a precise runtime diagnostic");
+		const runtimeRepair = skills.repairScrollWorld(__dirname);
+		diagnostics = skills.runtimeDiagnostics(__dirname);
+		ok(runtimeRepair.status === "repaired" && diagnostics.status === "healthy" && diagnostics.bundled.fingerprint === diagnostics.runtime.fingerprint, "runtime contract repair restores a byte-identical loadable skill after corruption");
+
+		const missingBundleRoot = path.join(root, "packaged-extension-without-prompts");
+		fs.mkdirSync(missingBundleRoot, { recursive: true });
+		const missingDiagnostics = skills.runtimeDiagnostics(missingBundleRoot);
+		ok(missingDiagnostics.status === "bundled-error", "a missing packaged contract is classified as a bundle failure");
+		ok(missingDiagnostics.error.includes("SKILL.md missing from bundle at"), "diagnostics name the exact missing packaged SKILL.md path");
+		let repairFailure = "";
+		try { skills.repairScrollWorld(missingBundleRoot); } catch (error) { repairFailure = error.message; }
+		ok(repairFailure.includes("SKILL.md missing from bundle at"), "repair fails loudly with the exact missing bundle path");
+
 		const extensionSource = fs.readFileSync(path.join(__dirname, "extension.js"), "utf8");
 		const skillsUiSource = fs.readFileSync(path.join(__dirname, "media", "skills.js"), "utf8");
 		ok(extensionSource.includes("needsAnimatedWebsiteKit(out) && !hasExclusiveScrollWorldRoute(out)"), "final prompt composition suppresses the generic Animated Website Kit on the exclusive route");

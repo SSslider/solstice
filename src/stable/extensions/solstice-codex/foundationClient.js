@@ -159,6 +159,27 @@ function foundationBusinessesUrl(endpoint, studioKey = "") {
 	return url.toString();
 }
 
+function normalizeBusinessSlug(value) {
+	const slug = String(value || "").trim();
+	if (!/^[a-z0-9][a-z0-9-]{0,119}$/.test(slug)) {
+		throw new FoundationSyncError("Foundation business slug is invalid.", { code: "invalid_business_slug" });
+	}
+	return slug;
+}
+
+function foundationBusinessDetailUrl(endpoint, businessSlug, studioKey = "") {
+	let url;
+	try { url = new URL(String(endpoint || FOUNDATION_EVENTS_URL)); }
+	catch { throw new FoundationSyncError("Foundation events URL is invalid.", { code: "invalid_url" }); }
+	const slug = normalizeBusinessSlug(businessSlug);
+	url.pathname = `/api/foundation/businesses/${encodeURIComponent(slug)}`;
+	url.search = "";
+	url.searchParams.set("projection", "atrium");
+	if (!String(studioKey || "").trim()) url.searchParams.set("dev", "studio");
+	url.hash = "";
+	return url.toString();
+}
+
 class FoundationClient {
 	constructor(options = {}) {
 		this.endpoint = options.endpoint || FOUNDATION_EVENTS_URL;
@@ -282,6 +303,18 @@ class FoundationClient {
 		return response;
 	}
 
+	async getBusinessDetail(businessSlug) {
+		const response = await requestJson(foundationBusinessDetailUrl(this.endpoint, businessSlug, this.studioKey), {
+			headers: this._headers(),
+			timeout: this.timeout,
+		});
+		if (!response || response.ok !== true || !response.business || !response.domain
+			|| !Array.isArray(response.connections) || !Array.isArray(response.events) || !Array.isArray(response.relationships)) {
+			throw new FoundationSyncError("Foundation returned an invalid business workspace.", { code: "invalid_business_detail_response" });
+		}
+		return response;
+	}
+
 	async updateBusinessName(businessId, name) {
 		const id = normalizeBusinessId(businessId || this.businessId);
 		const nextName = normalizeBusinessName(name);
@@ -401,7 +434,9 @@ module.exports = {
 	FoundationSyncError,
 	eventBusinessName,
 	eventId,
+	foundationBusinessDetailUrl,
 	foundationBusinessesUrl,
 	normalizeBusinessId,
 	normalizeBusinessName,
+	normalizeBusinessSlug,
 };

@@ -5,7 +5,7 @@ const fs = require("fs");
 const http = require("http");
 const os = require("os");
 const path = require("path");
-const { FoundationClient, foundationBusinessesUrl } = require("./foundationClient");
+const { FoundationClient, foundationBusinessDetailUrl, foundationBusinessesUrl } = require("./foundationClient");
 
 function listen(server) { return new Promise((resolve) => server.listen(0, "127.0.0.1", resolve)); }
 function close(server) { return new Promise((resolve) => server.close(resolve)); }
@@ -19,6 +19,7 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 	const received = [];
 	const remote = [];
 	const boardRequests = [];
+	const detailRequests = [];
 	let cursorCounter = 0;
 	const server = http.createServer((req, res) => {
 		const chunks = [];
@@ -30,6 +31,19 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 				boardRequests.push({ key: req.headers["x-studio-key"] || "", dev: url.searchParams.get("dev") || "" });
 				assert.ok(req.headers["x-studio-key"] === "test-studio-key" || url.searchParams.get("dev") === "studio");
 				res.end(JSON.stringify({ ok: true, layer: "VL-1", businesses: [{ id: businessId, slug: "rafael", name: "Rafael", events: 3 }] }));
+				return;
+			}
+			if (url.pathname === "/api/foundation/businesses/rafael") {
+				detailRequests.push({ key: req.headers["x-studio-key"] || "", dev: url.searchParams.get("dev") || "", projection: url.searchParams.get("projection") || "" });
+				res.end(JSON.stringify({
+					ok: true,
+					business: { id: businessId, slug: "rafael", name: "Rafael", configStatus: "active" },
+					connections: [{ id: "conn-1", provider: "stripe", status: "live" }],
+					events: [{ id: "event-1", eventType: "research.completed" }],
+					relationships: [],
+					domain: { kindKey: "service", catalog: { domains: ["services"] }, pipelines: [] },
+					surfaceLinks: { atrium: "/foundation/rafael" },
+				}));
 				return;
 			}
 			if (req.method === "POST") {
@@ -86,6 +100,13 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 	assert.equal(foundationBusinessesUrl(client.endpoint, "test-studio-key"), `http://127.0.0.1:${server.address().port}/api/foundation/businesses`);
 	assert.equal(boardRequests[0].key, "test-studio-key");
 	assert.equal(boardRequests[0].dev, "");
+	const detail = await client.getBusinessDetail("rafael");
+	assert.equal(detail.business.name, "Rafael");
+	assert.equal(detail.connections[0].provider, "stripe");
+	assert.equal(detailRequests[0].key, "test-studio-key");
+	assert.equal(detailRequests[0].dev, "");
+	assert.equal(detailRequests[0].projection, "atrium");
+	assert.equal(foundationBusinessDetailUrl(client.endpoint, "rafael", "test-studio-key"), `http://127.0.0.1:${server.address().port}/api/foundation/businesses/rafael?projection=atrium`);
 	const keylessBoardClient = new FoundationClient({
 		endpoint: `http://127.0.0.1:${server.address().port}/api/foundation/events`,
 		storageDir: path.join(root, "keyless-storage"),
@@ -98,6 +119,13 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 	assert.equal(foundationBusinessesUrl(keylessBoardClient.endpoint), `http://127.0.0.1:${server.address().port}/api/foundation/businesses?dev=studio`);
 	assert.equal(boardRequests[1].key, "");
 	assert.equal(boardRequests[1].dev, "studio");
+	const keylessDetail = await keylessBoardClient.getBusinessDetail("rafael");
+	assert.equal(keylessDetail.events[0].eventType, "research.completed");
+	assert.equal(detailRequests[1].key, "");
+	assert.equal(detailRequests[1].dev, "studio");
+	assert.equal(detailRequests[1].projection, "atrium");
+	assert.equal(foundationBusinessDetailUrl(keylessBoardClient.endpoint, "rafael"), `http://127.0.0.1:${server.address().port}/api/foundation/businesses/rafael?projection=atrium&dev=studio`);
+	await assert.rejects(() => keylessBoardClient.getBusinessDetail("../events"), /business slug is invalid/);
 
 	cursorCounter += 1;
 	remote.push({
@@ -118,6 +146,7 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 	edited.name = "Rafael edited in Solstice";
 	fs.writeFileSync(businessFile, JSON.stringify(edited, null, 2) + "\n");
 	for (let attempt = 0; attempt < 30 && received.length < 2; attempt += 1) await wait(50);
+	for (let attempt = 0; attempt < 30 && client.status().queued > 0; attempt += 1) await wait(20);
 	assert.equal(received.length, 2);
 	assert.equal(received[1].payload.value, "Rafael edited in Solstice");
 	assert.notEqual(received[0].event_id, received[1].event_id);
@@ -143,5 +172,5 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 	assert.equal(fs.readFileSync(path.join(corruptDir, "outbox.json"), "utf8"), "{broken-json\n");
 	corruptClient.dispose();
 	fs.rmSync(root, { recursive: true, force: true });
-	console.log("foundationClient.test.js: 34/34 checks passed");
+	console.log("foundationClient.test.js: 47/47 checks passed");
 })().catch((error) => { console.error(error); process.exit(1); });
