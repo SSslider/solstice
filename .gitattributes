@@ -1,0 +1,4 @@
+# Keep prompt contracts LF on every platform (Windows runners use autocrlf=true,
+# which otherwise rewrites SKILL.md to CRLF and breaks the frontmatter parsers).
+prompts/** text eol=lf
+*.md text eol=lf

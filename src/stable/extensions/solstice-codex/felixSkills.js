@@ -382,12 +382,12 @@ class FelixSkills {
 
 	_parse(file) {
 		const raw = fs.readFileSync(file, "utf8");
-		const m = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+		const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
 		const meta = {};
 		let body = raw;
 		if (m) {
 			body = m[2];
-			for (const line of m[1].split("\n")) {
+			for (const line of m[1].split(/\r?\n/)) {
 				const i = line.indexOf(":");
 				if (i < 0) continue;
 				const k = line.slice(0, i).trim();

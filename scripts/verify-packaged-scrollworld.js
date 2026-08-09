@@ -33,8 +33,8 @@ if (manifest.name !== "solstice-codex") fail(`unexpected extension manifest: ${m
 
 const skillFile = path.join(extensionDir, "prompts", "scroll-world", "SKILL.md");
 const skill = fs.readFileSync(skillFile, "utf8");
-const frontmatter = skill.match(/^---\n([\s\S]*?)\n---\n/);
-const declaredName = frontmatter && frontmatter[1].split("\n")
+const frontmatter = skill.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
+const declaredName = frontmatter && frontmatter[1].split(/\r?\n/)
 	.map((line) => line.match(/^name:\s*(.+?)\s*$/))
 	.find(Boolean);
 if (!declaredName || declaredName[1] !== "scroll-world-gpt-image") {
