@@ -9,6 +9,7 @@ const { spawn } = require("child_process");
 const {
 	allocateWorkspacePort,
 	clearDevServerRegistration,
+	DevServer,
 	detectDevServerUrl,
 	readDevServerRegistration,
 	writeDevServerRegistration,
@@ -109,12 +110,24 @@ function close(server) { return new Promise((resolve) => server.close(resolve));
 		assert.equal(clearDevServerRegistration(rootA, process.pid), true, "the owner can clear its registry");
 		assert.equal(readDevServerRegistration(rootA), null);
 
+		const owned = new DevServer(rootA, { idleTimeoutMs: 0 });
+		owned.proc = { pid: process.pid, exitCode: null };
+		owned.port = portA;
+		owned.url = `http://127.0.0.1:${portA}/`;
+		assert.equal(await owned.ensure(), owned.url, "the current window reuses its owned live server");
+		assert.deepEqual(
+			{ port: readDevServerRegistration(rootA)?.port, pid: readDevServerRegistration(rootA)?.pid },
+			{ port: portA, pid: process.pid },
+			"reusing an owned server heals a missing workspace registration",
+		);
+		clearDevServerRegistration(rootA, process.pid);
+
 		const source = fs.readFileSync(path.join(__dirname, "preview.js"), "utf8");
 		assert.match(source, /PORT: String\(port\)/, "spawn receives the allocated PORT");
 		assert.match(source, /SOLSTICE_WORKSPACE_ROOT: canonicalRoot\(this\.root\)/, "spawn receives explicit workspace ownership");
 		assert.match(source, /args\.push\("--", "--port", String\(port\)\)/, "framework CLI receives the same port");
 
-		console.log("previewIsolation.test.js: 25/25 checks passed");
+		console.log("previewIsolation.test.js: 27/27 checks passed");
 	} finally {
 		if (serverA) await close(serverA);
 		if (serverB) await close(serverB);

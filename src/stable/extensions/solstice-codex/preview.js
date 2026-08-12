@@ -598,6 +598,17 @@ class DevServer {
 	// Resolve to a live dev-server URL, starting the server if needed. Returns
 	// null only if the project has no dev script or the server never came up.
 	async ensure() {
+		// The registry is recoverable metadata. If this Solstice window still owns
+		// the child process, restore a missing/corrupt record before detection. The
+		// process handle is the ownership proof, so this never adopts a server found
+		// merely by probing a familiar port (which may belong to another window).
+		if (this.hasOwnedProcess() && Number.isInteger(this.port) && this.port > 0) {
+			const registered = readDevServerRegistration(this.root);
+			if (!registered || registered.pid !== Number(this.proc.pid) || registered.port !== this.port) {
+				try { writeDevServerRegistration(this.root, { port: this.port, pid: this.proc.pid }); }
+				catch (error) { this.log(`[dev] cannot repair .solstice/dev-server.json: ${error && error.message || error}\n`); }
+			}
+		}
 		const existing = await detectDevServerUrl(this.root).catch(() => null);
 		if (existing) { this.url = existing; this.touch("ensure"); return existing; }
 		if (this.url && this.proc && this.proc.exitCode === null) { this.touch("ensure"); return this.url; }
