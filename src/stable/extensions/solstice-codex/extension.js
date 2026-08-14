@@ -1666,7 +1666,15 @@ self.addEventListener("fetch", (e) => {
 				} else if (m.type === "device") {
 					this.previewKind = (m.device === "desktop") ? "site" : "app";
 				} else if (m.type === "openExternal" && m.url) {
-					vscode.env.openExternal(vscode.Uri.parse(m.url)).then(undefined, () => { });
+					try {
+						const target = vscode.Uri.parse(m.url);
+						Promise.resolve(vscode.env.openExternal(target)).then(
+							(opened) => { if (opened === false) vscode.window.showErrorMessage(`Solstice could not open ${m.url} in the external browser.`); },
+							(error) => vscode.window.showErrorMessage(`Solstice could not open the external browser: ${error && error.message || error}`),
+						);
+					} catch (error) {
+						vscode.window.showErrorMessage(`Solstice could not open the external browser: ${error && error.message || error}`);
+					}
 				}
 			});
 			this.previewPanel.onDidDispose(() => { this.previewPanel = null; this.previewReady = false; });

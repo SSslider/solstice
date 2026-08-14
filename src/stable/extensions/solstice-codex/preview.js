@@ -4,6 +4,7 @@ const net = require("net");
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
+const { resolveWinSpawn, whichFull } = require("./winspawn");
 
 const MIME = {
 	".html": "text/html; charset=utf-8",
@@ -548,6 +549,25 @@ function devScriptName(root) {
 	return null;
 }
 
+// Keep Unix behavior byte-for-byte compatible while routing Windows npm
+// through the same registry/npm-prefix aware resolver used by the model CLIs.
+// opts exists only so the Windows-only branch can be regression-tested on CI.
+function resolveNpmSpawn(args, opts) {
+	const platform = (opts && opts.platform) || process.platform;
+	if (platform !== "win32") return { command: "npm", args: args.slice(), env: null, shell: false };
+
+	const find = (opts && opts.find) || whichFull;
+	const resolve = (opts && opts.resolve) || resolveWinSpawn;
+	if (!find("npm")) {
+		throw new Error("npm was not found in the Windows PATH, registry PATH, or npm prefix; install Node.js/npm or repair its PATH entry");
+	}
+	const resolved = resolve("npm", args);
+	if (!resolved || !resolved.cmd || !Array.isArray(resolved.args)) {
+		throw new Error("winspawn could not resolve a valid npm command on Windows");
+	}
+	return { command: resolved.cmd, args: resolved.args, env: resolved.env || null, shell: false };
+}
+
 // Owns the lifecycle of the project's dev server. The agent writes a framework
 // app but never had a way to actually RUN it — so the live preview probed ports
 // that nothing was listening on and stayed blank. This boots `npm install` (only
@@ -630,7 +650,6 @@ class DevServer {
 		const port = await allocateWorkspacePort(this.root);
 		if (!port) { this.log("[dev] no free workspace port available — preview unavailable\n"); return null; }
 		this.log(`[dev] starting dev server (npm run ${script}) on workspace port ${port}…\n`);
-		const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 		const args = ["run", script];
 		const command = (() => {
 			try { return String((JSON.parse(fs.readFileSync(path.join(this.root, "package.json"), "utf8")).scripts || {})[script] || ""); }
@@ -640,12 +659,18 @@ class DevServer {
 			args.push("--", "--port", String(port));
 			if (/\b(vite|svelte-kit)\b/i.test(command)) args.push("--strictPort");
 		}
-		const proc = spawn(npm, args, {
+		let npmSpawn;
+		try { npmSpawn = resolveNpmSpawn(args); }
+		catch (error) {
+			this.log(`[dev] cannot start npm run ${script}: ${error && error.message || error}\n`);
+			return null;
+		}
+		const proc = spawn(npmSpawn.command, npmSpawn.args, {
 			cwd: this.root,
-			shell: process.platform === "win32",
+			shell: npmSpawn.shell,
 			detached: process.platform !== "win32",
 			windowsHide: true,
-			env: { ...process.env, PORT: String(port), SOLSTICE_WORKSPACE_ROOT: canonicalRoot(this.root), BROWSER: "none", FORCE_COLOR: "0" },
+			env: { ...(npmSpawn.env || process.env), PORT: String(port), SOLSTICE_WORKSPACE_ROOT: canonicalRoot(this.root), BROWSER: "none", FORCE_COLOR: "0" },
 		});
 		this.proc = proc;
 		this.port = port;
@@ -688,8 +713,14 @@ class DevServer {
 
 	_run(label, args, timeoutMs) {
 		return new Promise((resolve) => {
-			const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-			const p = spawn(npm, args, { cwd: this.root, shell: process.platform === "win32", windowsHide: true, env: process.env });
+			let npmSpawn;
+			try { npmSpawn = resolveNpmSpawn(args); }
+			catch (error) {
+				this.log(`[dev] cannot run npm ${label}: ${error && error.message || error}\n`);
+				resolve(false);
+				return;
+			}
+			const p = spawn(npmSpawn.command, npmSpawn.args, { cwd: this.root, shell: npmSpawn.shell, windowsHide: true, env: npmSpawn.env || process.env });
 			const t = setTimeout(() => { try { p.kill(); } catch { } resolve(false); }, timeoutMs);
 			p.stdout.on("data", (d) => this.log(String(d)));
 			p.stderr.on("data", (d) => this.log(String(d)));
@@ -732,6 +763,7 @@ module.exports = {
 	PreviewServer,
 	DevServer,
 	detectDevServerUrl,
+	resolveNpmSpawn,
 	hasFramework,
 	allocateWorkspacePort,
 	readDevServerRegistration,
