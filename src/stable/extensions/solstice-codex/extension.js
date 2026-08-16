@@ -7,7 +7,7 @@ const os = require("os");
 const { spawn } = require("child_process");
 const { CodexClient, resolveCodexBinary } = require("./codexClient");
 const { checkCodexModelCompatibility } = require("./codexCompatibility");
-const { isPureLaunchIntent, runtimeStopIntent } = require("./intent");
+const { isPureLaunchIntent, isExternalLaunchIntent, runtimeStopIntent } = require("./intent");
 const { PreviewServer, DevServer, detectDevServerUrl, hasFramework } = require("./preview");
 const { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, resolveGrokBinary, grokBundlePresent, killTree } = require("./grok");
 const { ClaudeProvider } = require("./claude");
@@ -1404,9 +1404,10 @@ self.addEventListener("fetch", (e) => {
 	// Boot (or reuse) the project's dev server, streaming its log to the agent
 	// terminal, then point the live preview at it. This is what makes the center
 	// window actually render the built site instead of staying blank.
-	async ensureDevServer() {
+	async ensureDevServer(options = {}) {
 		const root = workspaceCwd();
-		if (!root || this.previewUrl) return;
+		const openPreview = options.openPreview !== false;
+		if (!root) return null;
 		if (!this.devServer) {
 			this.devServer = new DevServer(root, {
 				onLog: (s) => { try { this.output.append(s); } catch { } },
@@ -1421,10 +1422,28 @@ self.addEventListener("fetch", (e) => {
 			});
 		}
 		this.post({ type: "systemNote", text: "🚀 מריץ את שרת הפיתוח (npm run dev)… התצוגה תיפתח כשהוא יעלה." });
-		const url = await this.devServer.ensure().catch(() => null);
-		if (url) { this.devServer.touch("preview-open"); await this.openPreview(url).catch(() => { }); }
-		else { this.post({ type: "systemNote", text: "⚠️ לא הצלחתי להריץ את שרת הפיתוח — בדוק את הטרמינל." }); }
+		let launchError = null;
+		const url = await this.devServer.ensure().catch((error) => { launchError = error; return null; });
+		if (url) {
+			this.devServer.touch("preview-open");
+			if (openPreview) {
+				try { await this.openPreview(url); }
+				catch (error) {
+					const reason = error && error.message || String(error);
+					this.post({ type: "systemNote", text: `⚠️ שרת הפיתוח עלה, אבל פתיחת ה־Preview נכשלה: ${reason}` });
+					this.pushDevServerInventory();
+					return null;
+				}
+			}
+			this.pushDevServerInventory();
+			return url;
+		}
+		const reason = launchError && launchError.message
+			|| this.devServer.lastError
+			|| "npm run dev לא החזיר כתובת פעילה";
+		this.post({ type: "systemNote", text: `⚠️ לא הצלחתי להריץ את שרת הפיתוח: ${reason}` });
 		this.pushDevServerInventory();
+		return null;
 	}
 
 	devServerIdleTimeoutMs() {
@@ -1611,10 +1630,32 @@ self.addEventListener("fetch", (e) => {
 		if (isPureLaunchIntent(text)) {
 			const root = workspaceCwd();
 			if (!root) { vscode.window.showWarningMessage("Solstice: open a folder first."); return true; }
-			const live = await detectDevServerUrl(root).catch(() => null);
-			if (live) await this.openPreview(live).catch(() => { });
-			else if (hasFramework(root)) await this.ensureDevServer();
-			else await this.openPreview("").catch(() => { });
+			const external = isExternalLaunchIntent(text);
+			let url = await detectDevServerUrl(root).catch(() => null);
+			if (!url) {
+				if (!fs.existsSync(path.join(root, "package.json"))) {
+					this.post({ type: "systemNote", text: "⚠️ לא מצאתי package.json בפרויקט, ולכן אין פקודת npm run dev להריץ." });
+					return true;
+				}
+				url = await this.ensureDevServer({ openPreview: !external });
+				if (!url) return true; // ensureDevServer already posted the precise failure cause.
+			} else if (!external) {
+				try { await this.openPreview(url); }
+				catch (error) {
+					this.post({ type: "systemNote", text: `⚠️ השרת פעיל, אבל פתיחת ה־Preview נכשלה: ${error && error.message || error}` });
+					return true;
+				}
+			}
+			if (external) {
+				try {
+					const opened = await vscode.env.openExternal(vscode.Uri.parse(url));
+					if (opened === false) throw new Error("VS Code rejected the browser-open request");
+					this.post({ type: "systemNote", text: "🌐 האתר נפתח בדפדפן החיצוני." });
+				} catch (error) {
+					this.post({ type: "systemNote", text: `⚠️ לא הצלחתי לפתוח את האתר בדפדפן החיצוני: ${error && error.message || error}` });
+				}
+				return true;
+			}
 			if (this.previewUrl) this.refreshPreview();
 			this.post({ type: "systemNote", text: this.previewUrl ? "🚀 האתר פתוח ב־Live Preview." : "⚠️ לא נמצא שרת או קובץ שניתן להציג." });
 			return true;

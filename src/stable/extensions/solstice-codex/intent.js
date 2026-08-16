@@ -7,6 +7,12 @@ function isPureLaunchIntent(text) {
 	return launch && !build;
 }
 
+function isExternalLaunchIntent(text) {
+	const value = String(text || "");
+	return isPureLaunchIntent(value)
+		&& /(?:בדפדפן|דפדפן|כרום)|\b(?:browser|chrome|external(?:ly)?)\b/i.test(value);
+}
+
 function isPureStopRuntimeIntent(text) {
 	const value = String(text || "");
 	return runtimeStopIntent(text) !== null;
@@ -23,4 +29,4 @@ function runtimeStopIntent(text) {
 	return all ? "all" : "workspace";
 }
 
-module.exports = { isPureLaunchIntent, isPureStopRuntimeIntent, runtimeStopIntent };
+module.exports = { isPureLaunchIntent, isExternalLaunchIntent, isPureStopRuntimeIntent, runtimeStopIntent };

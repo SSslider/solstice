@@ -587,6 +587,7 @@ class DevServer {
 		this.lastActivityAt = 0;
 		this.idleDeadlineAt = 0;
 		this.idleTimer = null;
+		this.lastError = "";
 	}
 
 	log(s) { try { this.onLog(s); } catch { } }
@@ -630,25 +631,38 @@ class DevServer {
 			}
 		}
 		const existing = await detectDevServerUrl(this.root).catch(() => null);
-		if (existing) { this.url = existing; this.touch("ensure"); return existing; }
-		if (this.url && this.proc && this.proc.exitCode === null) { this.touch("ensure"); return this.url; }
+		if (existing) { this.url = existing; this.lastError = ""; this.touch("ensure"); return existing; }
+		if (this.url && this.proc && this.proc.exitCode === null) { this.lastError = ""; this.touch("ensure"); return this.url; }
 		if (this.starting) return this.starting;
 		this.starting = this._start().finally(() => { this.starting = null; });
 		return this.starting;
 	}
 
 	async _start() {
+		this.lastError = "";
 		const script = devScriptName(this.root);
-		if (!script) { this.log("[dev] no dev/start script in package.json — skipping auto-run\n"); return null; }
+		if (!script) {
+			this.lastError = "package.json has no dev, start, or serve script";
+			this.log(`[dev] ${this.lastError} — skipping auto-run\n`);
+			return null;
+		}
 
 		if (!fs.existsSync(path.join(this.root, "node_modules"))) {
 			this.log("[dev] installing dependencies (npm install)…\n");
 			const ok = await this._run("install", ["install", "--no-audit", "--no-fund"], 8 * 60 * 1000);
-			if (!ok) { this.log("[dev] npm install failed — preview unavailable\n"); return null; }
+			if (!ok) {
+				if (!this.lastError) this.lastError = "npm install failed";
+				this.log(`[dev] ${this.lastError} — preview unavailable\n`);
+				return null;
+			}
 		}
 
 		const port = await allocateWorkspacePort(this.root);
-		if (!port) { this.log("[dev] no free workspace port available — preview unavailable\n"); return null; }
+		if (!port) {
+			this.lastError = "no free workspace port is available";
+			this.log(`[dev] ${this.lastError} — preview unavailable\n`);
+			return null;
+		}
 		this.log(`[dev] starting dev server (npm run ${script}) on workspace port ${port}…\n`);
 		const args = ["run", script];
 		const command = (() => {
@@ -662,16 +676,24 @@ class DevServer {
 		let npmSpawn;
 		try { npmSpawn = resolveNpmSpawn(args); }
 		catch (error) {
-			this.log(`[dev] cannot start npm run ${script}: ${error && error.message || error}\n`);
+			this.lastError = `cannot start npm run ${script}: ${error && error.message || error}`;
+			this.log(`[dev] ${this.lastError}\n`);
 			return null;
 		}
-		const proc = spawn(npmSpawn.command, npmSpawn.args, {
-			cwd: this.root,
-			shell: npmSpawn.shell,
-			detached: process.platform !== "win32",
-			windowsHide: true,
-			env: { ...(npmSpawn.env || process.env), PORT: String(port), SOLSTICE_WORKSPACE_ROOT: canonicalRoot(this.root), BROWSER: "none", FORCE_COLOR: "0" },
-		});
+		let proc;
+		try {
+			proc = spawn(npmSpawn.command, npmSpawn.args, {
+				cwd: this.root,
+				shell: npmSpawn.shell,
+				detached: process.platform !== "win32",
+				windowsHide: true,
+				env: { ...(npmSpawn.env || process.env), PORT: String(port), SOLSTICE_WORKSPACE_ROOT: canonicalRoot(this.root), BROWSER: "none", FORCE_COLOR: "0" },
+			});
+		} catch (error) {
+			this.lastError = `failed to spawn npm run ${script}: ${error && error.message || error}`;
+			this.log(`[dev] ${this.lastError}\n`);
+			return null;
+		}
 		this.proc = proc;
 		this.port = port;
 		this.startedAt = Date.now();
@@ -680,19 +702,25 @@ class DevServer {
 		proc.stderr.on("data", (d) => this.log(String(d)));
 		const ownedPid = proc.pid;
 		proc.on("error", (error) => {
-			this.log(`[dev] failed to start dev server: ${error && error.message || error}\n`);
+			this.lastError = `failed to start dev server: ${error && error.message || error}`;
+			this.log(`[dev] ${this.lastError}\n`);
 			clearDevServerRegistration(this.root, ownedPid);
 			if (this.proc === proc) { this.clearIdleTimer(); this.proc = null; this.url = null; this.port = null; this.emitState("spawn-error"); }
 		});
 		proc.on("exit", (code) => {
+			if (!this.url) this.lastError = `npm run ${script} exited before the server became reachable (code ${code})`;
 			this.log(`[dev] dev server exited (${code})\n`);
 			clearDevServerRegistration(this.root, ownedPid);
 			if (this.proc === proc) { this.clearIdleTimer(); this.proc = null; this.url = null; this.port = null; this.emitState("exit"); }
 		});
-		if (!ownedPid) return null; // the error handler will surface the spawn failure
+		if (!ownedPid) {
+			if (!this.lastError) this.lastError = `npm run ${script} did not create a process`;
+			return null; // the error handler may add the OS-level spawn reason
+		}
 		try { writeDevServerRegistration(this.root, { port, pid: ownedPid }); }
 		catch (error) {
-			this.log(`[dev] cannot write .solstice/dev-server.json: ${error && error.message || error}\n`);
+			this.lastError = `cannot write .solstice/dev-server.json: ${error && error.message || error}`;
+			this.log(`[dev] ${this.lastError}\n`);
 			try { proc.kill("SIGTERM"); } catch { }
 			if (this.proc === proc) { this.proc = null; this.port = null; }
 			return null;
@@ -704,10 +732,11 @@ class DevServer {
 		while (Date.now() < DEADLINE) {
 			if (!this.proc) return null;           // crashed during boot
 			const url = await detectDevServerUrl(this.root).catch(() => null);
-			if (url) { this.url = url; this.touch("live"); this.log(`[dev] live at ${url}\n`); return url; }
+			if (url) { this.url = url; this.lastError = ""; this.touch("live"); this.log(`[dev] live at ${url}\n`); return url; }
 			await new Promise((r) => setTimeout(r, 1500));
 		}
-		this.log("[dev] dev server did not become reachable within 90s\n");
+		this.lastError = "dev server did not become reachable within 90 seconds";
+		this.log(`[dev] ${this.lastError}\n`);
 		return null;
 	}
 
@@ -716,16 +745,36 @@ class DevServer {
 			let npmSpawn;
 			try { npmSpawn = resolveNpmSpawn(args); }
 			catch (error) {
-				this.log(`[dev] cannot run npm ${label}: ${error && error.message || error}\n`);
+				this.lastError = `cannot run npm ${label}: ${error && error.message || error}`;
+				this.log(`[dev] ${this.lastError}\n`);
 				resolve(false);
 				return;
 			}
-			const p = spawn(npmSpawn.command, npmSpawn.args, { cwd: this.root, shell: npmSpawn.shell, windowsHide: true, env: npmSpawn.env || process.env });
-			const t = setTimeout(() => { try { p.kill(); } catch { } resolve(false); }, timeoutMs);
+			let p;
+			try { p = spawn(npmSpawn.command, npmSpawn.args, { cwd: this.root, shell: npmSpawn.shell, windowsHide: true, env: npmSpawn.env || process.env }); }
+			catch (error) {
+				this.lastError = `failed to spawn npm ${label}: ${error && error.message || error}`;
+				this.log(`[dev] ${this.lastError}\n`);
+				resolve(false);
+				return;
+			}
+			const t = setTimeout(() => {
+				this.lastError = `npm ${label} timed out after ${Math.round(timeoutMs / 1000)} seconds`;
+				try { p.kill(); } catch { }
+				resolve(false);
+			}, timeoutMs);
 			p.stdout.on("data", (d) => this.log(String(d)));
 			p.stderr.on("data", (d) => this.log(String(d)));
-			p.on("error", () => { clearTimeout(t); resolve(false); });
-			p.on("exit", (code) => { clearTimeout(t); resolve(code === 0); });
+			p.on("error", (error) => {
+				this.lastError = `npm ${label} failed to start: ${error && error.message || error}`;
+				clearTimeout(t);
+				resolve(false);
+			});
+			p.on("exit", (code) => {
+				clearTimeout(t);
+				if (code !== 0) this.lastError = `npm ${label} exited with code ${code}`;
+				resolve(code === 0);
+			});
 		});
 	}
 
