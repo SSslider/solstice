@@ -1,0 +1,228 @@
+--- a/src/vs/platform/update/electron-main/abstractUpdateService.ts
++++ b/src/vs/platform/update/electron-main/abstractUpdateService.ts
+@@ -21,6 +21,7 @@
+ import { ITelemetryService } from '../../telemetry/common/telemetry.js';
+ import { Architecture, AvailableForDownload, DisablementReason, IUpdate, IUpdateService, Platform, State, StateType, Target, UpdateType } from '../common/update.js';
+ import * as semver from 'semver';
++import { GITHUB_RELEASES_API_URL, requestUpdateWithFallback } from './githubReleaseUpdate.js';
+ 
+ const LAST_KNOWN_VERSION_STORAGE_KEY = 'abstractUpdateService/lastKnownVersion';
+ 
+@@ -441,9 +442,30 @@
+ 
+ 		this.logService.info('update#isLatestVersion() - checking update server', { url, headers });
+ 
+-		return this.requestService.request({ url, headers, callSite: NO_FETCH_TELEMETRY }, CancellationToken.None)
+-			.then<IUpdate | null>(asJson)
+-			.then(update => {
++		return requestUpdateWithFallback({
++			primaryUrl: url,
++			releasesApiUrl: GITHUB_RELEASES_API_URL,
++			applicationName: this.productService.nameShort,
++			requestJson: async requestUrl => {
++				const isGitHubApi = requestUrl === GITHUB_RELEASES_API_URL;
++				const requestHeaders = isGitHubApi ? {
++					...(headers ?? {}),
++					'Accept': 'application/vnd.github+json',
++					'X-GitHub-Api-Version': '2022-11-28',
++					'User-Agent': headers?.['User-Agent'] ?? `${this.productService.applicationName}/${this.productService.version}`
++				} : headers;
++				const context = await this.requestService.request({ url: requestUrl, headers: requestHeaders, callSite: NO_FETCH_TELEMETRY }, CancellationToken.None);
++				const statusCode = context.res.statusCode ?? 0;
++				const body = statusCode >= 200 && statusCode <= 299 ? await asJson(context) : null;
++				return { statusCode, body };
++			},
++			sleep: async delayMs => { await timeout(delayMs); },
++			onRetry: (statusCode, delayMs, attempt) => this.logService.warn('update#isLatestVersion() - primary feed throttled/unavailable; retrying', { statusCode, delayMs, attempt })
++		}).then(result => {
++				const update = result.update;
++				if (result.source === 'github-releases') {
++					this.logService.warn('update#isLatestVersion() - using GitHub Releases API fallback', { url: GITHUB_RELEASES_API_URL });
++				}
+ 				if (!update || !update.url || !update.version || !update.productVersion) {
+ 					this.setState(State.Idle(UpdateType.Setup, undefined, explicit || undefined));
+ 
+--- /dev/null
++++ b/src/vs/platform/update/electron-main/githubReleaseUpdate.ts
+@@ -0,0 +1,181 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Microsoft Corporation. All rights reserved.
++ *  Licensed under the MIT License. See License.txt in the project root for license information.
++ *--------------------------------------------------------------------------------------------*/
++
++import type { Architecture, IUpdate, Platform, Target } from '../common/update.js';
++
++export const GITHUB_RELEASES_API_URL = 'https://api.github.com/repos/!!GH_REPO_PATH!!/releases/latest';
++export const UPDATE_FEED_RETRY_DELAYS_MS = [500, 1500] as const;
++
++interface IGitHubReleaseAsset {
++	readonly name?: string;
++	readonly browser_download_url?: string;
++	readonly digest?: string | null;
++}
++
++interface IGitHubRelease {
++	readonly tag_name?: string;
++	readonly published_at?: string | null;
++	readonly draft?: boolean;
++	readonly prerelease?: boolean;
++	readonly assets?: readonly IGitHubReleaseAsset[];
++}
++
++interface IUpdateFeedDescriptor {
++	readonly quality: string;
++	readonly platform: Platform;
++	readonly architecture: Architecture;
++	readonly target?: Target;
++}
++
++export interface IJsonResponse {
++	readonly statusCode: number;
++	readonly body: unknown;
++}
++
++export interface IRequestUpdateWithFallbackOptions {
++	readonly primaryUrl: string;
++	readonly releasesApiUrl: string;
++	readonly applicationName: string;
++	readonly requestJson: (url: string) => Promise<IJsonResponse>;
++	readonly sleep: (delayMs: number) => Promise<void>;
++	readonly onRetry?: (statusCode: number, delayMs: number, attempt: number) => void;
++}
++
++export interface IUpdateFeedResult {
++	readonly update: IUpdate | null;
++	readonly source: 'primary' | 'github-releases';
++}
++
++export function isRetryableUpdateFeedStatus(statusCode: number): boolean {
++	return statusCode === 429 || (statusCode >= 500 && statusCode <= 599);
++}
++
++function isSuccessfulStatus(statusCode: number): boolean {
++	return statusCode >= 200 && statusCode <= 299;
++}
++
++function parseUpdateFeedDescriptor(feedUrl: string): IUpdateFeedDescriptor | undefined {
++	let segments: string[];
++	try {
++		segments = new URL(feedUrl).pathname.split('/').filter(Boolean);
++	} catch {
++		return undefined;
++	}
++
++	const latestIndex = segments.lastIndexOf('latest.json');
++	if (latestIndex < 3) {
++		return undefined;
++	}
++
++	let qualityIndex = -1;
++	for (let index = latestIndex - 1; index >= 0; index--) {
++		if (segments[index] === 'stable' || segments[index] === 'insider') {
++			qualityIndex = index;
++			break;
++		}
++	}
++	if (qualityIndex < 0 || qualityIndex + 2 >= latestIndex) {
++		return undefined;
++	}
++
++	const quality = segments[qualityIndex];
++	const platform = segments[qualityIndex + 1] as Platform;
++	const architecture = segments[qualityIndex + 2] as Architecture;
++	const target = segments[qualityIndex + 3] as Target | undefined;
++	return { quality, platform, architecture, target };
++}
++
++function productVersionFromReleaseTag(tag: string): string | undefined {
++	const match = /^v?(\d+)\.(\d+)\.(\d+)(-insider)?$/.exec(tag);
++	if (!match) {
++		return undefined;
++	}
++
++	return `${match[1]}.${match[2]}.${Number.parseInt(match[3], 10)}.0${match[4] ?? ''}`;
++}
++
++function expectedAssetName(applicationName: string, descriptor: IUpdateFeedDescriptor, tag: string): string | undefined {
++	const { platform, architecture, target } = descriptor;
++	if (platform === 'win32') {
++		switch (target) {
++			case 'user': return `${applicationName}UserSetup-${architecture}-${tag}.exe`;
++			case 'system': return `${applicationName}Setup-${architecture}-${tag}.exe`;
++			case 'archive': return `${applicationName}-win32-${architecture}-${tag}.zip`;
++			case 'msi': return `${applicationName}-${architecture}-${tag}.msi`;
++			default: return undefined;
++		}
++	}
++
++	return undefined;
++}
++
++export function createUpdateFromGitHubRelease(body: unknown, feedUrl: string, applicationName: string): IUpdate | undefined {
++	if (!body || typeof body !== 'object') {
++		return undefined;
++	}
++
++	const release = body as IGitHubRelease;
++	const descriptor = parseUpdateFeedDescriptor(feedUrl);
++	if (!descriptor || descriptor.quality !== 'stable' || release.draft || release.prerelease) {
++		return undefined;
++	}
++
++	const tag = release.tag_name;
++	const productVersion = tag && productVersionFromReleaseTag(tag);
++	if (!tag || !productVersion || !Array.isArray(release.assets)) {
++		return undefined;
++	}
++
++	const assetName = expectedAssetName(applicationName, descriptor, tag);
++	const asset = assetName && release.assets.find(candidate => candidate.name === assetName);
++	const sha256hash = asset?.digest?.match(/^sha256:([a-f0-9]{64})$/i)?.[1];
++	if (!asset?.browser_download_url || !sha256hash) {
++		return undefined;
++	}
++
++	const timestamp = release.published_at ? Date.parse(release.published_at) : NaN;
++	return {
++		version: tag,
++		productVersion,
++		url: asset.browser_download_url,
++		...(Number.isFinite(timestamp) ? { timestamp } : {}),
++		sha256hash
++	};
++}
++
++export async function requestUpdateWithFallback(options: IRequestUpdateWithFallbackOptions): Promise<IUpdateFeedResult> {
++	const descriptor = parseUpdateFeedDescriptor(options.primaryUrl);
++	const fallbackSupported = descriptor?.quality === 'stable' && descriptor.platform === 'win32';
++	for (let attempt = 0; ; attempt++) {
++		const response = await options.requestJson(options.primaryUrl);
++		if (isSuccessfulStatus(response.statusCode)) {
++			return { update: response.body as IUpdate | null, source: 'primary' };
++		}
++
++		if (!isRetryableUpdateFeedStatus(response.statusCode) || !fallbackSupported) {
++			throw new Error(`Update feed request failed with HTTP ${response.statusCode}`);
++		}
++
++		const retryDelay = UPDATE_FEED_RETRY_DELAYS_MS[attempt];
++		if (retryDelay === undefined) {
++			break;
++		}
++
++		options.onRetry?.(response.statusCode, retryDelay, attempt + 1);
++		await options.sleep(retryDelay);
++	}
++
++	const fallbackResponse = await options.requestJson(options.releasesApiUrl);
++	if (!isSuccessfulStatus(fallbackResponse.statusCode)) {
++		throw new Error(`GitHub Releases fallback failed with HTTP ${fallbackResponse.statusCode}`);
++	}
++
++	const update = createUpdateFromGitHubRelease(fallbackResponse.body, options.primaryUrl, options.applicationName);
++	if (!update) {
++		throw new Error('GitHub Releases fallback did not contain a matching stable update asset');
++	}
++
++	return { update, source: 'github-releases' };
++}
