@@ -10,6 +10,33 @@ fi
 
 REPOSITORY_OWNER="${ASSETS_REPOSITORY/\/*/}"
 REPOSITORY_NAME="${ASSETS_REPOSITORY/*\//}"
+RELEASE_SOURCE_SHA="$( git rev-parse HEAD )"
+
+if [[ ! "${RELEASE_SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "::error::Cannot determine the exact source commit for release '${RELEASE_VERSION}'"
+  exit 1
+fi
+
+resolve_release_tag_commit() {
+  local object_type object_sha object
+
+  object=$( gh api "repos/${ASSETS_REPOSITORY}/git/ref/tags/${RELEASE_VERSION}" --jq '.object | [.type, .sha] | @tsv' )
+  IFS=$'\t' read -r object_type object_sha <<< "${object}"
+
+  # A release can use either a lightweight tag (commit) or an annotated tag
+  # (tag -> commit). Resolve both forms before comparing provenance.
+  while [[ "${object_type}" == "tag" ]]; do
+    object=$( gh api "repos/${ASSETS_REPOSITORY}/git/tags/${object_sha}" --jq '.object | [.type, .sha] | @tsv' )
+    IFS=$'\t' read -r object_type object_sha <<< "${object}"
+  done
+
+  if [[ "${object_type}" != "commit" ]] || [[ ! "${object_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "::error::Release tag '${RELEASE_VERSION}' does not resolve to a commit" >&2
+    return 1
+  fi
+
+  echo "${object_sha}"
+}
 
 npm install -g github-release-cli
 
@@ -35,9 +62,9 @@ if [[ $( gh release view "${RELEASE_VERSION}" --repo "${ASSETS_REPOSITORY}" 2>&1
     replace "s|@@RELEASE_NOTES@@||g" release_notes.md
     replace "s|@@VERSION@@|${VERSION}|g" release_notes.md
 
-    gh release create "${RELEASE_VERSION}" --repo "${ASSETS_REPOSITORY}" --title "${RELEASE_VERSION}" --notes-file release_notes.md
+    gh release create "${RELEASE_VERSION}" --repo "${ASSETS_REPOSITORY}" --target "${RELEASE_SOURCE_SHA}" --title "${RELEASE_VERSION}" --notes-file release_notes.md
   else
-    gh release create "${RELEASE_VERSION}" --repo "${ASSETS_REPOSITORY}" --title "${RELEASE_VERSION}" --generate-notes
+    gh release create "${RELEASE_VERSION}" --repo "${ASSETS_REPOSITORY}" --target "${RELEASE_SOURCE_SHA}" --title "${RELEASE_VERSION}" --generate-notes
 
     RELEASE_NOTES=$( gh release view "${RELEASE_VERSION}" --repo "${ASSETS_REPOSITORY}" --json "body" --jq ".body" )
 
@@ -54,6 +81,13 @@ if [[ $( gh release view "${RELEASE_VERSION}" --repo "${ASSETS_REPOSITORY}" 2>&1
 
     gh release edit "${RELEASE_VERSION}" --repo "${ASSETS_REPOSITORY}" --notes-file release_notes.md
   fi
+fi
+
+RELEASE_TAG_SHA="$( resolve_release_tag_commit )"
+
+if [[ "${RELEASE_TAG_SHA}" != "${RELEASE_SOURCE_SHA}" ]]; then
+  echo "::error::Release provenance mismatch: tag '${RELEASE_VERSION}' resolves to '${RELEASE_TAG_SHA}', but these assets were built from '${RELEASE_SOURCE_SHA}'. Refusing to upload."
+  exit 1
 fi
 
 cd assets

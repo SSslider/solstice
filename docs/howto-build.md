@@ -10,6 +10,7 @@
   - [Windows](#dependencies-windows)
 - [Build for Development](#build-dev)
 - [Build for CI/Downstream](#build-ci)
+- [Release provenance](release-provenance.md)
 - [Build Snap](#build-snap)
 - [Patch Update Process](#patch-update-process)
   - [Semi-Automated](#patch-update-process-semiauto)
