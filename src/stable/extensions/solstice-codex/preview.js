@@ -568,6 +568,72 @@ function resolveNpmSpawn(args, opts) {
 	return { command: resolved.cmd, args: resolved.args, env: resolved.env || null, shell: false };
 }
 
+function localPackageBin(root, packageName, binName) {
+	try {
+		const packageRoot = path.join(root, "node_modules", ...packageName.split("/"));
+		const pkg = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"));
+		let rel = null;
+		if (typeof pkg.bin === "string") rel = pkg.bin;
+		else if (pkg.bin && typeof pkg.bin === "object") rel = pkg.bin[binName] || null;
+		if (!rel) return null;
+		const entry = path.resolve(packageRoot, rel);
+		return fs.existsSync(entry) ? entry : null;
+	} catch { return null; }
+}
+
+// npm is useful for arbitrary scripts, but it is an unnecessary extra process
+// for the plain framework commands Solstice generates most often. On Thomas's
+// Windows install the npm wrapper can exit with code 0 before its server becomes
+// reachable. Resolve the local framework's declared JS bin and run it with the
+// already-running, signed Solstice executable in Node mode instead. Complex
+// scripts (pre-steps, env wrappers, shell operators) deliberately stay on npm.
+function resolveFrameworkSpawn(root, script, port) {
+	let command = "";
+	try {
+		const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+		command = String((pkg.scripts || {})[script] || "").trim();
+	} catch { return null; }
+	if (!command || /[&|;<>]/.test(command)) return null;
+
+	let packageName = null, binName = null, args = null;
+	if (/^vite(?:\s+dev)?(?:\s|$)/i.test(command)) {
+		packageName = "vite"; binName = "vite";
+		args = ["--host", "127.0.0.1", "--port", String(port), "--strictPort"];
+	} else if (/^next\s+dev(?:\s|$)/i.test(command)) {
+		packageName = "next"; binName = "next";
+		args = ["dev", "--hostname", "127.0.0.1", "--port", String(port)];
+	} else if (/^astro\s+dev(?:\s|$)/i.test(command)) {
+		packageName = "astro"; binName = "astro";
+		args = ["dev", "--host", "127.0.0.1", "--port", String(port)];
+	} else if (/^nuxt\s+dev(?:\s|$)/i.test(command)) {
+		packageName = "nuxt"; binName = "nuxt";
+		args = ["dev", "--host", "127.0.0.1", "--port", String(port)];
+	} else if (/^react-scripts\s+start(?:\s|$)/i.test(command)) {
+		packageName = "react-scripts"; binName = "react-scripts";
+		args = ["start"];
+	} else if (/^svelte-kit\s+dev(?:\s|$)/i.test(command)) {
+		packageName = "@sveltejs/kit"; binName = "svelte-kit";
+		args = ["dev", "--host", "127.0.0.1", "--port", String(port), "--strictPort"];
+	} else {
+		return null;
+	}
+
+	const entry = localPackageBin(root, packageName, binName);
+	if (!entry) return null;
+	const localBins = path.join(root, "node_modules", ".bin");
+	return {
+		command: process.execPath,
+		args: [entry, ...args],
+		env: {
+			...process.env,
+			ELECTRON_RUN_AS_NODE: "1",
+			PATH: [localBins, process.env.PATH || ""].filter(Boolean).join(path.delimiter),
+		},
+		shell: false,
+		directFramework: binName,
+	};
+}
+
 // Owns the lifecycle of the project's dev server. The agent writes a framework
 // app but never had a way to actually RUN it — so the live preview probed ports
 // that nothing was listening on and stayed blank. This boots `npm install` (only
@@ -674,11 +740,14 @@ class DevServer {
 			if (/\b(vite|svelte-kit)\b/i.test(command)) args.push("--strictPort");
 		}
 		let npmSpawn;
-		try { npmSpawn = resolveNpmSpawn(args); }
+		try { npmSpawn = resolveFrameworkSpawn(this.root, script, port) || resolveNpmSpawn(args); }
 		catch (error) {
 			this.lastError = `cannot start npm run ${script}: ${error && error.message || error}`;
 			this.log(`[dev] ${this.lastError}\n`);
 			return null;
+		}
+		if (npmSpawn.directFramework) {
+			this.log(`[dev] bypassing the npm wrapper; launching local ${npmSpawn.directFramework} directly\n`);
 		}
 		let proc;
 		try {
@@ -813,6 +882,7 @@ module.exports = {
 	DevServer,
 	detectDevServerUrl,
 	resolveNpmSpawn,
+	resolveFrameworkSpawn,
 	hasFramework,
 	allocateWorkspacePort,
 	readDevServerRegistration,

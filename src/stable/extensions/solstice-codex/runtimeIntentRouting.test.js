@@ -26,7 +26,7 @@ ok(handlerStart >= 0 && handlerEnd > handlerStart, "runtime intent handler is pr
 ok(/isExternalLaunchIntent\(text\)/.test(handler), "runtime handler distinguishes external-browser intent");
 ok(/vscode\.env\.openExternal\(vscode\.Uri\.parse\(url\)\)/.test(handler), "external launch calls VS Code openExternal with the live URL");
 ok(/if \(!fs\.existsSync\(path\.join\(root, "package\.json"\)\)\)/.test(handler), "missing package.json is handled explicitly");
-ok(/await this\.ensureDevServer\(\{ openPreview: !external \}\)/.test(handler), "a package with no detected framework still starts npm run dev");
+ok(/await this\.ensureDevServer\(\{ openPreview: !external, reportFailure: framework \}\)/.test(handler), "a package with no detected framework still starts npm run dev");
 ok(!/else if \(hasFramework\(root\)\)/.test(handler), "launch routing no longer gates npm run dev on framework detection");
 ok(/systemNote[\s\S]*package\.json/.test(handler), "missing package.json is surfaced in Felix chat");
 
@@ -40,7 +40,7 @@ const AsyncFunction = Object.getPrototypeOf(async function () { }).constructor;
 const handlerBody = handler.slice(handler.indexOf(") {") + 3, handler.lastIndexOf("}"));
 const runHandler = new AsyncFunction(
 	"text", "isPureLaunchIntent", "isExternalLaunchIntent", "workspaceCwd",
-	"detectDevServerUrl", "vscode", "fs", "path", "runtimeStopIntent",
+	"detectDevServerUrl", "vscode", "fs", "path", "runtimeStopIntent", "hasFramework",
 	handlerBody,
 );
 const ensureBody = ensure.slice(ensure.indexOf(") {") + 3, ensure.lastIndexOf("}"));
@@ -65,7 +65,7 @@ const runEnsure = new AsyncFunction("options", "workspaceCwd", "DevServer", ensu
 	await runHandler.call(
 		controller, "פתח את האתר בדפדפן", isPureLaunchIntent, isExternalLaunchIntent,
 		() => "/tmp/project", async () => "http://127.0.0.1:5173/", vscode,
-		{ existsSync: () => true }, path, runtimeStopIntent,
+		{ existsSync: () => true }, path, runtimeStopIntent, () => true,
 	);
 	ok(externalCalls === 1, "external browser intent calls openExternal exactly once");
 	ok(embeddedCalls === 0, "external browser intent does not open the embedded preview");
@@ -75,9 +75,54 @@ const runEnsure = new AsyncFunction("options", "workspaceCwd", "DevServer", ensu
 	await runHandler.call(
 		controller, "פתח את האתר", isPureLaunchIntent, isExternalLaunchIntent,
 		() => "/tmp/project", async () => null, vscode,
-		{ existsSync: () => true }, path, runtimeStopIntent,
+		{ existsSync: () => true }, path, runtimeStopIntent, () => false,
 	);
 	ok(ensureOptions && ensureOptions.openPreview === true, "package.json starts npm run dev even without framework detection");
+
+	let staticEmbeddedCalls = 0;
+	const staticController = {
+		previewUrl: "",
+		post: (message) => notes.push(message),
+		ensureDevServer: async () => null,
+		ensureStaticPreviewUrl: async () => "http://127.0.0.1:4567/index.html",
+		openPreview: async (url) => { staticEmbeddedCalls++; staticController.previewUrl = url; },
+		refreshPreview: () => { },
+	};
+	await runHandler.call(
+		staticController, "פתח את האתר", isPureLaunchIntent, isExternalLaunchIntent,
+		() => "/tmp/static-project", async () => null, vscode,
+		{ existsSync: () => true }, path, runtimeStopIntent, () => false,
+	);
+	ok(staticEmbeddedCalls === 1 && staticController.previewUrl.includes("index.html"), "clean-exiting npm falls back to the static HTML preview");
+
+	let staticExternalUrl = "";
+	const staticVscode = {
+		...vscode,
+		env: { openExternal: async (url) => { staticExternalUrl = url; return true; } },
+	};
+	staticController.previewUrl = "";
+	staticController.openPreview = async () => { throw new Error("external static launch must not open embedded preview"); };
+	await runHandler.call(
+		staticController, "פתח את האתר בדפדפן", isPureLaunchIntent, isExternalLaunchIntent,
+		() => "/tmp/static-project", async () => null, staticVscode,
+		{ existsSync: () => true }, path, runtimeStopIntent, () => false,
+	);
+	ok(staticExternalUrl.includes("index.html"), "clean-exiting npm supplies the static URL to the external browser too");
+
+	const noFallbackNotes = [];
+	const noFallbackController = {
+		previewUrl: "",
+		devServer: { lastError: "npm run dev exited before the server became reachable (code 0)" },
+		post: (message) => noFallbackNotes.push(message),
+		ensureDevServer: async () => null,
+		ensureStaticPreviewUrl: async () => null,
+	};
+	await runHandler.call(
+		noFallbackController, "פתח את האתר", isPureLaunchIntent, isExternalLaunchIntent,
+		() => "/tmp/no-preview-project", async () => null, vscode,
+		{ existsSync: () => true }, path, runtimeStopIntent, () => false,
+	);
+	ok(noFallbackNotes.some((message) => message.text.includes("code 0")), "a failed dev command with no HTML fallback still reports its exact cause");
 
 	const failureNotes = [];
 	const failingController = {

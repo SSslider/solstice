@@ -1332,18 +1332,8 @@ self.addEventListener("fetch", (e) => {
 			// static-serving an un-bundled (broken) page. ensureDevServer re-enters
 			// openPreview with the real URL once the port is up.
 			if (!url && hasFramework(root)) { await this.ensureDevServer().catch(() => { }); return; }
-			if (!url) {
-				if (!this.preview) this.preview = new PreviewServer(root, {
-					onSelect: (pick) => this.post({ type: "elementSelected", pick }),
-				});
-				const port = await this.preview.ensure();
-				let rel = "index.html";
-				if (!fs.existsSync(path.join(root, rel))) {
-					const found = await vscode.workspace.findFiles("**/*.html", "**/node_modules/**", 1);
-					if (found.length) rel = vscode.workspace.asRelativePath(found[0]);
-				}
-				url = `http://127.0.0.1:${port}/${rel}`;
-			}
+			if (!url) url = await this.ensureStaticPreviewUrl(root);
+			if (!url) { vscode.window.showWarningMessage("Solstice: no HTML file is available to preview."); return; }
 		}
 		if (this.devServer && this.devServer.hasOwnedProcess()) this.devServer.touch("preview-open");
 		// Route a live dev server through the injecting proxy so click-to-select works
@@ -1353,6 +1343,22 @@ self.addEventListener("fetch", (e) => {
 		this.previewKind = this.detectPreviewKind();
 		this.openPreviewPanel(url, this.defaultDevice());
 		this.fleetFlow("preview", { url });
+	}
+
+	async ensureStaticPreviewUrl(root = workspaceCwd()) {
+		if (!root) return null;
+		let rel = "index.html";
+		if (!fs.existsSync(path.join(root, rel))) {
+			const found = await vscode.workspace.findFiles("**/*.html", "**/node_modules/**", 1);
+			if (!found.length) return null;
+			rel = vscode.workspace.asRelativePath(found[0]);
+		}
+		if (!this.preview) this.preview = new PreviewServer(root, {
+			onSelect: (pick) => this.post({ type: "elementSelected", pick }),
+		});
+		const port = await this.preview.ensure();
+		const urlPath = String(rel).split(/[\\/]/).map(encodeURIComponent).join("/");
+		return `http://127.0.0.1:${port}/${urlPath}`;
 	}
 
 	// If `url` is a live local dev server (Vite/Next/CRA the agent started), wrap it
@@ -1407,6 +1413,7 @@ self.addEventListener("fetch", (e) => {
 	async ensureDevServer(options = {}) {
 		const root = workspaceCwd();
 		const openPreview = options.openPreview !== false;
+		const reportFailure = options.reportFailure !== false;
 		if (!root) return null;
 		if (!this.devServer) {
 			this.devServer = new DevServer(root, {
@@ -1441,7 +1448,7 @@ self.addEventListener("fetch", (e) => {
 		const reason = launchError && launchError.message
 			|| this.devServer.lastError
 			|| "npm run dev לא החזיר כתובת פעילה";
-		this.post({ type: "systemNote", text: `⚠️ לא הצלחתי להריץ את שרת הפיתוח: ${reason}` });
+		if (reportFailure) this.post({ type: "systemNote", text: `⚠️ לא הצלחתי להריץ את שרת הפיתוח: ${reason}` });
 		this.pushDevServerInventory();
 		return null;
 	}
@@ -1631,14 +1638,31 @@ self.addEventListener("fetch", (e) => {
 			const root = workspaceCwd();
 			if (!root) { vscode.window.showWarningMessage("Solstice: open a folder first."); return true; }
 			const external = isExternalLaunchIntent(text);
+			const framework = hasFramework(root);
 			let url = await detectDevServerUrl(root).catch(() => null);
 			if (!url) {
 				if (!fs.existsSync(path.join(root, "package.json"))) {
-					this.post({ type: "systemNote", text: "⚠️ לא מצאתי package.json בפרויקט, ולכן אין פקודת npm run dev להריץ." });
-					return true;
+					url = await this.ensureStaticPreviewUrl(root).catch(() => null);
+					if (!url) {
+						this.post({ type: "systemNote", text: "⚠️ לא מצאתי package.json או קובץ HTML שניתן להציג בפרויקט." });
+						return true;
+					}
+					if (!external) await this.openPreview(url).catch(() => { });
+				} else {
+					url = await this.ensureDevServer({ openPreview: !external, reportFailure: framework });
+					if (!url && !framework) {
+						url = await this.ensureStaticPreviewUrl(root).catch(() => null);
+						if (url && !external) await this.openPreview(url).catch(() => { });
+						if (url) this.post({ type: "systemNote", text: "ℹ️ פקודת הפיתוח הסתיימה בלי שרת; פתחתי את גרסת ה־HTML ישירות." });
+					}
+					if (!url) {
+						if (!framework) {
+							const reason = this.devServer && this.devServer.lastError || "npm run dev לא החזיר כתובת פעילה ולא נמצא קובץ HTML להצגה";
+							this.post({ type: "systemNote", text: `⚠️ לא הצלחתי לפתוח את האתר: ${reason}` });
+						}
+						return true; // Framework failures were already reported by ensureDevServer.
+					}
 				}
-				url = await this.ensureDevServer({ openPreview: !external });
-				if (!url) return true; // ensureDevServer already posted the precise failure cause.
 			} else if (!external) {
 				try { await this.openPreview(url); }
 				catch (error) {
