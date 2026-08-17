@@ -103,6 +103,20 @@
 		</section>`;
 	}
 
+	function canvasPanel(canvas) {
+		const snapshot = object(canvas && canvas.snapshot);
+		const nodes = list(snapshot.nodes);
+		const images = nodes.filter((node) => node && (node.imageDataUri || node.imageUrl));
+		return `<section class="panel panel-wide canvas-panel" data-testid="solstice-foundation-canvas">
+			<div class="panel-head"><div><small>SHARED EVENT LOG · ORIGIN SOLSTICE</small><h2>קנבס קנוני משותף</h2><p>revision ${number(canvas && canvas.revision)} · ${nodes.length} חלונות · ${images.length} תמונות · אותו backend של Atrium ו־Vega</p></div><span class="canvas-live">LIVE</span></div>
+			<div class="canvas-compose"><input id="canvasNodeTitle" placeholder="נוד חדש שיסתנכרן ל־Vega ול־Atrium"><button data-action="add-canvas-node">הוסף דרך הלוג</button></div>
+			<div class="canvas-grid">${nodes.length ? nodes.map((node) => `<article class="canvas-node ${node.imageDataUri ? "has-image" : ""}">
+				${node.imageDataUri ? `<img src="${esc(node.imageDataUri)}" alt="${esc(node.title || "Imagine asset")}">` : ""}
+				<div><small>${esc(node.type || node.ftype || "node")}</small><h3>${esc(node.title || node.note || "ללא כותרת")}</h3><p>${esc(node.meta || String(node.id || "").slice(0, 8))}</p></div>
+			</article>`).join("") : `<div class="panel-empty">הקנבס ריק. הנוד הראשון יופיע כאן מכל אחד משלושת המשטחים.</div>`}</div>
+		</section>`;
+	}
+
 	function renderDetail() {
 		const detail = state.selectedBusiness;
 		if (!detail) return renderBoard();
@@ -116,7 +130,7 @@
 			${state.error ? `<div class="error">${esc(state.error)}</div>` : ""}
 			<section class="record-head"><div class="record-id"><span class="record-mark">${esc(String(business.name || business.slug || "F").replace(/^Foundation\s*·?\s*/, "").slice(0, 2))}</span><div><small>${esc(business.kind || domain.kindKey || "BUSINESS")}</small><h1>${esc(business.name || business.slug)}</h1>${pills(business.verticals)}</div></div><div class="record-status"><span class="badge ${esc(business.configStatus || "unknown")}">${esc(business.configStatus || "unknown")}${business.configVersion ? ` · v${esc(business.configVersion)}` : ""}</span><span>עודכן ${date(state.connectedAt)}</span></div></section>
 			<section class="detail-metrics">${metric("חיבורים", number(connections.length), "providers")}${metric("אירועים", number(events.length), "ledger")}${metric("קשרים", number(relationships.length), "business graph")}${metric("משפיענים", number(influencers.length), influencers.length ? `${number(domain.approved)} מאושרים` : "לא רלוונטי")}</section>
-			<main class="detail-grid">${influencersPanel(domain)}${connectionsPanel(connections)}${domainPanel(domain)}${relationshipsPanel(relationships)}${eventsPanel(events)}</main>`;
+			<main class="detail-grid">${canvasPanel(detail.canvas)}${influencersPanel(domain)}${connectionsPanel(connections)}${domainPanel(domain)}${relationshipsPanel(relationships)}${eventsPanel(events)}</main>`;
 	}
 
 	function bind() {
@@ -133,6 +147,12 @@
 					state.detailBusy = true; state.error = ""; render(); vscode.postMessage({ type: "show_business", slug: state.selectedBusiness.business.slug });
 				} else if (action === "open-surface") {
 					vscode.postMessage({ type: "open_surface", href: element.dataset.href });
+				} else if (action === "add-canvas-node") {
+					const input = document.getElementById("canvasNodeTitle");
+					const title = String(input && input.value || "").trim();
+					if (!title) return;
+					element.disabled = true;
+					vscode.postMessage({ type: "add_canvas_node", slug: state.selectedBusiness.business.slug, title });
 				}
 			};
 		});

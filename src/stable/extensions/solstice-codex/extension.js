@@ -5865,6 +5865,9 @@ function openFoundation(controller, extensionUri) {
 		storageDir: path.join(controller.context.globalStorageUri.fsPath, "foundation-board"),
 		businessFile: path.join(controller.context.globalStorageUri.fsPath, "foundation-board.json"),
 	});
+	let activeSlug = null;
+	let activeDetail = null;
+	let detailCursor = new Date(Date.now() - 1000).toISOString();
 	const refresh = async () => {
 		const board = await boardClient.listBusinesses();
 		foundationPanel.webview.postMessage({
@@ -5876,19 +5879,58 @@ function openFoundation(controller, extensionUri) {
 			},
 		});
 	};
-	const showBusiness = async (slug) => {
-		foundationPanel.webview.postMessage({ type: "detailBusy", slug: String(slug || "") });
+	const showBusiness = async (slug, silent = false) => {
+		activeSlug = String(slug || "");
+		if (!silent) foundationPanel.webview.postMessage({ type: "detailBusy", slug: activeSlug });
 		const detail = await boardClient.getBusinessDetail(slug);
+		activeDetail = detail;
 		foundationPanel.webview.postMessage({
 			type: "detail",
 			detail,
 			connectedAt: new Date().toISOString(),
 		});
 	};
+	const detailPoll = setInterval(async () => {
+		if (!foundationPanel || !activeSlug || !activeDetail || !activeDetail.business) return;
+		try {
+			const response = await boardClient.pollEvents(detailCursor);
+			if (response.cursor) detailCursor = String(response.cursor);
+			const changed = Array.isArray(response.events) && response.events.some((event) =>
+				String(event.business_id || "") === String(activeDetail.business.id || "")
+				&& String(event.event_type || "").startsWith("foundation.canvas."),
+			);
+			if (changed) await showBusiness(activeSlug, true);
+		} catch { /* offline poll retries; the last canonical revision stays visible */ }
+	}, 2500);
+	if (detailPoll.unref) detailPoll.unref();
 	foundationPanel.webview.onDidReceiveMessage(async (message) => {
 		try {
 			if (message.type === "ready" || message.type === "refresh") await refresh();
 			else if (message.type === "show_business") await showBusiness(message.slug);
+			else if (message.type === "add_canvas_node") {
+				if (!activeDetail || !activeDetail.canvas) throw new Error("Open a Foundation business before adding a canvas node.");
+				const title = String(message.title || "").trim();
+				if (!title || title.length > 600) throw new Error("Canvas node title is invalid.");
+				const current = activeDetail.canvas.snapshot || {
+					version: 4, slug: activeSlug, nodes: [], edges: [], savedAt: new Date().toISOString(),
+				};
+				const id = crypto.randomUUID();
+				const node = {
+					id, type: "Solstice · note", title, meta: "origin:solstice", ftype: "note",
+					note: title, x: 80 + (current.nodes.length % 3) * 380,
+					y: 80 + Math.floor(current.nodes.length / 3) * 340,
+				};
+				const anchor = current.nodes[0];
+				const snapshot = {
+					...current,
+					version: 4,
+					nodes: [...current.nodes, node],
+					edges: anchor ? [...current.edges, { from: anchor.id, to: id }] : current.edges,
+					savedAt: new Date().toISOString(),
+				};
+				await boardClient.saveCanvas(activeSlug, snapshot, activeDetail.canvas.revision);
+				await showBusiness(activeSlug, true);
+			}
 			else if (message.type === "open_surface") {
 				const target = new URL(String(message.href || ""), boardClient.endpoint);
 				if (!/^https?:$/.test(target.protocol)) throw new Error("Foundation surface URL must use HTTP(S).");
@@ -5896,7 +5938,7 @@ function openFoundation(controller, extensionUri) {
 			}
 		} catch (error) { postFoundationError(error); }
 	});
-	foundationPanel.onDidDispose(() => { foundationPanel = null; });
+	foundationPanel.onDidDispose(() => { clearInterval(detailPoll); foundationPanel = null; });
 }
 
 let galleryPanel = null;

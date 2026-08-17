@@ -5,7 +5,7 @@ const fs = require("fs");
 const http = require("http");
 const os = require("os");
 const path = require("path");
-const { FoundationClient, foundationBusinessDetailUrl, foundationBusinessesUrl } = require("./foundationClient");
+const { FoundationClient, foundationBusinessDetailUrl, foundationBusinessesUrl, foundationCanvasUrl } = require("./foundationClient");
 
 function listen(server) { return new Promise((resolve) => server.listen(0, "127.0.0.1", resolve)); }
 function close(server) { return new Promise((resolve) => server.close(resolve)); }
@@ -20,6 +20,13 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 	const remote = [];
 	const boardRequests = [];
 	const detailRequests = [];
+	const canvasRequests = [];
+	let canvasRevision = 4;
+	let canvasSnapshot = {
+		version: 4, slug: "rafael",
+		nodes: [{ id: "22222222-2222-4222-8222-222222222222", type: "Imagine", title: "Live asset", imageUrl: "/api/foundation/imagine/assets/rafael/live.png", imageId: "live" }],
+		edges: [], savedAt: "2026-08-17T12:00:00.000Z",
+	};
 	let cursorCounter = 0;
 	const server = http.createServer((req, res) => {
 		const chunks = [];
@@ -44,6 +51,26 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 					domain: { kindKey: "service", catalog: { domains: ["services"] }, pipelines: [] },
 					surfaceLinks: { atrium: "/foundation/rafael" },
 				}));
+				return;
+			}
+			if (url.pathname === "/api/foundation/canvas/rafael" && req.method === "GET") {
+				canvasRequests.push({ method: "GET", key: req.headers["x-studio-key"] || "", dev: url.searchParams.get("dev") || "" });
+				res.end(JSON.stringify({ ok: true, businessId, snapshot: canvasSnapshot, revision: canvasRevision, assets: [{ id: "live", url: canvasSnapshot.nodes[0].imageUrl, linkStatus: "linked" }] }));
+				return;
+			}
+			if (url.pathname === "/api/foundation/canvas/rafael" && req.method === "POST") {
+				const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+				assert.equal(body.origin, "solstice");
+				assert.equal(body.expected_revision, canvasRevision);
+				canvasSnapshot = body.snapshot;
+				canvasRevision += 1;
+				canvasRequests.push({ method: "POST", key: req.headers["x-studio-key"] || "", mutation: body.mutation_id });
+				res.end(JSON.stringify({ ok: true, duplicate: false, revision: canvasRevision, snapshot: canvasSnapshot }));
+				return;
+			}
+			if (url.pathname === "/api/foundation/imagine/assets/rafael/live.png") {
+				res.setHeader("content-type", "image/png");
+				res.end(Buffer.from("89504e470d0a1a0a", "hex"));
 				return;
 			}
 			if (req.method === "POST") {
@@ -106,7 +133,14 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 	assert.equal(detailRequests[0].key, "test-studio-key");
 	assert.equal(detailRequests[0].dev, "");
 	assert.equal(detailRequests[0].projection, "atrium");
+	assert.equal(detail.canvas.revision, 4);
+	assert.match(detail.canvas.snapshot.nodes[0].imageDataUri, /^data:image\/png;base64,/);
+	assert.equal(canvasRequests[0].key, "test-studio-key");
 	assert.equal(foundationBusinessDetailUrl(client.endpoint, "rafael", "test-studio-key"), `http://127.0.0.1:${server.address().port}/api/foundation/businesses/rafael?projection=atrium`);
+	assert.equal(foundationCanvasUrl(client.endpoint, "rafael", "test-studio-key"), `http://127.0.0.1:${server.address().port}/api/foundation/canvas/rafael`);
+	const savedCanvas = await client.saveCanvas("rafael", { ...canvasSnapshot, nodes: [...canvasSnapshot.nodes, { id: "33333333-3333-4333-8333-333333333333", title: "Solstice node" }] }, 4);
+	assert.equal(savedCanvas.revision, 5);
+	assert.equal(canvasRequests.some((item) => item.method === "POST" && item.key === "test-studio-key"), true);
 	const keylessBoardClient = new FoundationClient({
 		endpoint: `http://127.0.0.1:${server.address().port}/api/foundation/events`,
 		storageDir: path.join(root, "keyless-storage"),
@@ -124,6 +158,7 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 	assert.equal(detailRequests[1].key, "");
 	assert.equal(detailRequests[1].dev, "studio");
 	assert.equal(detailRequests[1].projection, "atrium");
+	assert.equal(canvasRequests.find((item) => item.method === "GET" && item.dev === "studio").dev, "studio");
 	assert.equal(foundationBusinessDetailUrl(keylessBoardClient.endpoint, "rafael"), `http://127.0.0.1:${server.address().port}/api/foundation/businesses/rafael?projection=atrium&dev=studio`);
 	await assert.rejects(() => keylessBoardClient.getBusinessDetail("../events"), /business slug is invalid/);
 

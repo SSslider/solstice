@@ -180,6 +180,69 @@ function foundationBusinessDetailUrl(endpoint, businessSlug, studioKey = "") {
 	return url.toString();
 }
 
+function foundationCanvasUrl(endpoint, businessSlug, studioKey = "") {
+	let url;
+	try { url = new URL(String(endpoint || FOUNDATION_EVENTS_URL)); }
+	catch { throw new FoundationSyncError("Foundation events URL is invalid.", { code: "invalid_url" }); }
+	const slug = normalizeBusinessSlug(businessSlug);
+	url.pathname = `/api/foundation/canvas/${encodeURIComponent(slug)}`;
+	url.search = "";
+	if (!String(studioKey || "").trim()) url.searchParams.set("dev", "studio");
+	url.hash = "";
+	return url.toString();
+}
+
+function foundationAssetUrl(endpoint, assetPath, studioKey = "") {
+	let url;
+	try { url = new URL(String(assetPath || ""), String(endpoint || FOUNDATION_EVENTS_URL)); }
+	catch { throw new FoundationSyncError("Foundation asset URL is invalid.", { code: "invalid_url" }); }
+	if (!/^https?:$/.test(url.protocol) || !url.pathname.startsWith("/api/foundation/imagine/assets/")) {
+		throw new FoundationSyncError("Foundation asset URL is outside the canonical asset route.", { code: "invalid_asset_url" });
+	}
+	if (!String(studioKey || "").trim()) url.searchParams.set("dev", "studio");
+	return url.toString();
+}
+
+function requestBytes(endpoint, options = {}) {
+	return new Promise((resolve, reject) => {
+		let url;
+		try { url = new URL(endpoint); }
+		catch { reject(new FoundationSyncError("Foundation asset URL is invalid.", { code: "invalid_url" })); return; }
+		const transport = url.protocol === "https:" ? https : http;
+		const request = transport.request(url, {
+			method: "GET",
+			headers: options.headers || {},
+			timeout: options.timeout || 10000,
+		}, (response) => {
+			const chunks = [];
+			let bytes = 0;
+			response.on("data", (chunk) => {
+				bytes += chunk.length;
+				if (bytes > 8 * 1024 * 1024) {
+					request.destroy(new FoundationSyncError("Foundation asset exceeded 8 MB.", { code: "asset_too_large" }));
+					return;
+				}
+				chunks.push(chunk);
+			});
+			response.on("end", () => {
+				if ((response.statusCode || 500) < 200 || (response.statusCode || 500) >= 300) {
+					reject(new FoundationSyncError(`Foundation asset returned HTTP ${response.statusCode}.`, {
+						code: "http_error", statusCode: response.statusCode,
+					}));
+					return;
+				}
+				resolve({ bytes: Buffer.concat(chunks), contentType: response.headers["content-type"] || "image/png" });
+			});
+		});
+		request.on("timeout", () => request.destroy(new FoundationSyncError("Foundation asset request timed out.", { code: "timeout" })));
+		request.on("error", (error) => reject(error instanceof FoundationSyncError ? error : new FoundationSyncError(
+			`Foundation asset is unavailable at ${url.origin}: ${error.message}`,
+			{ code: "service_unavailable", cause: error }
+		)));
+		request.end();
+	});
+}
+
 class FoundationClient {
 	constructor(options = {}) {
 		this.endpoint = options.endpoint || FOUNDATION_EVENTS_URL;
@@ -304,15 +367,70 @@ class FoundationClient {
 	}
 
 	async getBusinessDetail(businessSlug) {
-		const response = await requestJson(foundationBusinessDetailUrl(this.endpoint, businessSlug, this.studioKey), {
-			headers: this._headers(),
-			timeout: this.timeout,
-		});
+		const [response, canvas] = await Promise.all([
+			requestJson(foundationBusinessDetailUrl(this.endpoint, businessSlug, this.studioKey), {
+				headers: this._headers(),
+				timeout: this.timeout,
+			}),
+			this.getCanvas(businessSlug),
+		]);
 		if (!response || response.ok !== true || !response.business || !response.domain
 			|| !Array.isArray(response.connections) || !Array.isArray(response.events) || !Array.isArray(response.relationships)) {
 			throw new FoundationSyncError("Foundation returned an invalid business workspace.", { code: "invalid_business_detail_response" });
 		}
+		return { ...response, canvas };
+	}
+
+	async getCanvas(businessSlug) {
+		const response = await requestJson(foundationCanvasUrl(this.endpoint, businessSlug, this.studioKey), {
+			headers: this._headers(),
+			timeout: this.timeout,
+		});
+		if (!response || response.ok !== true || !Array.isArray(response.assets)) {
+			throw new FoundationSyncError("Foundation returned an invalid canvas response.", { code: "invalid_canvas_response" });
+		}
+		if (response.snapshot && Array.isArray(response.snapshot.nodes)) {
+			response.snapshot.nodes = await Promise.all(response.snapshot.nodes.map(async (node) => {
+				if (!node || !node.imageUrl) return node;
+				try {
+					const asset = await requestBytes(
+						foundationAssetUrl(this.endpoint, node.imageUrl, this.studioKey),
+						{ headers: this._headers(), timeout: this.timeout },
+					);
+					return { ...node, imageDataUri: `data:${asset.contentType};base64,${asset.bytes.toString("base64")}` };
+				} catch (error) {
+					this.log(`[foundation] image unavailable for ${node.imageId || node.id}: ${error.message}`);
+					return node;
+				}
+			}));
+		}
 		return response;
+	}
+
+	async saveCanvas(businessSlug, snapshot, expectedRevision, mutationId = crypto.randomUUID()) {
+		if (!this.studioKey) {
+			throw new FoundationSyncError("Foundation canvas writes require the shared studio key.", { code: "missing_studio_key" });
+		}
+		return requestJson(foundationCanvasUrl(this.endpoint, businessSlug, this.studioKey), {
+			method: "POST",
+			headers: this._headers(),
+			body: {
+				snapshot,
+				expected_revision: Number(expectedRevision || 0),
+				mutation_id: mutationId,
+				origin: "solstice",
+				actor_id: "solstice-foundation",
+			},
+			timeout: this.timeout,
+		});
+	}
+
+	async pollEvents(since = null) {
+		return requestJson(this.endpoint, {
+			headers: this._headers(),
+			query: { since, exclude_origin: "solstice", limit: 200 },
+			timeout: this.timeout,
+		});
 	}
 
 	async updateBusinessName(businessId, name) {
@@ -436,6 +554,8 @@ module.exports = {
 	eventId,
 	foundationBusinessDetailUrl,
 	foundationBusinessesUrl,
+	foundationCanvasUrl,
+	foundationAssetUrl,
 	normalizeBusinessId,
 	normalizeBusinessName,
 	normalizeBusinessSlug,
