@@ -4,6 +4,8 @@ const path = require("path");
 const crypto = require("crypto");
 const http = require("http");
 const https = require("https");
+const { VERTICAL_TEMPLATE_CATALOG } = require("./verticalTemplates");
+const { classifyMotionLevel, MOTION_LEVELS } = require("./siteBuildPolicy");
 const SKILL_STORE_MIGRATION = ".storage-migration-v1.json";
 
 // Felix's PRIVATE self-improvement store (Phase 6). Skills are reusable
@@ -167,8 +169,8 @@ class FelixSkills {
 
 	// import static prompt playbooks as seed skills, once.
 	seedFrom(extensionPath) {
-		this._seedPrompt(extensionPath, "design-playbook", "design-playbook.md", ["design", "premium", "landing", "ui"]);
-		this._seedPrompt(extensionPath, "animated-website-kit", "animated-website-kit.md", ["animation", "gsap", "r3f", "three", "webgl", "general-motion"]);
+		this._seedPrompt(extensionPath, "design-playbook", "design-playbook.md", ["design", "premium", "landing", "ui", "עיצוב", "אתר", "דף נחיתה", "ממשק"]);
+		this._seedPrompt(extensionPath, "animated-website-kit", "animated-website-kit.md", ["animation", "cinematic", "scroll-scrub", "gsap", "r3f", "three", "webgl", "general-motion", "סינמטי", "פרלקס", "תלת ממד", "סיפור בגלילה"]);
 		this._seedPrompt(extensionPath, "felix-toolbox-router", "felix-toolbox-router.md", ["toolbox", "router", "workflow", "research", "build"]);
 		this._seedPrompt(extensionPath, "gap-analysis-playbook", "gap-analysis-playbook.md", ["gap", "antigravity", "cursor", "analysis"]);
 		const scrollWorld = this._seedDirectory(extensionPath, "scroll-world-gpt-image", path.join("prompts", "scroll-world"));
@@ -178,7 +180,8 @@ class FelixSkills {
 		for (const f of files) {
 			const name = "vertical-" + slug(f.replace(/\.md$/, ""));
 			const sector = slug(f.replace(/\.md$/, ""));
-			const tags = ["vertical", "template", sector].concat(sector.split("-").filter(Boolean));
+			const catalog = VERTICAL_TEMPLATE_CATALOG.find((item) => item.file === `verticals/${f}`);
+			const tags = ["vertical", "template", sector].concat(sector.split("-").filter(Boolean), catalog ? catalog.tags : []);
 			this._seedPrompt(extensionPath, name, path.join("verticals", f), tags, sector);
 		}
 		return { scrollWorld };
@@ -491,15 +494,31 @@ class FelixSkills {
 	}
 
 	_keywordRank(queryText, skills) {
-		const q = new Set(tokenize(queryText));
-		return skills.map((s) => {
-			const hay = tokenize((s.meta.name || "") + " " + ((s.meta.tags || []).join(" ")) + " " + (s.meta.sector || "") + " " + s.body.slice(0, 400));
+		const motion = classifyMotionLevel(queryText).level;
+		const normalized = String(queryText || "").toLowerCase();
+		const generic = new Set(["a", "an", "the", "for", "with", "and", "to", "of", "this", "build", "create", "make", "website", "site", "page", "design", "clean", "modern", "landing", "ui", "vertical", "template", "לי", "של", "עם", "את", "על", "אתר", "עמוד", "דף", "נחיתה", "בנה", "צור", "עיצוב", "תבנית"]);
+		const q = new Set(tokenize(queryText).filter((token) => token.length >= 3 && !generic.has(token)));
+		return skills.filter((skill) => {
+			const name = String(skill.meta.name || "");
+			if (name === "animated-website-kit") return motion === MOTION_LEVELS.CINEMATIC;
+			if (name === "scroll-world-gpt-image") return motion === MOTION_LEVELS.SCROLLWORLD;
+			return true;
+		}).map((s) => {
+			// Retrieval eligibility comes from explicit metadata, never prose in the
+			// skill body. Contract words such as "approved", "research" and "build"
+			// appear in every approved brief and previously pulled unrelated router /
+			// gap-analysis skills into otherwise precise vertical requests.
+			const hay = tokenize((s.meta.name || "") + " " + ((s.meta.tags || []).join(" ")) + " " + (s.meta.sector || ""));
 			let overlap = 0;
 			for (const t of new Set(hay)) if (q.has(t)) overlap++;
+			const specificTagMatch = (s.meta.tags || []).some((tag) => {
+				const value = String(tag || "").toLowerCase().trim();
+				return value.length >= 4 && !generic.has(value) && normalized.includes(value);
+			});
 			const useBonus = Math.min(0.75, Math.log1p(parseInt(s.meta.uses, 10) || 0) / 4);
 			const score = overlap * 4 + useBonus;
-			return { s, score, overlap, useBonus };
-		}).filter((x) => x.overlap > 0)
+			return { s, score, overlap, useBonus, specificTagMatch };
+		}).filter((x) => x.overlap >= 2 || x.specificTagMatch)
 			.sort((a, b) => b.score - a.score)
 			.map((x) => this._withRetrieval(x.s, {
 				score: Math.round(x.score * 100) / 100,

@@ -42,17 +42,25 @@ function parseGrokModels(output) {
 
 function parseCodexModelList(result) {
 	const data = result && Array.isArray(result.data) ? result.data : [];
+	const declaredDefault = String(result && (result.defaultModel || result.default_model || result.default) || "");
 	return data.filter((model) => model && !model.hidden && (model.model || model.id)).map((model) => {
 		const id = String(model.model || model.id);
 		return {
 			key: id,
 			modelId: id,
+			isDefault: Boolean(model.isDefault || model.is_default || model.default || (declaredDefault && declaredDefault === id)),
 			label: model.displayName || id,
 			description: model.description || "Model reported by Codex CLI",
 			runner: "codex",
 			provider: "gpt",
 		};
 	});
+}
+
+function selectCodexDefault(models) {
+	const available = Array.isArray(models) ? models.filter((model) => model && model.key) : [];
+	const declared = available.find((model) => model.isDefault);
+	return String((declared || available[0] || {}).key || "");
 }
 
 function discoverCodexModels(bin, timeoutMs = 6000) {
@@ -127,6 +135,7 @@ module.exports = {
 	providerForModel,
 	parseGrokModels,
 	parseCodexModelList,
+	selectCodexDefault,
 	discoverCodexModels,
 	discoverGrokModels,
 	groupModels,

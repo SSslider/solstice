@@ -25,7 +25,15 @@ const { ManagerWorktrees } = require("./managerWorktrees");
 const { createReviewHandler } = require("./reviewShare");
 const { runBugbot } = require("./bugbot");
 const { listenOnFirstAvailable } = require("./companionPort");
-const { discoverCodexModels, discoverGrokModels, groupModels } = require("./modelDiscovery");
+const { discoverCodexModels, discoverGrokModels, selectCodexDefault, groupModels } = require("./modelDiscovery");
+const {
+	classifyMotionLevel,
+	needsSiteBriefApproval,
+	buildSiteBrief,
+	briefFromAnswers,
+	approvedSiteBuildPrompt,
+	appendSiteBuildPolicy,
+} = require("./siteBuildPolicy");
 const { grokApprovalDescriptor, isSafeGrokTool } = require("./grokApprovalBridge");
 const { listArtifacts } = require("./artifactStore");
 const { BRAND_PACK_APPROVAL, CANONICAL_BRAND_PACK, brandPackContext, installBrandDnaDocument, installBrandPack, loadBrandPack } = require("./brandPack");
@@ -267,9 +275,7 @@ function hasSiteReplicaAuthorization(text) {
 function needsAnimatedWebsiteKit(text) {
 	const t = String(text || "");
 	if (!t || /SOLSTICE_ANIMATED_WEBSITE_KIT/.test(t)) return false;
-	const asksSite = /\b(site|website|landing|homepage|page|web\s*app|microsite)\b|(?:אתר|דף|עמוד|לנדינג|נחיתה|מיניסייט)/i;
-	const asksMotion = /\b(animated|animation|motion|scrollytelling|scroll[-\s]?telling|scroll[-\s]?scrub|scrolltrigger|gsap|parallax|sticky\s+scroll|apple[-\s]?style|cinematic|webgl|three\.?js|three[-\s]?js|react[-\s]?three[-\s]?fiber|r3f|shader|canvas\s+sequence|video\s+scroll)\b|(?:מונפש|אנימציה|תנועה|גלילה|פרלקס|תלת[-\s]?ממד|תלת\s?מימד|וובגל|קנבס|סינמטי|בסגנון\s+אפל)/i;
-	return asksSite.test(t) && asksMotion.test(t);
+	return classifyMotionLevel(t).injectAnimatedKit;
 }
 
 const PROMPT_CACHE = new Map();
@@ -316,12 +322,14 @@ function needsExplicitToolboxRouter(text) {
 
 function appendResearchContract(text) {
 	let out = String(text || "");
+	const motionPolicy = classifyMotionLevel(out);
 	const addResearchContract = needsResearchContract(out);
-	const addAnimatedKit = needsAnimatedWebsiteKit(out) && !hasExclusiveScrollWorldRoute(out);
+	const addAnimatedKit = motionPolicy.injectAnimatedKit && !hasExclusiveScrollWorldRoute(out);
 	const addVerticalPack = needsVerticalTemplatePack(out);
 	const addGapAnalysis = needsGapAnalysis(out);
 	const addToolboxRouter = needsExplicitToolboxRouter(out);
 	const addSiteReplica = needsSiteReplicaContract(out);
+	out = appendSiteBuildPolicy(out);
 	if (addResearchContract) {
 		out += [
 			"",
@@ -410,6 +418,8 @@ class AgentController {
 		this._lastVerticalRoute = null;
 		this._lastPromptDiagnostics = null;
 		this._lastDeveloperInstructions = null;
+		this._codexDefaultKey = "";     // populated only by live Codex model/list discovery
+		this._manualGrokSelected = false;
 		this.threads = new Map();      // threadId -> {id, preview, status, activeTurnId, plan, diff, updatedAt}
 		this.loaded = new Set();       // threadIds resumed/started in this server process
 		this.pendingApprovals = new Map(); // approvalKey -> { resolve(decision), creditGate }
@@ -822,7 +832,7 @@ class AgentController {
 	}
 	captureCompanionState(method, params) {
 		const s = this._companion();
-		try { s.model = (this.cfg().get("provider") || "composer-2.5"); } catch (e) {}
+		try { s.model = this.providerKey(); } catch (e) {}
 		if (this.previewUrl) s.previewUrl = this.previewUrl;
 		if (this.lastDeployUrl) s.liveUrl = this.lastDeployUrl;
 		if (method === "turn/started") s.building = true;
@@ -860,7 +870,9 @@ class AgentController {
 			} else if (action === "approve_plan") {
 				if (this.pendingPlanApproval) {
 					this.replanPendingBuild(payload.prompt, payload.answers, { final: true });
-					const prompt = this.approvedBuildPrompt(this.pendingPlanApproval);
+					const prompt = this.pendingPlanApproval.kind === "site-brief"
+						? approvedSiteBuildPrompt(this.pendingPlanApproval)
+						: this.approvedBuildPrompt(this.pendingPlanApproval);
 					this.pendingPlanApproval = null;
 					this._planApprovalBypass = true;
 					this._walkthroughPending = true;
@@ -2048,7 +2060,7 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	providerKey() {
-		let k = this.cfg().get("provider") || "composer-2.5";
+		let k = this.cfg().get("provider") || "codex-auto";
 		const legacyClaude = { "claude-opus": "claude-opus-4-8", "claude-sonnet": "claude-sonnet-5" };
 		if (legacyClaude[k]) {
 			k = legacyClaude[k];
@@ -2067,11 +2079,21 @@ self.addEventListener("fetch", (e) => {
 				Promise.resolve(this.cfg().update("provider", k, this.cfgTarget())).catch(() => { });
 			}
 		}
+		// 04110 removes Grok/Composer from startup/default behavior because Thomas
+		// no longer has that subscription. An old persisted provider is migrated to
+		// the live Codex default; selecting Grok manually in this window still works.
+		if (k === "gpt-5.6" || ((k === "composer-2.5" || k === "grok-4.5") && !this._manualGrokSelected)) {
+			k = "codex-auto";
+			if (!this._legacyDefaultProviderMigrated) {
+				this._legacyDefaultProviderMigrated = true;
+				Promise.resolve(this.cfg().update("provider", "codex-auto", this.cfgTarget())).catch(() => { });
+			}
+		}
 		// Claude is Thomas-test-only: a persisted/stale setting must never activate
 		// it on startup. It becomes live only after a manual picker selection in
 		// this window, and only while the explicit allowClaude gate is open.
-		if (runnerFor(k) === "claude" && (!this.claudeAllowed() || !this._manualClaudeSelected)) return "gpt-5.5";
-		return k;
+		if (runnerFor(k) === "claude" && (!this.claudeAllowed() || !this._manualClaudeSelected)) k = "codex-auto";
+		return k === "codex-auto" ? (this._codexDefaultKey || "codex-auto") : k;
 	}
 
 	// The CLI binary (path or bare name) a given runner will try to spawn —
@@ -2271,13 +2293,19 @@ self.addEventListener("fetch", (e) => {
 			discoverCodexModels(this.runnerBin("codex")),
 			discoverGrokModels(this.runnerBin("grok")),
 		]).then(([codexModels, grokModels]) => {
-			const discovered = [...codexModels, ...grokModels];
+			this._codexDefaultKey = selectCodexDefault(codexModels);
+			const discovered = [...codexModels, ...grokModels].map((item) => item.runner === "grok" ? {
+				...item,
+				description: `אין מנוי — בחירה ידנית בלבד · ${item.description}`,
+				manualOnly: true,
+			} : item);
 			for (const item of discovered) {
 				MODEL_REGISTRY[item.key] = {
 					label: item.label, desc: item.description, runner: item.runner,
 					provider: item.provider,
 					codexId: item.runner === "codex" ? item.modelId : undefined,
 					grokId: item.runner === "grok" ? item.modelId : undefined,
+					manualOnly: !!item.manualOnly,
 				};
 				if (item.runner === "grok") GROK_MODELS[item.key] = { id: item.modelId, label: item.label };
 			}
@@ -2303,7 +2331,7 @@ self.addEventListener("fetch", (e) => {
 		if (this._discoveredModelChoices) {
 			const list = [...this._discoveredModelChoices];
 			if (this.claudeAllowed()) {
-				for (const key of ["claude-fable-5", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5"]) {
+				for (const key of ["claude-opus-5", "claude-fable-5", "claude-fable-5-1", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5"]) {
 					const m = MODEL_REGISTRY[key];
 					list.push({ key, modelId: m.claudeId, label: m.label, description: m.desc, runner: m.runner, provider: "claude", manualOnly: true });
 				}
@@ -2315,7 +2343,7 @@ self.addEventListener("fetch", (e) => {
 			return list;
 		}
 		return Object.entries(MODEL_REGISTRY)
-			.filter(([, m]) => !m.gated || this.claudeAllowed())
+			.filter(([, m]) => !m.hidden && (!m.gated || this.claudeAllowed()))
 			.sort((a, b) => (a[1].order || 0) - (b[1].order || 0))
 			.map(([key, m]) => ({ key, label: m.label, description: m.desc, provider: m.provider || (m.runner === "claude" ? "claude" : m.runner === "grok" ? "grok" : "gpt"), manualOnly: !!m.manualOnly }));
 	}
@@ -2380,6 +2408,14 @@ self.addEventListener("fetch", (e) => {
 		// on it would spawn-EPERM (the npm shim doesn't exist). Tell the user how to
 		// enable it instead of crashing. (Thomas: "spawn EPERM" switching to Grok/Composer.)
 		const nextRunner = runnerFor(key);
+		if (nextRunner === "grok") {
+			const proceed = await vscode.window.showWarningMessage(
+				"אין מנוי Grok פעיל. הבחירה היא ידנית בלבד ועלולה להיכשל עד לחידוש המנוי.",
+				{ modal: true },
+				"בחר בכל זאת"
+			);
+			if (proceed !== "בחר בכל זאת") { this.applyProviderToWebviews(); return; }
+		}
 		if (nextRunner === "moonshot") {
 			try {
 				const connection = await ensureProviderConnection(vscode, this.context, "moonshot");
@@ -2397,6 +2433,7 @@ self.addEventListener("fetch", (e) => {
 			return;
 		}
 		this._manualClaudeSelected = nextRunner === "claude";
+		this._manualGrokSelected = nextRunner === "grok";
 		await this.cfg().update("provider", key, this.cfgTarget());
 		this.resetAgentSession();
 		this.applyProviderToWebviews();
@@ -2455,11 +2492,16 @@ self.addEventListener("fetch", (e) => {
 	// freshest non-Claude models. Config-driven so newer/stronger models can be
 	// slotted in without code changes.
 	failoverChain() {
-		const def = ["gpt-5.6", "gpt-5.5", "composer-2.5", "grok-4.5"];
+		const def = ["gpt-5.5"];
 		let chain = this.cfg().get("failoverChain");
 		if (!Array.isArray(chain) || !chain.length) chain = def;
-		// hard guard: claude can never enter the automatic chain
-		return chain.map((s) => String(s)).filter((k) => k && !(MODEL_REGISTRY[k] && MODEL_REGISTRY[k].manualOnly));
+		// Product policy is intentionally narrower than legacy user settings:
+		// GPT-5.5 is the sole fallback. Every non-Codex provider is manual-only.
+		return chain.map((s) => String(s)).filter((k) => k === "gpt-5.5");
+	}
+
+	isAutoManagedProvider(key = this.providerKey()) {
+		return key === "codex-auto" || key === this._codexDefaultKey || this.failoverChain().includes(key);
 	}
 
 	// Auto-failover: on a quota/rate-limit error, transparently advance to the
@@ -2497,16 +2539,10 @@ self.addEventListener("fetch", (e) => {
 	suggestFallback() {
 		if (this.fallbackPrompted) return;
 		this.fallbackPrompted = true;
-		const choices = ["GPT-5.6 Sol (Codex)", "GPT-5.5 (Codex)", "Grok 4.5 Build", "Composer 2.5 Fast", "Stay"];
 		vscode.window.showWarningMessage(
-			"All auto-failover models hit their limit. Switch the Solstice agent manually?",
-			...choices
-		).then(async (pick) => {
-			const key = pick === "GPT-5.6 Sol (Codex)" ? "gpt-5.6" : pick === "GPT-5.5 (Codex)" ? "gpt-5.5" : pick === "Grok 4.5 Build" ? "grok-4.5" : pick === "Composer 2.5 Fast" ? "composer-2.5" : null;
-			if (!key) return;
-			await this.cfg().update("provider", key, this.cfgTarget());
-			this.applyProviderToWebviews();
-		});
+			"The live Codex default and GPT-5.5 fallback both hit their limit.",
+			"Open model picker"
+		).then((pick) => { if (pick === "Open model picker") this.selectModel(); });
 	}
 
 	startGrokWatcher() {
@@ -3153,7 +3189,7 @@ self.addEventListener("fetch", (e) => {
 		try { this.captureCompanionState(method, params); } catch (e) { /* companion best-effort */ }
 		if (method === "error" && params && params.error &&
 			/usage limit|rate limit|quota/i.test(params.error.message || "") &&
-			this.failoverChain().includes(this.providerKey())) {
+			this.isAutoManagedProvider()) {
 			this.autoFailover("usage limit");
 		}
 		// A spawned CLI died with ENOENT ("Could not start the … CLI") — the
@@ -3327,7 +3363,7 @@ self.addEventListener("fetch", (e) => {
 		const client = await this.ensureClient();
 		const th = await client.request("thread/start", {
 			cwd,
-			model: (MODEL_REGISTRY[this.providerKey()] && MODEL_REGISTRY[this.providerKey()].codexId) || this.cfg().get("model") || undefined,
+			model: (MODEL_REGISTRY[this.providerKey()] && MODEL_REGISTRY[this.providerKey()].codexId) || undefined,
 			approvalPolicy: this.cfg().get("approvalPolicy"),
 			sandbox: this.cfg().get("sandbox"),
 			developerInstructions,
@@ -3394,6 +3430,14 @@ self.addEventListener("fetch", (e) => {
 			return;
 		}
 		if (this._planApprovalBypass) this._planApprovalBypass = false;
+		else if (!browserFixTurn && needsSiteBriefApproval(text)) {
+			if (browserBuildIntent) {
+				this.armBrowserSelfCheck(rawText);
+				this._walkthroughPending = true;
+			}
+			this.requestSiteBriefApproval(text);
+			return;
+		}
 		else if (!browserFixTurn && (this.isBuildIntent(text) || browserBuildIntent)) {
 			if (browserBuildIntent) {
 				this.armBrowserSelfCheck(rawText);
@@ -3421,6 +3465,7 @@ self.addEventListener("fetch", (e) => {
 		// Make sure the live provider actually has an installed CLI on THIS
 		// machine before we try to spawn it — otherwise switch to one that does,
 		// or show an install card. Prevents the silent ENOENT desktop failure.
+		await this.refreshModelCatalog();
 		if (!this.ensureRunnableProvider()) return;
 		const provider = this.providerKey();
 		const runner = runnerFor(provider);
@@ -3735,9 +3780,11 @@ self.addEventListener("fetch", (e) => {
 				} else if (m.type === "researchPlan" && this.pendingPlanApproval) {
 					await this.researchPendingPlan(m.prompt, m.answers);
 				}
-				else if (m.type === "approvePlan" && this.pendingPlanApproval) {
+				else if ((m.type === "approvePlan" || m.type === "approveSiteBrief") && this.pendingPlanApproval) {
 					this.replanPendingBuild(m.prompt, m.answers, { final: true });
-					const prompt = this.approvedBuildPrompt(this.pendingPlanApproval);
+					const prompt = this.pendingPlanApproval.kind === "site-brief"
+						? approvedSiteBuildPrompt(this.pendingPlanApproval)
+						: this.approvedBuildPrompt(this.pendingPlanApproval);
 					this.pendingPlanApproval = null;
 					this._planApprovalBypass = true;
 					this._walkthroughPending = true;
@@ -3809,6 +3856,7 @@ self.addEventListener("fetch", (e) => {
 		this.planPanel.webview.postMessage({
 			type: "approval", prompt: p.prompt, answers: p.answers || {}, questions: p.questions,
 			projectType: p.projectType, revision: p.revision || 0, researched: !!p.researched,
+			kind: p.kind || "plan", brief: p.brief || null,
 		});
 	}
 
@@ -3817,8 +3865,9 @@ self.addEventListener("fetch", (e) => {
 		const p = this.pendingPlanApproval;
 		p.prompt = String(prompt || p.prompt || "").trim();
 		p.answers = answers && typeof answers === "object" ? answers : (p.answers || {});
+		if (p.kind === "site-brief") p.brief = briefFromAnswers(p.brief, p.answers);
 		p.projectType = this.planProjectType(p.prompt);
-		p.questions = this.planClarifyingQuestions(p.projectType);
+		if (p.kind !== "site-brief") p.questions = this.planClarifyingQuestions(p.projectType);
 		p.revision = (p.revision || 0) + (opts && opts.final ? 0 : 1);
 		const plan = this.planTemplate(p.prompt, p.answers, { researched: p.researched });
 		const th = { id: this.threadId || "pending-build", preview: p.prompt, plan };
@@ -3894,6 +3943,34 @@ self.addEventListener("fetch", (e) => {
 		plan[0].status = "inProgress";
 		this.pendingPlanApproval = { prompt: cleanPrompt, createdAt: Date.now(), projectType, questions: this.planClarifyingQuestions(projectType), answers: {}, revision: 0, researched: false };
 		const th = { id: this.threadId || "pending-build", preview: this.pendingPlanApproval.prompt, plan };
+		this.planThread = th;
+		const companion = this._companion(); companion.plan = plan; companion.ts = Date.now();
+		this.scheduleCompanionRelay();
+		this.openPlanPanel();
+		this.post({ type: "planPending" });
+		this.pushPlanPanel(th);
+		this.pushPlanApproval();
+	}
+
+	requestSiteBriefApproval(prompt) {
+		const cleanPrompt = String(prompt || "").trim();
+		const brief = buildSiteBrief(cleanPrompt);
+		const questions = [
+			{ id: "audience", label: "קהל יעד והפעולה המרכזית", placeholder: "מי מגיע ומה הוא צריך לעשות?", required: true },
+			{ id: "sections", label: "סקשנים", placeholder: "Hero · שירותים · הוכחה · CTA", required: true },
+			{ id: "tone", label: "טון וכיוון חזותי", placeholder: "למשל: נקי, רגוע ואמין", required: true },
+			{ id: "references", label: "3–5 רפרנסים חיים לבדיקה", placeholder: "מתחרים, אתרים או כיוון לחיפוש", required: true },
+		];
+		const answers = {
+			audience: brief.audience,
+			sections: brief.sections.join(" · "),
+			tone: brief.tone,
+			references: brief.references.join(" · "),
+		};
+		const plan = this.planTemplate(cleanPrompt, answers, {});
+		plan[0].status = "inProgress";
+		this.pendingPlanApproval = { kind: "site-brief", prompt: cleanPrompt, brief, createdAt: Date.now(), projectType: "marketing-site", questions, answers, revision: 0, researched: false };
+		const th = { id: this.threadId || "pending-site-brief", preview: cleanPrompt, plan };
 		this.planThread = th;
 		const companion = this._companion(); companion.plan = plan; companion.ts = Date.now();
 		this.scheduleCompanionRelay();
@@ -4618,9 +4695,18 @@ self.addEventListener("fetch", (e) => {
 		if (!b) return;
 		this._bugbotTaskId = b.taskId;
 		this._bugbotRunning = true;
-		this.output.append(`[bugbot] reviewing ${b.taskId} with composer-2.5\n`);
 		try {
-			const result = await runBugbot(workspaceCwd(), { extensionPath: this.context.extensionPath, bin: resolveGrokBinary(this.context.extensionPath, this.cfg().get("grokPath")), log: (line) => this.output.append("[bugbot] " + line) });
+			await this.refreshModelCatalog();
+			const reviewKey = this._codexDefaultKey;
+			const reviewModel = MODEL_REGISTRY[reviewKey] && MODEL_REGISTRY[reviewKey].codexId || undefined;
+			this.output.append(`[bugbot] reviewing ${b.taskId} with ${reviewKey || "Codex CLI default"}\n`);
+			const result = await runBugbot(workspaceCwd(), {
+				extensionPath: this.context.extensionPath,
+				bin: resolveCodexBinary(this.context.extensionPath, this.cfg().get("path")),
+				codexHome: this.cfg().get("home") || undefined,
+				model: reviewModel,
+				log: (line) => this.output.append("[bugbot] " + line),
+			});
 			if (!result.findings.length) { this.output.append("[bugbot] no concrete findings\n"); this.fleetFlow("done"); return; }
 			const saved = result.findings.map((finding) => captureAnnotation(workspaceCwd(), `bugbot:${finding.file}:${finding.line}`, `[${finding.severity}] ${finding.message}`));
 			const prompt = `[FELIX_BUGBOT_FINDINGS]\nBugbot found ${saved.length} concrete issue(s) after self-verify. Read .solstice/ANNOTATIONS.md, fix each open bugbot annotation, run focused tests, and only then finish delivery.\n[/FELIX_BUGBOT_FINDINGS]`;

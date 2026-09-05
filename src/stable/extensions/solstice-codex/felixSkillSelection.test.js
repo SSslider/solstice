@@ -5,6 +5,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { FelixSkills, composeSkillsPrompt, explicitScrollWorldRequest, hasExclusiveScrollWorldRoute } = require("./felixSkills");
+const { buildSiteBrief, approvedSiteBuildPrompt } = require("./siteBuildPolicy");
 
 let checks = 0;
 function ok(value, message) { checks++; assert.ok(value, message); }
@@ -31,6 +32,24 @@ function ok(value, message) { checks++; assert.ok(value, message); }
 		const scrollWorld = skills.list().find((item) => item.meta.name === "scroll-world-gpt-image");
 		ok(animated && scrollWorld, "both motion skills are present after seeding");
 		ok(!animated.meta.tags.includes("scrollytelling") && animated.meta.tags.includes("general-motion"), "animated kit tags no longer claim ScrollWorld territory");
+
+		const ordinaryBriefMatrix = [
+			["בנה לי אתר לרופא שיניים", "vertical-medical-clinic"],
+			["אתר עם קצת תנועה בכפתורים", ""],
+			["אתר נחיתה למספרה עם גלילה חלקה", "vertical-barber-beauty"],
+			["build a website for a dentist, clean modern design", "vertical-medical-clinic"],
+		];
+		for (const [brief, expectedVertical] of ordinaryBriefMatrix) {
+			const selected = await skills.retrieve(brief, 4);
+			const names = selected.map((item) => item.meta.name);
+			ok(!names.includes("animated-website-kit") && !names.includes("scroll-world-gpt-image"), `ordinary brief selects zero motion skills: ${brief}`);
+			if (expectedVertical) ok(names.length === 1 && names[0] === expectedVertical, `bilingual threshold selects only ${expectedVertical}: ${brief}`);
+			else ok(selected.length === 0, `generic subtle-motion brief stays below the relevance threshold: ${brief}`);
+		}
+		const dentalPrompt = "בנה לי אתר לרופא שיניים";
+		const approvedDental = approvedSiteBuildPrompt({ prompt: dentalPrompt, brief: buildSiteBrief(dentalPrompt) });
+		const approvedDentalNames = (await skills.retrieve(approvedDental, 4)).map((item) => item.meta.name);
+		ok(approvedDentalNames.length === 1 && approvedDentalNames[0] === "vertical-medical-clinic", "approved brief contract cannot pull unrelated generic skills into the build");
 
 		animated.meta.uses = "250";
 		skills._writeFile(animated.file, animated.meta, animated.body);
@@ -144,7 +163,8 @@ function ok(value, message) { checks++; assert.ok(value, message); }
 		ok(hits[0].meta.name === "scroll-world-gpt-image" && hits[0].retrieval.pinned, "Hebrew ScrollWorld alias pins the same skill");
 
 		hits = await skills.retrieve("cinematic scroll-scrub gpt image world", 4);
-		ok(hits[0].meta.name === "scroll-world-gpt-image", "semantic relevance beats the capped use-count bonus");
+		ok(hits[0].meta.name === "animated-website-kit", "cinematic intent selects the generic motion kit without silently escalating to ScrollWorld");
+		ok(!hits.some((hit) => hit.meta.name === "scroll-world-gpt-image"), "ScrollWorld stays unavailable unless it is named explicitly");
 		ok(/relevant term/.test(hits[0].retrieval.reason) && /capped/.test(hits[0].retrieval.reason), "ranked selection explains relevance and capped history bonus");
 
 		fs.rmSync(path.join(partial, "references", "pipeline.md"));
@@ -182,7 +202,7 @@ function ok(value, message) { checks++; assert.ok(value, message); }
 
 		const extensionSource = fs.readFileSync(path.join(__dirname, "extension.js"), "utf8");
 		const skillsUiSource = fs.readFileSync(path.join(__dirname, "media", "skills.js"), "utf8");
-		ok(extensionSource.includes("needsAnimatedWebsiteKit(out) && !hasExclusiveScrollWorldRoute(out)"), "final prompt composition suppresses the generic Animated Website Kit on the exclusive route");
+		ok(extensionSource.includes("motionPolicy.injectAnimatedKit && !hasExclusiveScrollWorldRoute(out)"), "final prompt composition suppresses the generic Animated Website Kit on the exclusive route");
 		ok(extensionSource.includes("if (this._skillsDispatchBlocked) return;") && extensionSource.includes("ScrollWorld route blocked: runtime status is"), "explicit ScrollWorld fails closed before model dispatch when runtime truth is missing or unhealthy");
 		ok(extensionSource.includes('recordSkillPrompt("codex"') && extensionSource.includes('recordSkillPrompt("grok"') && extensionSource.includes('recordSkillPrompt("claude"'), "Codex, Grok and Claude all record final prompt byte and fingerprint proof");
 		ok(skillsUiSource.includes("FELIX RUNTIME DIAGNOSTICS") && skillsUiSource.includes("repairScrollWorld") && skillsUiSource.includes("exportDiagnostics"), "Skills UI exposes runtime truth, repair and one-click diagnostics export");

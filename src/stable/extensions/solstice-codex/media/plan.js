@@ -16,6 +16,7 @@
 			</header>
 			<div id="pFlowMeta" class="pApprovalNote">הביצוע מתחיל מיד. אפשר לכוון מחדש דרך הערה — בלי לעצור או לפתוח פרויקט מחדש.</div>
 			<section id="pApproval" hidden>
+				<div id="pBrief" class="pBrief" hidden></div>
 				<label for="pPrompt">ערוך את המשימה לפני ביצוע</label>
 				<textarea id="pPrompt" rows="6"></textarea>
 				<div id="pQuestions"></div>
@@ -42,7 +43,7 @@
 	const promptEl = document.getElementById("pPrompt");
 	const questionsEl = document.getElementById("pQuestions");
 	const approvalMetaEl = document.getElementById("pApprovalMeta");
-	let questions = [], revision = 0, dirty = false, replanTimer = null;
+	let questions = [], revision = 0, dirty = false, replanTimer = null, approvalKind = "plan";
 	function answers() { const out = {}; for (const q of questions) { const input = document.querySelector('[data-q="' + q.id + '"]'); out[q.id] = input ? input.value.trim() : ""; } return out; }
 	function validate() {
 		let ok = !!promptEl.value.trim();
@@ -59,7 +60,7 @@
 	document.getElementById("pApprove").addEventListener("click", () => {
 		const prompt = promptEl.value.trim(); if (!validate()) { approvalMetaEl.textContent = "חסרות תשובות חובה לפני אישור."; return; }
 		if (dirty) { dirty = false; vscode.postMessage({ type: "replanPlan", prompt, answers: answers() }); return; }
-		approvalEl.hidden = true; vscode.postMessage({ type: "approvePlan", prompt });
+		approvalEl.hidden = true; vscode.postMessage({ type: approvalKind === "site-brief" ? "approveSiteBrief" : "approvePlan", prompt, answers: answers() });
 	});
 	document.getElementById("pReplan").addEventListener("click", () => { if (!validate()) return; dirty = false; vscode.postMessage({ type: "replanPlan", prompt: promptEl.value.trim(), answers: answers() }); });
 	document.getElementById("pResearch").addEventListener("click", () => { if (!validate()) return; dirty = false; vscode.postMessage({ type: "researchPlan", prompt: promptEl.value.trim(), answers: answers() }); });
@@ -148,10 +149,27 @@
 			liveEl.classList.remove("stale");
 			render(m.plan, m.title);
 		} else if (m.type === "approval") {
-			promptEl.value = m.prompt || ""; questions = Array.isArray(m.questions) ? m.questions : []; revision = m.revision || 0;
+			promptEl.value = m.prompt || ""; questions = Array.isArray(m.questions) ? m.questions : []; revision = m.revision || 0; approvalKind = m.kind || "plan";
+			const briefEl = document.getElementById("pBrief");
+			if (approvalKind === "site-brief" && m.brief) {
+				briefEl.hidden = false;
+				briefEl.innerHTML = "";
+				briefEl.appendChild(el("div", "pBriefKicker", "בריף אתר · אישור לפני קוד"));
+				briefEl.appendChild(el("h2", "pBriefTitle", m.prompt || "אתר חדש"));
+				const grid = el("div", "pBriefGrid");
+				[["קהל", m.brief.audience], ["סקשנים", (m.brief.sections || []).join(" · ")], ["טון", m.brief.tone], ["רפרנסים", (m.brief.references || []).join(" · ")], ["תנועה", m.brief.motion && m.brief.motion.label]].forEach(function (row) {
+					const card = el("div", "pBriefCard");
+					card.appendChild(el("span", "pBriefLabel", row[0]));
+					card.appendChild(el("div", "pBriefValue", row[1] || "—"));
+					grid.appendChild(card);
+				});
+				briefEl.appendChild(grid);
+			} else { briefEl.hidden = true; briefEl.innerHTML = ""; }
 			questionsEl.innerHTML = "";
 			for (const q of questions) { const wrap = el("label", "pQuestion"); wrap.appendChild(el("span", "pQuestionLabel", q.label + (q.required ? " *" : ""))); const input = el("input", "pQuestionInput"); input.dataset.q = q.id; input.placeholder = q.placeholder || ""; input.value = (m.answers || {})[q.id] || ""; input.addEventListener("input", scheduleReplan); wrap.appendChild(input); questionsEl.appendChild(wrap); }
-			approvalMetaEl.textContent = (m.researched ? "המחקר המקדים הושלם · " : "") + "תבנית " + (m.projectType || "project") + " · גרסה " + revision + ". שינוי נוסף דורש re-plan לפני ביצוע.";
+			approvalMetaEl.textContent = approvalKind === "site-brief"
+				? "הבנייה חסומה עד אישור הבריף. אחרי האישור פליקס חוקר רפרנסים ורק אז כותב קוד."
+				: (m.researched ? "המחקר המקדים הושלם · " : "") + "תבנית " + (m.projectType || "project") + " · גרסה " + revision + ". שינוי נוסף דורש re-plan לפני ביצוע.";
 			dirty = false; approvalEl.hidden = false; promptEl.focus();
 		} else if (m.type === "planFlowing") {
 			approvalEl.hidden = true;

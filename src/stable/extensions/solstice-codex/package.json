@@ -255,8 +255,8 @@
       "properties": {
         "solstice.codex.provider": {
           "type": "string",
-          "default": "composer-2.5",
-          "description": "Which model drives the Solstice agent. The picker discovers local CLI tiers and always exposes connectable API providers. Claude and Moonshot remain manual-only; neither is a default or failover target."
+          "default": "codex-auto",
+          "description": "Which model drives the Solstice agent. codex-auto resolves the live default from Codex CLI model/list. Claude, Grok, Composer and Moonshot remain manual-only and are never failover targets."
         },
         "solstice.codex.allowClaude": {
           "type": "boolean",
@@ -381,12 +381,9 @@
             "type": "string"
           },
           "default": [
-            "gpt-5.6",
-            "gpt-5.5",
-            "composer-2.5",
-            "grok-4.5"
+            "gpt-5.5"
           ],
-          "description": "Ordered model chain for automatic failover when a model hits its usage/rate limit. The agent transparently advances to the next model and re-runs the prompt. Claude is NEVER auto-failed-over to (it is manual-only via solstice.codex.allowClaude) and is filtered out even if listed here. Config-driven so newer/stronger models can be slotted in without a code change."
+          "description": "Automatic fallback after the live Codex CLI default hits a usage/rate limit. GPT-5.5 is the only fallback; Claude, Grok, Composer and Moonshot are manual-only and filtered out even if present in an old user setting."
         },
         "solstice.codex.selfVerify": {
           "type": "boolean",

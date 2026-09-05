@@ -44,6 +44,16 @@ body {
 	background: var(--sol-accent-soft);
 }
 #pApproval[hidden] { display: none; }
+.pBrief { margin-bottom: 18px; padding-bottom: 16px; border-bottom: 1px solid rgba(245, 158, 11, 0.28); }
+.pBrief[hidden] { display: none; }
+.pBriefKicker { color: var(--sol-accent); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.pBriefTitle { margin: 7px 0 13px; font-size: 20px; line-height: 1.35; }
+.pBriefGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.pBriefCard { padding: 10px 12px; border: 1px solid var(--sol-line); border-radius: 9px; background: rgba(8, 9, 12, .28); }
+.pBriefCard:last-child { grid-column: 1 / -1; }
+.pBriefLabel { display: block; margin-bottom: 4px; color: var(--sol-accent); font-size: 10px; font-weight: 800; }
+.pBriefValue { color: var(--sol-fg); font-size: 12px; line-height: 1.45; }
+@media (max-width: 620px) { .pBriefGrid { grid-template-columns: 1fr; } .pBriefCard:last-child { grid-column: auto; } }
 #pAnnotations { margin: 0 0 22px; padding: 14px 16px; border: 1px solid var(--sol-line); border-radius: 12px; background: rgba(255,255,255,0.025); }
 .pAnnotationTitle { margin-bottom: 9px; font-size: 12px; font-weight: 750; color: var(--sol-dim); }
 .pAnnotationRow { display: grid; grid-template-columns: 130px 1fr auto; gap: 8px; }
