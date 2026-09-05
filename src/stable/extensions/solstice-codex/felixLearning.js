@@ -140,8 +140,25 @@ function renderApprovedSkill(draft) {
 function inferLearningShape(task, tags = [], buildMode = "site") {
 	const lowered = cleanText(task, 4000).toLowerCase();
 	const set = new Set((tags || []).map((tag) => slug(tag)));
-	const verticalOrder = ["dental", "medical", "fitness", "legal", "barber", "restaurant", "ecommerce"];
-	const vertical = verticalOrder.find((tag) => set.has(tag) || lowered.includes(tag)) || "";
+	const verticalAliases = [
+		["dental", ["dental clinic", "dentist", "dental", "מרפאת שיניים", "רופא שיניים", "שיניים"]],
+		["medical", ["medical clinic", "private clinic", "medical", "clinic", "doctor", "קליניקה רפואית", "מרפאה", "רפואה", "רופא"]],
+		["barber", ["barbershop", "hair salon", "barber", "salon", "מספרת גברים", "מספרה", "ספר גברים"]],
+		["fitness", ["fitness coach", "personal trainer", "fitness", "gym", "מאמן כושר", "חדר כושר", "כושר"]],
+		["legal", ["law firm", "lawyer", "legal", "attorney", "משרד עורכי דין", "עורך דין", "עורכי דין"]],
+		["restaurant", ["restaurant", "bistro", "מסעדה", "ביסטרו"]],
+		["real-estate", ["real estate", "realtor", "brokerage", "נדל\"ן", "נדל״ן", "תיווך"]],
+		["ecommerce", ["online store", "online shop", "ecommerce", "e-commerce", "חנות אונליין", "חנות אינטרנטית", "איקומרס"]],
+		["saas", ["software as a service", "saas", "מוצר תוכנה", "תוכנת saas"]],
+		["portfolio", ["creative portfolio", "portfolio", "תיק עבודות", "פורטפוליו"]],
+		["travel", ["travel agency", "tour operator", "סוכנות טיולים", "סוכן נסיעות", "טיולים מאורגנים"]],
+		["jewelry", ["fine jewelry", "jewellery", "jewelry", "חנות תכשיטים", "תכשיטים", "צורף"]],
+		["education", ["online courses", "online course", "education", "academy", "קורסים אונליין", "קורס דיגיטלי", "לימודים"]],
+		["events", ["event production", "event planner", "events", "הפקת אירועים", "מפיק אירועים", "אירועים"]],
+		["beauty", ["beauty clinic", "cosmetics", "aesthetics", "beauty", "קליניקת קוסמטיקה", "קוסמטיקה", "טיפולי יופי"]],
+		["renovation", ["general contractor", "renovation", "remodeling", "קבלן שיפוצים", "שיפוצים", "נגרות"]],
+	];
+	const vertical = verticalAliases.find(([name, aliases]) => set.has(name) || aliases.some((alias) => lowered.includes(alias)))?.[0] || "";
 	const capabilityOrder = ["animation", "ecommerce", "auth", "dashboard", "crm", "landing"];
 	const scrollScrub = /(?:scroll[ -]?world|scroll[ -]?scrub|scrollytelling|סקול וורלד|סקרול)/i.test(lowered);
 	const capability = scrollScrub ? "scroll-scrub" : capabilityOrder.find((tag) => set.has(tag) || lowered.includes(tag)) || (buildMode === "app" ? "business-app" : "website-composition");

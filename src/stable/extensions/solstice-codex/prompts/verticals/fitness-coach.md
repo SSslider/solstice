@@ -2,14 +2,15 @@
 
 Use for personal trainers, fitness coaches, boutique gyms, strength studios, Pilates, CrossFit, online coaching, and hybrid training businesses in the Israeli market.
 
-## Positioning
+## Hebrew Copy
 
 - Lead with the audience and outcome: who the coaching is for, the concrete transformation, the training method, and why this coach is credible.
+- Suggested lead: `אימון שמתחיל בנקודת הפתיחה שלך ומתקדם עם מדדים אמיתיים.` CTAs: `קובעים אימון היכרות` · `בוחרים מסלול`.
 - Build the business story around a clear offer ladder: assessment or trial, core program, recurring membership, premium one-to-one coaching, and online or hybrid options when relevant.
 - Content tone: energetic, specific, disciplined Hebrew. Avoid generic motivation slogans, invented results, medical promises, and stock-fitness clichés.
 - Visual language: real coach and real client training, recognizable equipment and environment, measurable progression, confident typography, and high-contrast action cues.
 
-## Required Sections
+## Content Structure
 
 1. Hero with target audience, specific outcome, location or online availability, primary booking CTA, and one verified proof point.
 2. Audience/problem map: beginner confidence, strength, fat loss, mobility, performance, rehabilitation handoff, or schedule constraints—only what the business truly serves.
@@ -27,6 +28,17 @@ Use for personal trainers, fitness coaches, boutique gyms, strength studios, Pil
 - Ask or infer carefully: audience, primary transformation, delivery model, city, facility, credentials, program catalog, capacity, schedule, price bands, lead source, retention model, and business goal.
 - Turn business-plan material into visible site architecture: offer priority, acquisition path, lead magnet, consultation flow, recurring revenue, upsells, referral loop, and the KPI each CTA is meant to improve.
 - When facts or assets are missing, label them as open inputs. Do not convert assumptions into customer claims.
+
+## Image Direction
+
+- Real coach and clients in the actual environment, recognisable equipment, progression details, and consented results.
+- Avoid generic transformation stock, fake metrics, and decontextualized anatomy imagery.
+
+## Live References
+
+- https://www.equinox.com/ — premium program segmentation and club discovery.
+- https://www.onepeloton.com/ — coach-led product storytelling and membership conversion.
+- https://www.tonal.com/ — method demonstration, measured outcomes, and guided purchase journey.
 
 ## Motion Fit
 

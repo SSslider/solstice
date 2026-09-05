@@ -4,7 +4,7 @@ const path = require("path");
 const crypto = require("crypto");
 const http = require("http");
 const https = require("https");
-const { VERTICAL_TEMPLATE_CATALOG } = require("./verticalTemplates");
+const { VERTICAL_TEMPLATE_CATALOG, selectVerticalTemplates } = require("./verticalTemplates");
 const { classifyMotionLevel, MOTION_LEVELS } = require("./siteBuildPolicy");
 const SKILL_STORE_MIGRATION = ".storage-migration-v1.json";
 
@@ -496,10 +496,13 @@ class FelixSkills {
 	_keywordRank(queryText, skills) {
 		const motion = classifyMotionLevel(queryText).level;
 		const normalized = String(queryText || "").toLowerCase();
+		const routedVertical = selectVerticalTemplates(queryText).templates[0];
+		const routedVerticalName = routedVertical ? `vertical-${slug(routedVertical.file.replace(/^verticals\//, "").replace(/\.md$/, ""))}` : "";
 		const generic = new Set(["a", "an", "the", "for", "with", "and", "to", "of", "this", "build", "create", "make", "website", "site", "page", "design", "clean", "modern", "landing", "ui", "vertical", "template", "לי", "של", "עם", "את", "על", "אתר", "עמוד", "דף", "נחיתה", "בנה", "צור", "עיצוב", "תבנית"]);
 		const q = new Set(tokenize(queryText).filter((token) => token.length >= 3 && !generic.has(token)));
 		return skills.filter((skill) => {
 			const name = String(skill.meta.name || "");
+			if (routedVerticalName && name.startsWith("vertical-") && name !== routedVerticalName) return false;
 			if (name === "animated-website-kit") return motion === MOTION_LEVELS.CINEMATIC;
 			if (name === "scroll-world-gpt-image") return motion === MOTION_LEVELS.SCROLLWORLD;
 			return true;

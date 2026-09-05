@@ -22,6 +22,17 @@ const signal = (char, evidence) => ({
 	assert.equal(LEARNING_MODE, "gated-active");
 	assert.deepEqual(inferLearningShape("fitness dashboard with animation", ["fitness", "animation"]), { capability: "animation", vertical: "fitness" });
 	assert.deepEqual(inferLearningShape("בנה ScrollWorld למאמן כושר", ["fitness", "animation"]), { capability: "scroll-scrub", vertical: "fitness" });
+	const verticalInference = [
+		["מרפאת שיניים", "dental"], ["private clinic", "medical"], ["מספרת גברים", "barber"],
+		["מאמן כושר", "fitness"], ["משרד עורכי דין", "legal"], ["מסעדה", "restaurant"],
+		["real estate broker", "real-estate"], ["חנות אונליין", "ecommerce"], ["SaaS product", "saas"],
+		["תיק עבודות", "portfolio"], ["סוכנות טיולים", "travel"], ["חנות תכשיטים", "jewelry"],
+		["קורסים אונליין", "education"], ["הפקת אירועים", "events"], ["קליניקת קוסמטיקה", "beauty"],
+		["קבלן שיפוצים", "renovation"],
+	];
+	for (const [task, vertical] of verticalInference) {
+		assert.equal(inferLearningShape(task).vertical, vertical, `${task} infers ${vertical} learning scope`);
+	}
 	assert.throws(() => learning.proposeFromBuild({ task: "fitness site" }, null), /verified external success signal/);
 	assert.throws(() => normalizeDraft({ level: "capability", name: "x", claim: "x", mechanism: "y", applies_when: ["a"], does_not_apply: [], success_signal: signal("a", "report") }), /does_not_apply/);
 

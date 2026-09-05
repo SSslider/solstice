@@ -34,10 +34,13 @@ function ok(value, message) { checks++; assert.ok(value, message); }
 		ok(!animated.meta.tags.includes("scrollytelling") && animated.meta.tags.includes("general-motion"), "animated kit tags no longer claim ScrollWorld territory");
 
 		const ordinaryBriefMatrix = [
-			["בנה לי אתר לרופא שיניים", "vertical-medical-clinic"],
+			["בנה לי אתר לרופא שיניים", "vertical-dental-clinic"],
 			["אתר עם קצת תנועה בכפתורים", ""],
 			["אתר נחיתה למספרה עם גלילה חלקה", "vertical-barber-beauty"],
-			["build a website for a dentist, clean modern design", "vertical-medical-clinic"],
+			["build a website for a dentist, clean modern design", "vertical-dental-clinic"],
+			["בנה אתר לסוכנות טיולים", "vertical-travel-agency"],
+			["בנה אתר לחנות תכשיטים", "vertical-jewelry"],
+			["בנה אתר למסעדה עם הזמנת שולחן", "vertical-restaurant"],
 		];
 		for (const [brief, expectedVertical] of ordinaryBriefMatrix) {
 			const selected = await skills.retrieve(brief, 4);
@@ -49,7 +52,7 @@ function ok(value, message) { checks++; assert.ok(value, message); }
 		const dentalPrompt = "בנה לי אתר לרופא שיניים";
 		const approvedDental = approvedSiteBuildPrompt({ prompt: dentalPrompt, brief: buildSiteBrief(dentalPrompt) });
 		const approvedDentalNames = (await skills.retrieve(approvedDental, 4)).map((item) => item.meta.name);
-		ok(approvedDentalNames.length === 1 && approvedDentalNames[0] === "vertical-medical-clinic", "approved brief contract cannot pull unrelated generic skills into the build");
+		ok(approvedDentalNames.length === 1 && approvedDentalNames[0] === "vertical-dental-clinic", "approved brief contract cannot pull unrelated generic skills into the build");
 
 		animated.meta.uses = "250";
 		skills._writeFile(animated.file, animated.meta, animated.body);
