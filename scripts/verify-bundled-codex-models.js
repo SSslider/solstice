@@ -3,8 +3,10 @@
 
 const fs = require("fs");
 const path = require("path");
-const { codexVersion, checkCodexModelCompatibility } = require("../src/stable/extensions/solstice-codex/codexCompatibility");
+const { codexVersion, compareVersions } = require("../src/stable/extensions/solstice-codex/codexCompatibility");
 const { discoverCodexModels } = require("../src/stable/extensions/solstice-codex/modelDiscovery");
+
+const GPT_6_MIN_CODEX_VERSION = "0.153.0";
 
 async function main() {
 	const target = process.argv[2] || process.platform;
@@ -20,13 +22,14 @@ async function main() {
 
 	const version = codexVersion(binary);
 	if (!version.ok) throw new Error(`bundled Codex version probe failed: ${version.output || version.error || "unknown error"}`);
-	const compatibility = checkCodexModelCompatibility("gpt-5.6-sol", binary, () => version);
-	if (!compatibility.ok) throw new Error(compatibility.message);
+	if (compareVersions(version.parsed, GPT_6_MIN_CODEX_VERSION) < 0) {
+		throw new Error(`bundled Codex does not satisfy GPT-6 minimum (>=${GPT_6_MIN_CODEX_VERSION}); installed: ${version.parsed.join(".")}`);
+	}
 	if (mode === "--version-only") {
 		console.log(JSON.stringify({
 			target,
 			version: version.output,
-			minimum: compatibility.required,
+			minimum: GPT_6_MIN_CODEX_VERSION,
 			catalogCheck: "deferred to authenticated machine acceptance",
 		}, null, 2));
 		return;
@@ -36,11 +39,11 @@ async function main() {
 	// no Codex login. Require it only in the authenticated acceptance probe.
 	const models = await discoverCodexModels(binary, 20000);
 	const ids = models.map((model) => model.modelId);
-	for (const required of ["gpt-5.6-sol", "gpt-5.6-terra"]) {
+	for (const required of ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra"]) {
 		if (!ids.includes(required)) throw new Error(`Codex model/list omitted ${required}; returned: ${ids.join(", ") || "<empty>"}`);
 	}
 
-	console.log(JSON.stringify({ target, version: version.output, required: ["gpt-5.6-sol", "gpt-5.6-terra"], models: ids }, null, 2));
+	console.log(JSON.stringify({ target, version: version.output, required: ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra"], models: ids }, null, 2));
 }
 
 main().catch((error) => {

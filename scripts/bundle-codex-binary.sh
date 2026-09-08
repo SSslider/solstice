@@ -5,13 +5,13 @@
 # NOTE: must stay bash-3.2 compatible (macOS runners).
 set -euo pipefail
 
-CODEX_VERSION="rust-v0.144.4"
+CODEX_VERSION="rust-v0.153.3"
 TARGET="${1:?usage: $0 <win32|darwin|linux>}"
 
 case "$TARGET" in
-  win32)  ASSET="codex-x86_64-pc-windows-msvc.exe.tar.gz"; INNER="codex-x86_64-pc-windows-msvc.exe"; OUT="codex.exe"; EXPECTED_SHA256="b309e797d45a931db9bef3e1a50ea3246fc766e9139af4cde1f8dc8b508f3360" ;;
-  darwin) ASSET="codex-aarch64-apple-darwin.tar.gz";       INNER="codex-aarch64-apple-darwin";       OUT="codex";     EXPECTED_SHA256="77c8969a481302f9db1d9ea2a6c21c083abae3f1a8fc8a7275dc38323699391e" ;;
-  linux)  ASSET="codex-x86_64-unknown-linux-musl.tar.gz";  INNER="codex-x86_64-unknown-linux-musl";  OUT="codex";     EXPECTED_SHA256="37c985be9d89e8c4f43b3aa0594c1213eac212d30ae2b95221f08fec807515d1" ;;
+  win32)  ASSET="codex-x86_64-pc-windows-msvc.exe.tar.gz"; INNER="codex-x86_64-pc-windows-msvc.exe"; OUT="codex.exe"; EXPECTED_SHA256="d0719dc2ab6f51510dc208633e9577fd03f50f0c00ac384fe9e0a069fd6c387b" ;;
+  darwin) ASSET="codex-aarch64-apple-darwin.tar.gz";       INNER="codex-aarch64-apple-darwin";       OUT="codex";     EXPECTED_SHA256="02cdcbd874c1616f2cab6f602580329de1b00b26bf216d384b348519a9b356cd" ;;
+  linux)  ASSET="codex-x86_64-unknown-linux-musl.tar.gz";  INNER="codex-x86_64-unknown-linux-musl";  OUT="codex";     EXPECTED_SHA256="6ff9674bb00e14734c2748bc8788eab3cb6e5ac53ebde7e1e780b4ed7af48cba" ;;
   *) echo "unknown target: $TARGET" >&2; exit 1 ;;
 esac
 
@@ -34,15 +34,19 @@ else
 fi
 tar -xzf "$TMP/$ASSET" -C "$TMP"
 [ -f "$TMP/$INNER" ] || { echo "expected $INNER inside $ASSET, got:"; ls "$TMP"; exit 1; }
+grep -aFq -- "gpt-6-astra" "$TMP/$INNER" || {
+  echo "bundled Codex binary is missing required model capability: gpt-6-astra" >&2
+  exit 1
+}
 mv "$TMP/$INNER" "$BIN_DIR/$OUT"
 chmod +x "$BIN_DIR/$OUT"
 if [ "$TARGET" != "win32" ]; then
   BUNDLED_VERSION="$("$BIN_DIR/$OUT" --version | sed -n 's/^codex-cli \([0-9][0-9.]*\)$/\1/p')"
   awk -v version="$BUNDLED_VERSION" 'BEGIN {
     split(version, parts, ".")
-    exit !((parts[1] + 0) > 0 || (parts[2] + 0) >= 144)
+    exit !((parts[1] + 0) > 0 || (parts[2] + 0) >= 153)
   }' || {
-    echo "bundled codex does not satisfy GPT-5.6 minimum (>=0.144.0)" >&2
+    echo "bundled codex does not satisfy GPT-6 minimum (>=0.153.0)" >&2
     exit 1
   }
 fi
