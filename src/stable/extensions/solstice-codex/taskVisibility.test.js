@@ -102,6 +102,9 @@ async function check(name, fn) { await fn(); count++; console.log("ok - " + name
   await c.handleCompanionAction({instanceId:c.companionInstanceId(),requestId:"refresh-2",action:"task_evidence"});
   assert.equal(sent.at(-1).ok,false);assert.match(sent.at(-1).error,/evidence unavailable/);
   assert.equal(c._taskVisibility,null);
+  // Restart reads the newest journal; make the corrupt fixture newest explicitly.
+  for(const file of fs.readdirSync(journal.dir).filter(f=>f.endsWith(".json")))
+   fs.utimesSync(path.join(journal.dir,file),1,file===path.basename(journal.file(task.id))?2:1);
   const restarted=Object.create(compiled.exports.Controller.prototype);restarted.output={append(){}};
   assert.match(restarted.companionTaskState().error,/evidence unavailable/);
  });

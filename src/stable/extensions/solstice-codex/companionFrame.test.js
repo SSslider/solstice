@@ -44,6 +44,21 @@ try {
   assert.equal(snap.events.length,12);assert.equal(snap.eventsOmitted,8);
   assert.equal(companionFrame("id",{taskEvidence:snap}).state.taskEvidence.truncated,true);
  });
+ for (const count of [99,100,101,10000]) check("durable pending boundary "+count+" preserves first items and exact total",()=>{
+  const saved=journal.begin("pending-"+count,"פעולות ממתינות","test"),disk=journal.read(saved.id);
+  disk.pending=Array.from({length:count},(_,i)=>({id:String(i)+"א".repeat(145),type:"commandExecution"}));
+  journal.save(disk);
+  const before=fs.readFileSync(journal.file(saved.id));
+  const snap=taskSnapshot(new TaskContinuity(root),saved.id),shown=Math.min(count,100);
+  assert.equal(snap.pending.length,shown);assert.equal(snap.pendingOmitted,count-shown);
+  assert.deepEqual(snap.pending,disk.pending.slice(0,shown));
+  const frame=companionFrame("pending-test",{taskEvidence:snap,connected:true});validate(frame,snap);
+  assert.deepEqual(frame.state.taskEvidence.pending,disk.pending.slice(0,shown));
+  assert.equal(frame.state.taskEvidence.truncated,count>100);
+  assert.equal(frame.state.taskEvidence.pending.length+frame.state.taskEvidence.pendingOmitted,count);
+  assert.deepEqual(fs.readFileSync(journal.file(saved.id)),before);
+  console.log(JSON.stringify({pendingInput:count,frameBytes:bytes(frame),shown,omitted:frame.state.taskEvidence.pendingOmitted}));
+ });
  const source={id:"id",status:"interrupted",checkedAt:"now",caveat:"Never acceptance, publication or installation.",pendingCaveat:"No unresolved actions is not acceptance.",plan:[],events:[],evidence:[],pending:[],planOmitted:0,eventsOmitted:0,evidenceOmitted:0,pendingOmitted:0};
  check("exact byte boundary includes envelope overhead and non-ASCII metadata",()=>{
   const base=companionFrame("א",{taskEvidence:source,padding:""});
