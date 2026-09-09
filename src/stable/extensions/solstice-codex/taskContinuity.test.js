@@ -106,6 +106,27 @@ try {
 	journal.pause('thread-1');
 	check('stop cancels updates that were not dispatched', () => assert.equal(journal.read(task.id).steering.find(x => x.id === newer).state, 'cancelled'));
 	check('recovery distinguishes accepted and cancelled updates', () => { const prompt = journal.recoveryPrompt(task.id); assert.match(prompt, /"state":"accepted"/); assert.match(prompt, /"state":"cancelled"/); });
+	check('late acceptance cannot revive a cancelled steering update', () => {
+		const thread = 'cancelled-ack-thread';
+		const saved = journal.begin(thread, 'Cancel a pending instruction', 'gpt-6-astra');
+		const id = journal.queueSteering(thread, 'Change the booking field');
+		journal.pause(thread);
+		assert.equal(journal.read(saved.id).steering[0].state, 'cancelled');
+		journal.markSteering(thread, [id], 'accepted');
+		assert.equal(journal.active.get(thread).steering[0].state, 'cancelled');
+		assert.equal(new TaskContinuity(root).read(saved.id).steering[0].state, 'cancelled');
+	});
+	check('the 33rd pending steering message is rejected without changing the queue', () => {
+		const thread = 'pending-limit-thread';
+		const saved = journal.begin(thread, 'Bound the pending queue', 'gpt-6-astra');
+		for (let i = 0; i < 32; i++) journal.queueSteering(thread, `Instruction ${i + 1}`, i % 2 ? 'dispatching' : 'queued');
+		assert.equal(journal.read(saved.id).steering.length, 32);
+		const before = fs.readFileSync(journal.file(saved.id), 'utf8');
+		const inMemory = JSON.stringify(journal.active.get(thread));
+		assert.throws(() => journal.queueSteering(thread, 'Instruction 33'), /Too many pending steering messages/);
+		assert.equal(fs.readFileSync(journal.file(saved.id), 'utf8'), before);
+		assert.equal(JSON.stringify(journal.active.get(thread)), inMemory);
+	});
 	check('oversized steering is rejected without truncating user intent', () => { const before = journal.read(task.id).steering.length; assert.throws(() => journal.queueSteering('thread-1', 'x'.repeat(24001)), /limit/); assert.equal(journal.read(task.id).steering.length, before); });
 	c.threads = new Map([[c.threadId, {activeTurnId:'turn-1'}]]);
 	c.ensureClient = async () => ({ request: async method => { assert.equal(method, 'turn/steer'); throw new Error('ack lost'); } });
