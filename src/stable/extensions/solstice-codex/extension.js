@@ -22,6 +22,7 @@ const { FoundationClient, foundationBusinessesUrl } = require("./foundationClien
 const { FelixLearning, LEARNING_MODE } = require("./felixLearning");
 const { captureBuild, projectContext, workspaceContext, captureAnnotation, ensureScheduledCheck, dueScheduledChecks } = require("./projectBrain");
 const { TaskContinuity } = require("./taskContinuity");
+const { taskSnapshot } = require("./taskVisibility");
 const { taskReport } = require("./taskReport");
 const { ManagerWorktrees } = require("./managerWorktrees");
 const { createReviewHandler } = require("./reviewShare");
@@ -785,11 +786,34 @@ class AgentController {
 			return Object.values(registry || {}).filter((x) => x && !x.revoked).slice(-12).map((x) => ({ shareId: x.shareId, path: `/review/${x.shareId}/`, createdAt: x.createdAt || "" }));
 		} catch { return []; }
 	}
+	companionTaskState(refresh = false) {
+		const root = workspaceCwd();
+		if (!root || !fs.existsSync(path.join(root, ".solstice", "tasks"))) return null;
+		try {
+			const journal = this.taskCheckpoint(root);
+			const active = journal.active.get(this.threadId);
+			const latest = !active && fs.readdirSync(journal.dir).filter(f => /^[a-f0-9-]{36}\.json$/.test(f))
+				.sort((a, b) => fs.statSync(path.join(journal.dir, b)).mtimeMs - fs.statSync(path.join(journal.dir, a)).mtimeMs)[0];
+			const task = active ? journal.read(active.id) : latest ? journal.read(latest.slice(0, -5)) : null;
+			if (!task) return null;
+			const key = crypto.createHash("sha256").update(JSON.stringify(task)).digest("hex");
+			// Streaming and heartbeat replay this timestamped snapshot. Explicit
+			// refresh always rechecks disk, even when the journal hasn't changed.
+			if (refresh || !this._taskVisibility || this._taskVisibility.key !== key)
+				this._taskVisibility = { key, snapshot: taskSnapshot(journal, task.id) };
+			return this._taskVisibility.snapshot;
+		} catch (error) {
+			this._taskVisibility = null;
+			this.output.append(`[task visibility] ${error.message}\n`);
+			return { error: "Task evidence unavailable. Refresh after checking the local journal." };
+		}
+	}
 	companionRelayState() {
 		const s = this._companion();
 		const root = workspaceCwd() || "";
 		return {
 			...s,
+			taskEvidence: this.companionTaskState(),
 			project: root ? path.basename(root) : "No workspace",
 			workspace: root,
 			connected: true,
@@ -892,6 +916,9 @@ class AgentController {
 				const taskId = String(payload.taskId || "");
 				const task = taskId && this.managerTasks && this.managerTasks.get(taskId);
 				await this.interrupt(task && task.threadId ? task.threadId : this.threadId);
+			} else if (action === "task_evidence") {
+				const snapshot = this.companionTaskState(true);
+				if (!snapshot || snapshot.error) throw new Error(snapshot && snapshot.error || "No saved task evidence");
 			} else if (action === "refresh_preview") {
 				if (!this.previewUrl) throw new Error("No live preview yet");
 				const shot = await this.capturePreviewShot(this.previewUrl, "companion", "390x844");
@@ -899,7 +926,7 @@ class AgentController {
 				const data = fs.readFileSync(shot);
 				if (data.length > 1_400_000) throw new Error("Preview capture is too large to relay");
 				this._companionPreviewImage = "data:image/png;base64," + data.toString("base64");
-			}
+			} else throw new Error("Unknown companion action");
 			ok = true;
 		} catch (e) { error = String(e && e.message || e); }
 		this.scheduleCompanionRelay();
@@ -3067,6 +3094,7 @@ self.addEventListener("fetch", (e) => {
 				this.loaded.clear();
 				this.post({ type: "status", connected: false, detail: `codex exited (${code})` });
 				this.postManager({ type: "status", connected: false, detail: `codex exited (${code})` });
+				this.scheduleCompanionRelay();
 			},
 			onNotification: (method, params) => this.onNotification(method, params),
 			onServerRequest: (method, params) => this.handleServerRequest(method, params),
