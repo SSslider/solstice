@@ -42,6 +42,12 @@
     },
     "commands": [
       {
+        "command": "solstice.agent.showTaskEvidence",
+        "title": "Show Felix Task Evidence",
+        "category": "Solstice",
+        "icon": "$(history)"
+      },
+      {
         "command": "solstice.agent.resumeSavedTask",
         "title": "Resume Saved Felix Task",
         "category": "Solstice",

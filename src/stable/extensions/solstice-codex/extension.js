@@ -22,6 +22,7 @@ const { FoundationClient, foundationBusinessesUrl } = require("./foundationClien
 const { FelixLearning, LEARNING_MODE } = require("./felixLearning");
 const { captureBuild, projectContext, workspaceContext, captureAnnotation, ensureScheduledCheck, dueScheduledChecks } = require("./projectBrain");
 const { TaskContinuity } = require("./taskContinuity");
+const { taskReport } = require("./taskReport");
 const { ManagerWorktrees } = require("./managerWorktrees");
 const { createReviewHandler } = require("./reviewShare");
 const { runBugbot } = require("./bugbot");
@@ -3436,6 +3437,23 @@ self.addEventListener("fetch", (e) => {
 			threadId === this.threadId ? (this._lastUserPrompt || text) : text, this.providerKey());
 	}
 
+	async showTaskEvidence() {
+		try {
+			const journal = this.taskCheckpoint();
+			const tasks = journal.list();
+			if (!tasks.length) { vscode.window.showInformationMessage("No saved Felix tasks in this workspace."); return; }
+			const pick = await vscode.window.showQuickPick(tasks.map(task => ({
+				label: task.objective.replace(/\s+/g, " ").slice(0, 100),
+				description: `${task.status} · ${task.updatedAt}`, id: task.id,
+			})), { placeHolder: "Inspect task progress and current file evidence" });
+			if (!pick) return;
+			const doc = await vscode.workspace.openTextDocument({ language: "markdown", content: taskReport(journal, pick.id) });
+			await vscode.window.showTextDocument(doc, { preview: true });
+		} catch (error) {
+			vscode.window.showErrorMessage(`Could not read task evidence: ${error.message}`);
+		}
+	}
+
 	async resumeSavedTask() {
 		if (this.agentBusy() || this.activeCodexThreadId || this._browserSelfCheckRunning) {
 			vscode.window.showWarningMessage("Stop or finish the active task before resuming another task.");
@@ -6614,6 +6632,7 @@ function activate(context) {
 		}),
 		vscode.commands.registerCommand("solstice.agent.newThread", () => controller.newThread()),
 		vscode.commands.registerCommand("solstice.agent.resumeSavedTask", () => controller.resumeSavedTask()),
+		vscode.commands.registerCommand("solstice.agent.showTaskEvidence", () => controller.showTaskEvidence()),
 		vscode.commands.registerCommand("solstice.agent.showDiff", () => controller.showDiff()),
 		vscode.commands.registerCommand("solstice.agent.signOut", () => controller.signOut()),
 		vscode.commands.registerCommand("solstice.agent.openManager", () => openManager(controller, context.extensionUri)),
