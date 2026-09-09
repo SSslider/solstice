@@ -23,6 +23,7 @@ const { FelixLearning, LEARNING_MODE } = require("./felixLearning");
 const { captureBuild, projectContext, workspaceContext, captureAnnotation, ensureScheduledCheck, dueScheduledChecks } = require("./projectBrain");
 const { TaskContinuity } = require("./taskContinuity");
 const { taskSnapshot } = require("./taskVisibility");
+const { companionFrame } = require("./companionFrame");
 const { taskReport } = require("./taskReport");
 const { ManagerWorktrees } = require("./managerWorktrees");
 const { createReviewHandler } = require("./reviewShare");
@@ -841,7 +842,7 @@ class AgentController {
 		const rec = this.fleetBridges.get(id);
 		if (!rec || !rec.ws || !rec.ws.connected || !rec.companionReady) return false;
 		try {
-			rec.ws.send({ type: "companion_state", instanceId: this.companionInstanceId(), state: this.companionRelayState() });
+			rec.ws.send(companionFrame(this.companionInstanceId(), this.companionRelayState()));
 			return true;
 		} catch (e) { this.output.append("[companion relay] " + (e && e.message || e) + "\n"); return false; }
 	}
