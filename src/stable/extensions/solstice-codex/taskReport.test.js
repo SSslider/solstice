@@ -40,6 +40,13 @@ try {
 		assert.deepEqual(errors, []);
 	});
 	const { taskReport } = require("./taskReport");
+	await check("empty pending actions explicitly disclaim acceptance in their own section", () => {
+		assert.deepEqual(journal.read(task.id).pending, []);
+		const report = taskReport(journal, task.id);
+		const unresolved = report.split("## Unresolved actions\n")[1].split("\n## User updates")[0];
+		assert.match(unresolved, /No unresolved actions recorded\./);
+		assert.match(unresolved, /This is not an acceptance result\./);
+	});
 	fs.writeFileSync(path.join(root, "booking #1.txt"), "booking v1");
 	journal.notify("item/completed", { threadId: task.threadId, item: { id: "edit", type: "fileChange", changes: [{ path: "booking #1.txt" }] } });
 	await check("unchanged evidence has a valid encoded file link", () => {
@@ -84,6 +91,18 @@ try {
 		assert.ok(report.includes("\\<img src=x\\>"));
 		assert.ok(report.includes("\\[Fake\\]\\(file:///private\\)"));
 		assert.match(report, /\*\*cancelled\*\*/);
+	});
+	await check("saved user text strips ANSI escape and carriage return while retaining escaped content", () => {
+		const disk = journal.read(task.id);
+		disk.objective = "Before\x1b[2Kafter\r[Accept](command:evil)";
+		disk.steering = [{ state: "cancelled", text: "Keep\rvisible\x1b[2Kend" }];
+		journal.save(disk);
+		const before = fs.readFileSync(journal.file(task.id));
+		const report = taskReport(new TaskContinuity(root), task.id);
+		assert.ok(report.includes("Before \\[2Kafter \\[Accept\\]\\(command:evil\\)"));
+		assert.ok(report.includes("Keep visible \\[2Kend"));
+		assert.doesNotMatch(report, /[\x00-\x09\x0b-\x1f\x7f]/);
+		assert.deepEqual(fs.readFileSync(journal.file(task.id)), before);
 	});
 	await check("cancelled picker leaves the editor alone", async () => {
 		choice = null; shown = null; await c.showTaskEvidence(); assert.equal(shown, null);
