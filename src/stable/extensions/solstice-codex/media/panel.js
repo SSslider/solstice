@@ -39,7 +39,7 @@
 				<button id="autonomyBtn" class="pickBtn" title="Set agent autonomy">🛡 <span id="autonomy">Supervised</span> <span class="caret">▾</span></button>
 				<span id="hint">Enter to send</span>
 				<button id="stopBtn" class="btn danger hidden">Stop</button>
-				<button id="micBtn" class="btn mic" title="Record a voice message (Groq Whisper)" aria-label="Record voice">🎤</button>
+				<button id="micBtn" class="btn mic" title="בריף קולי — לחץ, דבר, לחץ שוב לשליחה" aria-label="בריף קולי">🎤</button>
 				<button id="sendBtn" class="btn primary">Send</button>
 			</div>
 		</div>
@@ -243,7 +243,7 @@
 		micBtn.classList.remove("recording", "transcribing");
 		micBtn.disabled = false;
 		micBtn.textContent = "🎤";
-		micBtn.title = "Record a voice message (Groq Whisper)";
+		micBtn.title = "בריף קולי — לחץ, דבר, לחץ שוב לשליחה";
 	}
 	function bytesToBase64(bytes) {
 		let bin = ""; const chunk = 0x8000;
@@ -1165,8 +1165,9 @@
 				const t = String(msg.text || "").trim();
 				if (!t) { sysLine("No speech detected.", "error"); break; }
 				inputEl.value = inputEl.value ? (inputEl.value.replace(/\s*$/, "") + " " + t) : t;
-				inputEl.focus();
 				try { inputEl.dispatchEvent(new Event("input")); } catch (e) {}
+				sysLine("הבריף הקולי תומלל ונשלח.", "info");
+				send();
 				break;
 			}
 			case "transcribeError":

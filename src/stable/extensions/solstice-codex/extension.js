@@ -13,7 +13,7 @@ const { GrokProvider, GROK_MODELS, MODEL_REGISTRY, runnerFor, resolveGrokBinary,
 const { ClaudeProvider } = require("./claude");
 const { MoonshotProvider } = require("./moonshot");
 const { ensureProviderConnection, providerCredential } = require("./providerOnboarding");
-const { FleetBridge } = require("./fleetBridge");
+const { ReconnectingFleetBridge } = require("./fleetBridge");
 const { FelixSkills, skillProgress, hasExclusiveScrollWorldRoute, composeSkillsPrompt } = require("./felixSkills");
 const { selectVerticalTemplates, buildVerticalTemplatePack } = require("./verticalTemplates");
 const { SkillInstaller } = require("./skillInstaller");
@@ -21,6 +21,7 @@ const { BrandDnaClient } = require("./brandDnaClient");
 const { FoundationClient, foundationBusinessesUrl } = require("./foundationClient");
 const { FelixLearning, LEARNING_MODE } = require("./felixLearning");
 const { captureBuild, projectContext, workspaceContext, captureAnnotation, ensureScheduledCheck, dueScheduledChecks } = require("./projectBrain");
+const { TaskContinuity } = require("./taskContinuity");
 const { ManagerWorktrees } = require("./managerWorktrees");
 const { createReviewHandler } = require("./reviewShare");
 const { runBugbot } = require("./bugbot");
@@ -2820,6 +2821,7 @@ self.addEventListener("fetch", (e) => {
 			th.preview = text;
 			this.post({ type: "thread", threadId: this.threadId, model: this.providerLabel() });
 		}
+		this.beginTaskCheckpoint(this.threadId, text);
 		await this.claude.send(prompt, this.claudePreamble(text));
 	}
 
@@ -2846,6 +2848,7 @@ self.addEventListener("fetch", (e) => {
 			this.post({ type: "thread", threadId: this.threadId, model: this.providerLabel() });
 		}
 		this.startGrokWatcher();
+		this.beginTaskCheckpoint(this.threadId, rawText);
 		await this.grok.send(this.providerKey(), prompt, this.grokPreamble(rawText), { userText: rawText });
 		this.flushGrokChanges();
 	}
@@ -2874,6 +2877,7 @@ self.addEventListener("fetch", (e) => {
 			thread.preview = text;
 			this.post({ type: "thread", threadId: this.threadId, model: this.providerLabel() });
 		}
+		this.beginTaskCheckpoint(this.threadId, text);
 		await this.moonshot.send(prompt, this.claudePreamble(text));
 	}
 
@@ -3051,6 +3055,9 @@ self.addEventListener("fetch", (e) => {
 			configArgs: codexMcpConfigArgs(process.execPath, path.join(this.context.extensionPath, "devServerTools.js")),
 			log: (s) => this.output.append(s),
 			onExit: (code) => {
+				if (this._taskCheckpoints) for (const journal of this._taskCheckpoints.values()) {
+					try { journal.interruptAll(); } catch (e) { this.output.append(`[continuity] ${e.message}\n`); }
+				}
 				this.threadId = null;
 				this.loaded.clear();
 				this.post({ type: "status", connected: false, detail: `codex exited (${code})` });
@@ -3077,6 +3084,10 @@ self.addEventListener("fetch", (e) => {
 
 	onNotification(method, params) {
 		const tid = params && params.threadId;
+		if (this._taskCheckpoints) for (const journal of this._taskCheckpoints.values()) {
+			try { journal.notify(method, params); }
+			catch (e) { this.output.append(`[continuity] checkpoint failed: ${e.message}\n`); }
+		}
 		// ---- liveness pulses: classify every notification as a progress signal.
 		// Streaming deltas + tool/file events = real output (strong); plain state
 		// changes = weak. Lets livenessInfo() tell "really working" from "fake busy".
@@ -3400,10 +3411,45 @@ self.addEventListener("fetch", (e) => {
 			th.preview = text;
 			this.pushThreads();
 		}
+		this.beginTaskCheckpoint(threadId, text);
 		await client.request("turn/start", {
 			threadId,
 			input: [{ type: "text", text: prompt, text_elements: [] }],
 		});
+	}
+
+	taskCheckpoint(root = workspaceCwd()) {
+		if (!root) throw new Error("Open a workspace to save or resume a task.");
+		if (!this._taskCheckpoints) this._taskCheckpoints = new Map();
+		const key = fs.realpathSync(root);
+		if (!this._taskCheckpoints.has(key)) this._taskCheckpoints.set(key, new TaskContinuity(key));
+		return this._taskCheckpoints.get(key);
+	}
+
+	beginTaskCheckpoint(threadId, text) {
+		const root = this.brandPackRootForThread(threadId) || workspaceCwd();
+		this.taskCheckpoint(root).begin(threadId,
+			threadId === this.threadId ? (this._lastUserPrompt || text) : text, this.providerKey());
+	}
+
+	async resumeSavedTask() {
+		if (this.agentBusy() || this.activeCodexThreadId || this._browserSelfCheckRunning) {
+			vscode.window.showWarningMessage("Stop or finish the active task before resuming another task.");
+			return;
+		}
+		const journal = this.taskCheckpoint();
+		const tasks = journal.list();
+		if (!tasks.length) { vscode.window.showInformationMessage("No saved Felix tasks in this workspace."); return; }
+		const pick = await vscode.window.showQuickPick(tasks.map(task => ({
+			label: task.objective.replace(/\s+/g, " ").slice(0, 100),
+			description: `${task.status} · ${task.updatedAt} · ${task.evidence.length} files`, id: task.id,
+		})), { placeHolder: "Continue a saved task — Felix will verify current files first" });
+		if (!pick) return;
+		const prompt = journal.recoveryPrompt(pick.id);
+		this.resetAgentSession();
+		this._planApprovalBypass = true;
+		this.announceAgentMessage("ממשיך מהמשימה השמורה. בודק קודם את הקבצים והפעולות שנותרו ללא תוצאה.");
+		await this.send(prompt);
 	}
 
 	// sidebar send: lazily creates the sidebar thread
@@ -3534,6 +3580,9 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	async interrupt(threadId) {
+		if (this._taskCheckpoints) for (const journal of this._taskCheckpoints.values()) {
+			try { journal.pause(threadId); } catch (e) { this.output.append(`[continuity] stop checkpoint failed: ${e.message}\n`); }
+		}
 		let stopped = false;
 		if (this._browserSelfCheck && (!threadId || threadId === this.threadId)) {
 			this._browserSelfCheck = null;
@@ -3771,7 +3820,6 @@ self.addEventListener("fetch", (e) => {
 					localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media")],
 				}
 			);
-			this.planPanel.webview.html = mediaHtml(this.planPanel.webview, this.context.extensionUri, "plan.js", "plan.css");
 			this.planPanel.webview.onDidReceiveMessage(async (m) => {
 				if (m.type === "ready") { this.pushPlanPanel(); this.pushPlanApproval(); }
 				else if (m.type === "replanPlan" && this.pendingPlanApproval) {
@@ -3796,6 +3844,10 @@ self.addEventListener("fetch", (e) => {
 					await this.queueArtifactAnnotation(m.artifact, m.note).catch((e) => vscode.window.showErrorMessage("Solstice annotation: " + (e && e.message || e)));
 				}
 			});
+			// Subscribe before assigning HTML: plan.js posts `ready` during startup.
+			// If HTML wins this race, the one-shot brief/plan payload is lost and the
+			// approval surface remains hidden forever.
+			this.planPanel.webview.html = mediaHtml(this.planPanel.webview, this.context.extensionUri, "plan.js", "plan.css");
 			this.planPanel.onDidDispose(() => { this.planPanel = null; });
 		}
 	}
@@ -4332,12 +4384,14 @@ self.addEventListener("fetch", (e) => {
 	ensureFleetBridge(agentId) {
 		const id = String(agentId || "");
 		const existing = this.fleetBridges.get(id);
-		if (existing && existing.ws && existing.ws.connected) return existing.ws;
-		if (existing && existing.ws && !existing.ws.connected && existing.status === "connecting") return existing.ws;
+		if (existing && existing.ws) {
+			existing.ws.connect(); // idempotent; also starts a retained offline record
+			return existing.ws;
+		}
 		const cfg = this.fleetBridgeConfigs().get(id);
 		if (!cfg) return null;
 		const token = cfg.token || this.fleetToken();
-		const ws = new FleetBridge(cfg.wsUrl, { token, log: (s) => this.output.append("[fleet:" + id + "] " + s) });
+		const ws = new ReconnectingFleetBridge(cfg.wsUrl, { token, log: (s) => this.output.append("[fleet:" + id + "] " + s) });
 		const rec = { ws, status: "connecting" };
 		this.fleetBridges.set(id, rec);
 		const post = (m) => { if (this.fleetPanel) this.fleetPanel.webview.postMessage(m); };
@@ -4347,13 +4401,15 @@ self.addEventListener("fetch", (e) => {
 			if (f.type === "hello") {
 				rec.status = "online";
 				if (id === this.companionBridgeId()) {
-					rec.companionReady = true;
+					rec.companionReady = false;
 					try { ws.send({ type: "client_hello", role: "ide", instanceId: this.companionInstanceId() }); } catch { }
-					setTimeout(() => this.publishCompanionState(), 50);
 				}
 				post({ type: "roster", agents: this.fleetAgents() });
 				this.postFleetActivity(id, "online", "מחובר");
 				this.flushBuildRecovery(id);
+			} else if (f.type === "client_ready" && f.role === "ide" && id === this.companionBridgeId()) {
+				rec.companionReady = true;
+				this.publishCompanionState();
 			} else if (f.type === "push") {
 				post({ type: "reply", agent: id, text: String(f.text || ""), ts: Date.now(), kind: "progress" });
 				this.postFleetActivity(id, "working", String(f.text || "עובד…").split("\n")[0].slice(0, 80));
@@ -4375,13 +4431,14 @@ self.addEventListener("fetch", (e) => {
 		});
 		ws.on("error", (e) => {
 			rec.status = "offline";
+			rec.companionReady = false;
 			post({ type: "fleetError", agent: id, error: e.message });
 			post({ type: "roster", agents: this.fleetAgents() });
 			this.postFleetActivity(id, "offline", "מנותק");
 		});
 		ws.on("close", () => {
 			rec.status = "offline";
-			this.fleetBridges.delete(id);
+			rec.companionReady = false;
 			post({ type: "roster", agents: this.fleetAgents() });
 			this.postFleetActivity(id, "offline", "מנותק");
 		});
@@ -6544,6 +6601,7 @@ function activate(context) {
 			webviewOptions: { retainContextWhenHidden: true },
 		}),
 		vscode.commands.registerCommand("solstice.agent.newThread", () => controller.newThread()),
+		vscode.commands.registerCommand("solstice.agent.resumeSavedTask", () => controller.resumeSavedTask()),
 		vscode.commands.registerCommand("solstice.agent.showDiff", () => controller.showDiff()),
 		vscode.commands.registerCommand("solstice.agent.signOut", () => controller.signOut()),
 		vscode.commands.registerCommand("solstice.agent.openManager", () => openManager(controller, context.extensionUri)),

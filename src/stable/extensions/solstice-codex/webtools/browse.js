@@ -26,6 +26,7 @@ const os = require("os");
 const path = require("path");
 const { searchStockVideo } = require("./stockVideo");
 const { captureReplicaSource, compareReplicaVisuals } = require("./site-replica");
+const { scoreVisualQuality } = require("./visual-quality");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -570,11 +571,19 @@ async function functionalCheck(bin, url, outDir) {
 			const controls=[...document.querySelectorAll('a[href],button,[role="button"],input[type="button"],input[type="submit"],summary')].filter(visible);
 			const forms=[...document.forms].filter(visible);
 			const images=[...document.images].filter(visible).map(img=>({src:String(img.currentSrc||img.src||'').slice(0,300),broken:img.complete&&img.naturalWidth===0}));
+			const parseRgb=(value)=>{const m=String(value||'').match(/rgba?\\(([^)]+)\\)/i);if(!m)return null;const p=m[1].split(',').map(Number);if(p.length<3||p.some((n,i)=>i<3&&!Number.isFinite(n)))return null;return {r:p[0],g:p[1],b:p[2],a:p.length>3&&Number.isFinite(p[3])?p[3]:1};};
+			const luminance=(c)=>{const f=(n)=>{n=n/255;return n<=.03928?n/12.92:Math.pow((n+.055)/1.055,2.4);};return .2126*f(c.r)+.7152*f(c.g)+.0722*f(c.b);};
+			const ratio=(a,b)=>{const x=luminance(a),y=luminance(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05);};
+			const solidBackground=(el)=>{for(let n=el;n&&n!==document.documentElement;n=n.parentElement){const s=getComputedStyle(n);if(s.backgroundImage&&s.backgroundImage!=='none')return null;const c=parseRgb(s.backgroundColor);if(c&&c.a>.92)return c;}return {r:255,g:255,b:255,a:1};};
+			const contrast=[...document.querySelectorAll('h1,h2,h3,h4,p,a,button,label,li,span')].filter((el)=>visible(el)&&String(el.innerText||el.textContent||'').trim().length>2).slice(0,240).map((el)=>{const s=getComputedStyle(el),fg=parseRgb(s.color),bg=solidBackground(el),size=parseFloat(s.fontSize)||16,weight=parseInt(s.fontWeight,10)||400;if(!fg||!bg)return null;const value=ratio(fg,bg),required=size>=24||(size>=18.66&&weight>=700)?3:4.5;return {text:String(el.innerText||el.textContent||'').trim().replace(/\\s+/g,' ').slice(0,80),foreground:s.color,background:'rgb('+bg.r+','+bg.g+','+bg.b+')',value:Number(value.toFixed(2)),required,failed:value+0.01<required};}).filter(Boolean);
+			const headings=[...document.querySelectorAll('h1,h2,h3,h4,h5,h6')].filter(visible).map((el)=>({level:Number(el.tagName.slice(1)),fontSize:Math.round(parseFloat(getComputedStyle(el).fontSize)||0),text:String(el.innerText||'').trim().slice(0,80)}));
+			const undersizedControls=controls.filter((el)=>{const r=el.getBoundingClientRect();return r.width<44||r.height<44;}).length;
 			return {
 				url:location.href,title:document.title,text:(document.body?.innerText||'').slice(0,40000),htmlSize:(document.body?.innerHTML||'').length,
 				viewport:{width:innerWidth,height:innerHeight,scrollWidth:Math.max(document.documentElement.scrollWidth,document.body?.scrollWidth||0)},
 				clipped:controls.filter(el=>{const r=el.getBoundingClientRect();const p=el.parentElement&&getComputedStyle(el.parentElement);return (r.right>innerWidth+4||r.left<-4)&&!(p&&/(auto|scroll)/.test(p.overflowX));}).slice(0,12).map(el=>(el.innerText||el.value||el.getAttribute('aria-label')||el.tagName).trim().slice(0,80)),
 				images,forms:forms.length,
+				visual:{h1Count:headings.filter((h)=>h.level===1).length,headings,bodyFontPx:Math.round(parseFloat(getComputedStyle(document.body||document.documentElement).fontSize)||16),contrastSamples:contrast.length,contrastFailures:contrast.filter((item)=>item.failed).length,contrastFailureExamples:contrast.filter((item)=>item.failed).slice(0,8),controlCount:controls.length,undersizedControls,overflowPx:Math.max(0,Math.max(document.documentElement.scrollWidth,document.body?.scrollWidth||0)-innerWidth),clippedControls:controls.filter(el=>{const r=el.getBoundingClientRect();const p=el.parentElement&&getComputedStyle(el.parentElement);return (r.right>innerWidth+4||r.left<-4)&&!(p&&/(auto|scroll)/.test(p.overflowX));}).length,brokenImages:images.filter((item)=>item.broken).length},
 				controls:controls.slice(0,28).map((el,index)=>({index,tag:el.tagName.toLowerCase(),label:(el.innerText||el.value||el.getAttribute('aria-label')||el.title||'').trim().slice(0,100),href:el.href||'',type:el.type||'',disabled:!!el.disabled,form:!!el.form}))
 			};
 		})()`);
@@ -605,6 +614,7 @@ async function functionalCheck(bin, url, outDir) {
 		for (const original of testable.filter((item) => item.tag === "a").slice(0, 8)) {
 			if (!original.href || /^(mailto:|tel:|javascript:)/i.test(original.href)) continue;
 			await returnHome();
+			const before = await interactionState();
 			const controls = await controlsNow();
 			const point = controls[original.index] && await controlPoint(original.index);
 			if (!point) { add("error", "navigation", `Navigation disappeared before click: ${safeName(original.label || original.href)}`); continue; }
@@ -613,7 +623,8 @@ async function functionalCheck(bin, url, outDir) {
 			await clickAt(point);
 			linksChecked++;
 			const after = await interactionState();
-			if (after.url === rootUrl && target.href !== rootUrl && target.hash !== "#") add("error", "navigation", `Navigation did not move: ${safeName(original.label || target.pathname)}`, { target: target.href });
+			const anchorReached = target.hash && (after.hash === target.hash || after.scrollY !== before.scrollY || await evalJs(`(()=>{const el=document.querySelector(${JSON.stringify(target.hash)});if(!el)return false;const r=el.getBoundingClientRect();return r.top<innerHeight&&r.bottom>0;})()`));
+			if (after.url === rootUrl && target.href !== rootUrl && target.hash !== "#" && !anchorReached) add("error", "navigation", `Navigation did not move: ${safeName(original.label || target.pathname)}`, { target: target.href });
 			if (/\b(404|page not found|not found|העמוד לא נמצא)\b/i.test(after.body.slice(0,3000))) add("error", "404", `Navigation rendered a not-found page: ${target.pathname}`);
 		}
 
@@ -647,7 +658,12 @@ async function functionalCheck(bin, url, outDir) {
 			formsChecked++;
 			if (!prepared.valid) { add("warning", "form", `Form ${formIndex + 1} still has unsupported required fields; submission skipped`); continue; }
 			if (prepared.hasSubmit) await clickAt(prepared); else await evalJs(`([...document.forms].filter(el=>{const s=getComputedStyle(el),r=el.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>2&&r.height>2;})[${formIndex}]).requestSubmit()`);
-			const submissions = await evalJs(`window.__solsticeFunctionalCheck?.submits||[]`);
+			let submissions = await evalJs(`window.__solsticeFunctionalCheck?.submits||[]`);
+			if (!submissions.length && prepared.hasSubmit) {
+				await evalJs(`([...document.forms].filter(el=>{const s=getComputedStyle(el),r=el.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>2&&r.height>2;})[${formIndex}]).requestSubmit()`);
+				await sleep(150);
+				submissions = await evalJs(`window.__solsticeFunctionalCheck?.submits||[]`);
+			}
 			if (!submissions.length) add("error", "form", `Form submit handler did not fire: ${safeName(prepared.label)}`);
 		}
 
@@ -657,6 +673,8 @@ async function functionalCheck(bin, url, outDir) {
 		if (mobile.viewport.scrollWidth > mobile.viewport.width + 4) add("error", "layout", `Mobile horizontal overflow: ${mobile.viewport.scrollWidth}px content in ${mobile.viewport.width}px viewport`);
 		for (const label of mobile.clipped) add("error", "layout", `Interactive control is clipped on mobile: ${safeName(label)}`);
 		for (const image of mobile.images.filter((item) => item.broken)) add("error", "resource", `Broken image on mobile: ${image.src || "(empty src)"}`);
+		const visual = scoreVisualQuality({ desktop: desktop.visual, mobile: mobile.visual });
+		for (const finding of visual.findings) add("error", finding.check, finding.message, finding.evidence);
 
 		if (outDir) {
 			const mobileShot = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
@@ -674,7 +692,8 @@ async function functionalCheck(bin, url, outDir) {
 		return {
 			ok: errors.length === 0,
 			checkedAt: new Date().toISOString(), url: rootUrl,
-			summary: { linksChecked, buttonsChecked, formsChecked, mutationsIntercepted: interceptedMutations.length, desktopWidth: desktop.viewport.width, mobileWidth: mobile.viewport.width, errors: errors.length, warnings: findings.length - errors.length },
+			summary: { linksChecked, buttonsChecked, formsChecked, mutationsIntercepted: interceptedMutations.length, desktopWidth: desktop.viewport.width, mobileWidth: mobile.viewport.width, visualScore: visual.score, visualGrade: visual.grade, visualCategories: visual.categories, errors: errors.length, warnings: findings.length - errors.length },
+			visual,
 			findings,
 			interceptedMutations,
 			screenshots: outDir ? { desktop: path.join(outDir, "desktop.png"), mobile: path.join(outDir, "mobile.png") } : {},

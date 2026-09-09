@@ -210,4 +210,109 @@ class FleetBridge extends EventEmitter {
 	}
 }
 
-module.exports = { FleetBridge };
+// Owns the lifecycle of a FleetBridge and guarantees that there is never more
+// than one socket or reconnect timer alive for a bridge.  The wrapper stays in
+// the controller's registry while the network is down, so reconnect does not
+// depend on the Fleet panel being reopened by the user.
+class ReconnectingFleetBridge extends EventEmitter {
+	constructor(url, opts) {
+		super();
+		opts = opts || {};
+		this.url = url;
+		this.token = opts.token || "";
+		this.log = opts.log || (() => { });
+		this.baseDelayMs = Math.max(1, Number(opts.baseDelayMs || 750));
+		this.maxDelayMs = Math.max(this.baseDelayMs, Number(opts.maxDelayMs || 30000));
+		this.jitter = Math.max(0, Math.min(1, Number(opts.jitter == null ? 0.2 : opts.jitter)));
+		this._random = opts.random || Math.random;
+		this._setTimeout = opts.setTimeout || setTimeout;
+		this._clearTimeout = opts.clearTimeout || clearTimeout;
+		this._createConnection = opts.createConnection || (() => new FleetBridge(url, {
+			token: this.token,
+			log: this.log,
+		}));
+		this._socket = null;
+		this._timer = null;
+		this._attempt = 0;
+		this._generation = 0;
+		this._state = "idle";
+		this._stopped = false;
+	}
+
+	get connected() { return !!(this._socket && this._socket.connected); }
+
+	connect() {
+		if (this._stopped || this._timer || this._state === "connecting" || this.connected) return false;
+		this._open();
+		return true;
+	}
+
+	_open() {
+		if (this._stopped) return;
+		const generation = ++this._generation;
+		const socket = this._createConnection();
+		this._socket = socket;
+		this._state = "connecting";
+		socket.on("open", () => {
+			if (generation !== this._generation || this._stopped) return;
+			this.emit("open");
+		});
+		socket.on("frame", (frame) => {
+			if (generation !== this._generation || this._stopped) return;
+			if (frame && frame.type === "hello") {
+				this._state = "connected";
+				this._attempt = 0;
+			}
+			this.emit("frame", frame);
+		});
+		socket.on("error", (error) => {
+			if (generation !== this._generation || this._stopped) return;
+			this.emit("error", error);
+			this._scheduleReconnect();
+		});
+		socket.on("close", (info) => {
+			if (generation !== this._generation || this._stopped) return;
+			this.emit("close", info || {});
+			this._scheduleReconnect();
+		});
+		socket.connect();
+	}
+
+	_scheduleReconnect() {
+		if (this._stopped || this._timer) return;
+		const socket = this._socket;
+		this._socket = null;
+		this._state = "waiting";
+		++this._generation; // late close/error events from this socket are stale
+		if (socket) { try { socket.close(); } catch { } }
+		const raw = Math.min(this.maxDelayMs, this.baseDelayMs * (2 ** this._attempt));
+		this._attempt += 1;
+		const spread = raw * this.jitter;
+		const delay = Math.max(1, Math.round(raw - spread + (2 * spread * this._random())));
+		this.log(`fleet bridge reconnect in ${delay}ms\n`);
+		this._timer = this._setTimeout(() => {
+			this._timer = null;
+			if (this._stopped) return;
+			this._state = "idle";
+			this._open();
+		}, delay);
+	}
+
+	send(frame) {
+		if (!this._socket || !this._socket.connected) throw new Error("bridge not connected");
+		return this._socket.send(frame);
+	}
+
+	close() {
+		if (this._stopped) return;
+		this._stopped = true;
+		this._state = "stopped";
+		++this._generation;
+		if (this._timer) { this._clearTimeout(this._timer); this._timer = null; }
+		const socket = this._socket;
+		this._socket = null;
+		if (socket) { try { socket.close(); } catch { } }
+	}
+}
+
+module.exports = { FleetBridge, ReconnectingFleetBridge };

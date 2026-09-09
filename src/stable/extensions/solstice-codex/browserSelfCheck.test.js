@@ -50,6 +50,7 @@ ok(extension.includes("await this.send(fixPrompt)"), "red browser findings trigg
 ok(browse.includes('Runtime.exceptionThrown'), "functional check captures runtime exceptions");
 ok(browse.includes('Fetch.fulfillRequest'), "functional check stubs mutating browser requests before network side effects");
 ok(browse.includes('Mobile horizontal overflow'), "functional check includes a mobile layout pass");
+	ok(browse.includes("if (!submissions.length && prepared.hasSubmit)"), "form QA retries through native requestSubmit when a headless pointer click is obstructed");
 	ok(extension.includes("siteReplicaSourceUrl(task)"), "clone intent arms the browser gate with its source URL");
 	ok(extension.includes('"replica-compare"'), "green functional QA runs the replica visual comparison automatically");
 	ok(extension.includes('check: "visual-fidelity"'), "sub-80 replica evidence becomes a concrete browser-gate failure");

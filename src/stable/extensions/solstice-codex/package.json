@@ -42,6 +42,12 @@
     },
     "commands": [
       {
+        "command": "solstice.agent.resumeSavedTask",
+        "title": "Resume Saved Felix Task",
+        "category": "Solstice",
+        "icon": "$(debug-continue)"
+      },
+      {
         "command": "solstice.agent.newThread",
         "title": "New Agent Thread",
         "category": "Solstice",

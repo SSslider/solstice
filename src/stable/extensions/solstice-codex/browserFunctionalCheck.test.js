@@ -28,11 +28,14 @@ function runCheck(url, outDir) {
 }
 
 function page(kind) {
-	if (kind === "green") return `<!doctype html><html><head><title>Green fixture</title><meta name="viewport" content="width=device-width"></head><body>
+	if (kind === "green") return `<!doctype html><html><head><title>Green fixture</title><meta name="viewport" content="width=device-width"><style>
+		body{margin:0;padding:32px;font:18px/1.5 system-ui;color:#172126;background:#fff}main{max-width:720px;margin:auto}h1{font-size:48px;line-height:1.05}h2{font-size:30px}a,button,input{box-sizing:border-box;min-height:48px;padding:12px 16px;font:inherit}form{display:grid;gap:12px;max-width:420px}
+	</style></head><body><main>
+		<h1>Browser quality fixture</h1><p>A complete fixture for interaction and visual-quality checks.</p>
 		<a href="/about">About</a><button id="toggle">Open menu</button><p id="state">closed</p>
-		<form><input required type="email" aria-label="Email"><button type="submit">Send</button></form>
+		<h2>Contact</h2><form><input required type="email" aria-label="Email"><button type="submit">Send</button></form>
 		<script>document.querySelector('#toggle').onclick=()=>document.querySelector('#state').textContent='open';document.querySelector('form').onsubmit=async e=>{e.preventDefault();await fetch('/submit',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});document.querySelector('#state').textContent='sent';};</script>
-	</body></html>`;
+	</main></body></html>`;
 	return `<!doctype html><html><head><title>Broken fixture</title><meta name="viewport" content="width=device-width"></head><body style="margin:0">
 		<a href="/missing">Missing page</a><button>Dead button</button><div style="width:900px;height:20px">overflow</div><img src="/broken.png" alt="broken">
 		<script>console.error('fixture console explosion')</script>

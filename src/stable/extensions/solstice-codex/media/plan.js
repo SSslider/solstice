@@ -44,6 +44,13 @@
 	const questionsEl = document.getElementById("pQuestions");
 	const approvalMetaEl = document.getElementById("pApprovalMeta");
 	let questions = [], revision = 0, dirty = false, replanTimer = null, approvalKind = "plan";
+	let readyAttempts = 0, readyTimer = null;
+	function stopReadyHandshake() { if (readyTimer) { clearInterval(readyTimer); readyTimer = null; } }
+	function requestPlanState() {
+		vscode.postMessage({ type: "ready" });
+		readyAttempts += 1;
+		if (readyAttempts >= 20) stopReadyHandshake();
+	}
 	function answers() { const out = {}; for (const q of questions) { const input = document.querySelector('[data-q="' + q.id + '"]'); out[q.id] = input ? input.value.trim() : ""; } return out; }
 	function validate() {
 		let ok = !!promptEl.value.trim();
@@ -149,6 +156,7 @@
 			liveEl.classList.remove("stale");
 			render(m.plan, m.title);
 		} else if (m.type === "approval") {
+			stopReadyHandshake();
 			promptEl.value = m.prompt || ""; questions = Array.isArray(m.questions) ? m.questions : []; revision = m.revision || 0; approvalKind = m.kind || "plan";
 			const briefEl = document.getElementById("pBrief");
 			if (approvalKind === "site-brief" && m.brief) {
@@ -172,10 +180,12 @@
 				: (m.researched ? "המחקר המקדים הושלם · " : "") + "תבנית " + (m.projectType || "project") + " · גרסה " + revision + ". שינוי נוסף דורש re-plan לפני ביצוע.";
 			dirty = false; approvalEl.hidden = false; promptEl.focus();
 		} else if (m.type === "planFlowing") {
+			stopReadyHandshake();
 			approvalEl.hidden = true;
 			document.getElementById("pFlowMeta").textContent = "הביצוע רץ עכשיו. כל הערה נשלחת ל-turn הפעיל ומעדכנת את התוכנית בלי לעצור אותו.";
 		}
 	});
 
-	vscode.postMessage({ type: "ready" });
+	requestPlanState();
+	readyTimer = setInterval(requestPlanState, 500);
 })();
