@@ -112,7 +112,7 @@ const fixture = {
 	ok(/sendGrok\(text, rawText = text\)[\s\S]*?withBrandPack\(text, cwd\)/.test(extension), "Grok and Composer turns receive project BrandDNA context");
 	ok(/startTurn\(threadId, text\)[\s\S]*?brandPackRootForThread\(threadId\)[\s\S]*?withBrandPack\(text, root\)/.test(extension), "Codex and Manager worktree turns receive their own project BrandDNA context");
 	ok(/developerInstructions\(text = "", cwd = workspaceCwd\(\)\)[\s\S]*?this\.brandContext\(cwd\)/.test(extension), "new Codex threads receive BrandDNA at developer-instruction level");
-	ok(/steer\(threadId, text\)[\s\S]*?withBrandPack\(text, this\.brandPackRootForThread\(threadId\)\)/.test(extension), "in-flight generation corrections retain BrandDNA context");
+	ok(/steer\(threadId, text(?:, userText = text)?\)[\s\S]*?withBrandPack\(text, this\.brandPackRootForThread\(threadId\)\)/.test(extension), "in-flight generation corrections retain BrandDNA context");
 
 	fs.rmSync(root, { recursive: true, force: true });
 	console.log(`brandPack.test.js: ${passed}/${passed} checks passed`);

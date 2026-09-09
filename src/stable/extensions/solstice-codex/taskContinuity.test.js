@@ -96,6 +96,65 @@ try {
 	} });
 	await assert.rejects(c.startTurn(c.threadId, 'Fix the form'), /simulated provider crash/);
 	passed++; console.log('ok - actual controller dispatch checkpoints before provider failure');
+	const queued = journal.queueSteering('thread-1', 'Keep the Hebrew labels');
+	check('queued user update survives a new controller', () => assert.equal(new TaskContinuity(root).read(task.id).steering[0].text, 'Keep the Hebrew labels'));
+	const batch = journal.markSteering('thread-1', null, 'dispatching');
+	check('drain marks ambiguous dispatch before sending', () => { assert.deepEqual(batch, [queued]); assert.equal(journal.read(task.id).steering[0].state, 'dispatching'); });
+	const newer = journal.queueSteering('thread-1', 'Use local dates');
+	journal.markSteering('thread-1', batch, 'accepted');
+	check('old acknowledgement cannot consume a newer update', () => assert.equal(journal.read(task.id).steering.find(x => x.id === newer).state, 'queued'));
+	journal.pause('thread-1');
+	check('stop cancels updates that were not dispatched', () => assert.equal(journal.read(task.id).steering.find(x => x.id === newer).state, 'cancelled'));
+	check('recovery distinguishes accepted and cancelled updates', () => { const prompt = journal.recoveryPrompt(task.id); assert.match(prompt, /"state":"accepted"/); assert.match(prompt, /"state":"cancelled"/); });
+	check('oversized steering is rejected without truncating user intent', () => { const before = journal.read(task.id).steering.length; assert.throws(() => journal.queueSteering('thread-1', 'x'.repeat(24001)), /limit/); assert.equal(journal.read(task.id).steering.length, before); });
+	c.threads = new Map([[c.threadId, {activeTurnId:'turn-1'}]]);
+	c.ensureClient = async () => ({ request: async method => { assert.equal(method, 'turn/steer'); throw new Error('ack lost'); } });
+	await assert.rejects(c.steer(c.threadId, 'Change the field label'), /ack lost/);
+	check('native steering failure keeps the real user update on disk', () => { const saved = c.taskCheckpoint(root).list().find(t => t.threadId === c.threadId); assert.equal(saved.steering.at(-1).state, 'dispatching'); assert.equal(saved.steering.at(-1).text, 'Change the field label'); });
+	check('failed storage cannot leave a phantom update in memory', () => {
+		const before = JSON.stringify(journal.active.get('thread-1'));
+		const save = journal.save;
+		journal.save = () => { throw new Error('disk full'); };
+		try { assert.throws(() => journal.queueSteering('thread-1', 'Do not lose this'), /disk full/); }
+		finally { journal.save = save; }
+		assert.equal(JSON.stringify(journal.active.get('thread-1')), before);
+	});
+	check('failed acknowledgement storage preserves the uncertain outcome', () => {
+		const id = journal.queueSteering('thread-1', 'Pending ACK', 'dispatching');
+		const save = journal.save;
+		journal.save = () => { throw new Error('disk full'); };
+		try { assert.throws(() => journal.markSteering('thread-1', [id], 'accepted'), /disk full/); }
+		finally { journal.save = save; }
+		assert.equal(journal.active.get('thread-1').steering.find(x => x.id === id).state, 'dispatching');
+		assert.equal(journal.read(task.id).steering.find(x => x.id === id).state, 'dispatching');
+	});
+	c.providerKey = () => 'claude-fable-5';
+	c.claude = { busy: true };
+	c.steerQueue = [];
+	c.liveRec = () => ({});
+	c.post = () => {};
+	c.output = {append: () => {}};
+	c.live = new Map();
+	await c.steer(c.threadId, 'enriched instruction', 'Keep RTL');
+	check('busy CLI controller stores raw intent before queueing', () => {
+		assert.equal(c.taskCheckpoint(root).active.get(c.threadId).steering.at(-1).text, 'Keep RTL');
+		assert.equal(c.steerQueue.length, 1);
+	});
+	let ack;
+	c.send = () => {
+		assert.equal(c.taskCheckpoint(root).active.get(c.threadId).steering.at(-1).state, 'dispatching');
+		return new Promise(resolve => { ack = resolve; });
+	};
+	c.drainSteerQueue();
+	await c.steer(c.threadId, 'new instruction', 'Preserve mobile layout');
+	ack();
+	await new Promise(resolve => setImmediate(resolve));
+	check('actual drain ACK leaves newly queued instructions pending', () => {
+		const rows = c.taskCheckpoint(root).active.get(c.threadId).steering;
+		assert.equal(rows.find(x => x.text === 'Keep RTL').state, 'accepted');
+		assert.equal(rows.at(-1).state, 'queued');
+		assert.equal(c.steerQueue.length, 1);
+	});
 	console.log(`taskContinuity.test.js: ${passed}/${passed} checks passed`);
 } finally { fs.rmSync(root, { recursive: true, force: true }); }
 

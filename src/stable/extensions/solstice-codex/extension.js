@@ -724,6 +724,9 @@ class AgentController {
 	}
 	forceDrainSteer() {
 		if (!this.steerQueue.length) return;
+		const journal = this.taskCheckpoint(this.brandPackRootForThread(this.threadId));
+		const tid = this.threadId;
+		const ids = journal.markSteering(tid, null, "dispatching");
 		const text = this.steerQueue.join("\n\n");
 		this.steerQueue = [];
 		const r = this.live.get("_builder"); if (r) r.queued = 0;
@@ -731,6 +734,7 @@ class AgentController {
 		this.interrupt(this.threadId)
 			.catch(() => { })
 			.then(() => this.send(text))
+			.then(() => journal.markSteering(tid, ids, "accepted"))
 			.catch((e) => this.output.append(`\n[resume drain] ${e && e.message || e}\n`));
 	}
 
@@ -3520,7 +3524,7 @@ self.addEventListener("fetch", (e) => {
 		// route it to the steer queue so it drains into the next turn.
 		if (runner !== "codex") {
 			const prov = runner === "claude" ? this.claude : runner === "moonshot" ? this.moonshot : this.grok;
-			if (prov && prov.busy) return this.steer(this.threadId, text);
+			if (prov && prov.busy) return this.steer(this.threadId, text, rawText);
 		}
 		if (runner === "claude") return this.sendClaude(text);
 		if (runner === "moonshot") return this.sendMoonshot(text);
@@ -3534,7 +3538,7 @@ self.addEventListener("fetch", (e) => {
 		await this.startTurn(this.threadId, text);
 	}
 
-	async steer(threadId, text) {
+	async steer(threadId, text, userText = text) {
 		text = appendResearchContract(this.withBrandPack(text, this.brandPackRootForThread(threadId)));
 		const provider = this.providerKey();
 		// grok / claude run as spawned CLIs with no native mid-turn injection.
@@ -3544,6 +3548,7 @@ self.addEventListener("fetch", (e) => {
 			const runner = runnerFor(provider);
 			const prov = runner === "claude" ? this.claude : runner === "moonshot" ? this.moonshot : this.grok;
 			if (prov && prov.busy) {
+				this.taskCheckpoint(this.brandPackRootForThread(threadId)).queueSteering(threadId, userText);
 				this.steerQueue.push(text);
 				const r = this.liveRec("_builder"); r.queued = this.steerQueue.length;
 				this.post({ type: "steerQueued", count: this.steerQueue.length });
@@ -3561,22 +3566,29 @@ self.addEventListener("fetch", (e) => {
 			await this.startTurn(threadId, text);
 			return;
 		}
+		const journal = this.taskCheckpoint(this.brandPackRootForThread(threadId));
+		const updateId = journal.queueSteering(threadId, userText, "dispatching");
 		await client.request("turn/steer", {
 			threadId,
 			expectedTurnId: th.activeTurnId,
 			input: [{ type: "text", text, text_elements: [] }],
 		});
+		journal.markSteering(threadId, [updateId], "accepted");
 	}
 
 	// grok/claude: after a turn finishes, fold any queued steers into one
 	// follow-up turn so the agent picks them up as the next priority.
 	drainSteerQueue() {
 		if (!this.steerQueue.length) return;
+		const journal = this.taskCheckpoint(this.brandPackRootForThread(this.threadId));
+		const tid = this.threadId;
+		const ids = journal.markSteering(tid, null, "dispatching");
 		const text = this.steerQueue.join("\n\n");
 		this.steerQueue = [];
 		const r = this.live.get("_builder"); if (r) r.queued = 0;
 		this.post({ type: "steerQueued", count: 0 });
-		this.send(text).catch((e) => this.output.append(`\n[steer drain] ${e && e.message || e}\n`));
+		this.send(text).then(() => journal.markSteering(tid, ids, "accepted"))
+			.catch((e) => this.output.append(`\n[steer drain] ${e && e.message || e}\n`));
 	}
 
 	async interrupt(threadId) {
