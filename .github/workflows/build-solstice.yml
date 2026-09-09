@@ -113,6 +113,9 @@ jobs:
       - name: Verify packaged ScrollWorld contract (win32)
         run: node scripts/verify-packaged-scrollworld.js ./VSCode-win32-x64/resources/app/extensions/solstice-codex
 
+      - name: Verify packaged Codex runtime (win32)
+        run: node scripts/verify-codex-runtime.js ./VSCode-win32-x64/resources/app/extensions/solstice-codex win32
+
       # MANDATORY GATE — fails the job if any .node inside the output is not a
       # Windows PE binary (lesson: 4x false-positive cross-builds, 17-22/05).
       - name: Verify native modules match win32
@@ -179,6 +182,9 @@ jobs:
 
       - name: Verify packaged ScrollWorld contract (darwin)
         run: node scripts/verify-packaged-scrollworld.js "./VSCode-darwin-arm64/${APP_NAME}.app/Contents/Resources/app/extensions/solstice-codex"
+
+      - name: Verify packaged Codex runtime (darwin)
+        run: node scripts/verify-codex-runtime.js "./VSCode-darwin-arm64/${APP_NAME}.app/Contents/Resources/app/extensions/solstice-codex" darwin
 
       - name: Verify native modules match darwin
         run: bash scripts/verify-build-target-natives.sh ./VSCode-darwin-arm64 darwin
@@ -254,6 +260,9 @@ jobs:
 
       - name: Verify packaged ScrollWorld contract (linux)
         run: node scripts/verify-packaged-scrollworld.js ./VSCode-linux-x64/resources/app/extensions/solstice-codex
+
+      - name: Verify packaged Codex runtime (linux)
+        run: node scripts/verify-codex-runtime.js ./VSCode-linux-x64/resources/app/extensions/solstice-codex linux
 
       - name: Verify native modules match linux
         run: bash scripts/verify-build-target-natives.sh ./VSCode-linux-x64 linux

@@ -29,4 +29,26 @@ for (const target of ["win32", "darwin", "linux"]) {
 	assert.match(workflow, new RegExp(`node scripts/verify-bundled-codex-models\\.js ${target} --version-only`), `${target} build must verify the bundled Codex version`);
 }
 
-console.log("bundle-codex-binary.test.js: 18/18 checks passed");
+const os = require("os");
+const { verifyRuntime } = require("./verify-codex-runtime");
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-runtime-contract-"));
+let checks = 18;
+try {
+	for (const [target, triple] of Object.entries({ win32: "x86_64-pc-windows-msvc", darwin: "aarch64-apple-darwin", linux: "x86_64-unknown-linux-musl" })) {
+		const dir = path.join(root, target), suffix = target === "win32" ? ".exe" : "";
+		fs.mkdirSync(dir);
+		fs.writeFileSync(path.join(dir, "codex-package.json"), JSON.stringify({ layoutVersion: 1, version: "0.153.3", target: triple, variant: "codex", entrypoint: `bin/codex${suffix}`, pathDir: "codex-path", resourcesDir: "codex-resources" }));
+		const files = [`bin/codex${suffix}`, `bin/codex-code-mode-host${suffix}`, `codex-path/rg${suffix}`,
+			...(target === "win32" ? ["codex-resources/codex-command-runner.exe", "codex-resources/codex-windows-sandbox-setup.exe"] : ["codex-resources/zsh/bin/zsh", ...(target === "linux" ? ["codex-resources/bwrap"] : [])])];
+		for (const name of files) { fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true }); fs.writeFileSync(path.join(dir, name), "fixture"); }
+		assert.equal(verifyRuntime(dir, target).complete, true); checks++;
+		for (const name of files) {
+			fs.unlinkSync(path.join(dir, name));
+			assert.throws(() => verifyRuntime(dir, target), /dependency missing/, `${target} must reject missing ${name}`); checks++;
+			fs.writeFileSync(path.join(dir, name), "fixture");
+		}
+		assert.throws(() => verifyRuntime(dir, target === "win32" ? "linux" : "win32"), /layout, version or target/); checks++;
+		assert.match(workflow, new RegExp(`Verify packaged Codex runtime \\(${target}\\)`)); checks++;
+	}
+} finally { fs.rmSync(root, { recursive: true, force: true }); }
+console.log(`bundle-codex-binary.test.js: ${checks}/${checks} checks passed`);

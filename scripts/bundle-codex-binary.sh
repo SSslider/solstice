@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Download the pinned codex CLI release binary into the solstice-codex
+# Download the complete pinned Codex runtime package into the solstice-codex
 # built-in extension so the IDE ships with its own agent backend.
 # Usage: bundle-codex-binary.sh <win32|darwin|linux>
 # NOTE: must stay bash-3.2 compatible (macOS runners).
@@ -9,13 +9,14 @@ CODEX_VERSION="rust-v0.153.3"
 TARGET="${1:?usage: $0 <win32|darwin|linux>}"
 
 case "$TARGET" in
-  win32)  ASSET="codex-x86_64-pc-windows-msvc.exe.tar.gz"; INNER="codex-x86_64-pc-windows-msvc.exe"; OUT="codex.exe"; EXPECTED_SHA256="d0719dc2ab6f51510dc208633e9577fd03f50f0c00ac384fe9e0a069fd6c387b" ;;
-  darwin) ASSET="codex-aarch64-apple-darwin.tar.gz";       INNER="codex-aarch64-apple-darwin";       OUT="codex";     EXPECTED_SHA256="02cdcbd874c1616f2cab6f602580329de1b00b26bf216d384b348519a9b356cd" ;;
-  linux)  ASSET="codex-x86_64-unknown-linux-musl.tar.gz";  INNER="codex-x86_64-unknown-linux-musl";  OUT="codex";     EXPECTED_SHA256="6ff9674bb00e14734c2748bc8788eab3cb6e5ac53ebde7e1e780b4ed7af48cba" ;;
+  win32)  ASSET="codex-package-x86_64-pc-windows-msvc.tar.gz"; OUT="codex.exe"; EXPECTED_SHA256="7db4c2a12dadbf39db73dd13f058fb14e03c83133e51825b7ad7c708e40cea31" ;;
+  darwin) ASSET="codex-package-aarch64-apple-darwin.tar.gz"; OUT="codex"; EXPECTED_SHA256="1101ce8b7f9aaf598120bf14ff260c5f591eaa2c611cf8738070529e60ae8105" ;;
+  linux)  ASSET="codex-package-x86_64-unknown-linux-musl.tar.gz"; OUT="codex"; EXPECTED_SHA256="47bb1fb36fb1dbd5fe1af3eb0db422ffb4c3c38d9c1762c7618a9bed46c44a63" ;;
   *) echo "unknown target: $TARGET" >&2; exit 1 ;;
 esac
 
 BIN_DIR="$(cd "$(dirname "$0")/.." && pwd)/src/stable/extensions/solstice-codex/bin"
+EXT_DIR="$(dirname "$BIN_DIR")"
 mkdir -p "$BIN_DIR"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -33,13 +34,19 @@ else
   }
 fi
 tar -xzf "$TMP/$ASSET" -C "$TMP"
-[ -f "$TMP/$INNER" ] || { echo "expected $INNER inside $ASSET, got:"; ls "$TMP"; exit 1; }
-grep -aFq -- "gpt-6-astra" "$TMP/$INNER" || {
+node "$(dirname "$0")/verify-codex-runtime.js" "$TMP" "$TARGET"
+grep -aFq -- "gpt-6-astra" "$TMP/bin/$OUT" || {
   echo "bundled Codex binary is missing required model capability: gpt-6-astra" >&2
   exit 1
 }
-mv "$TMP/$INNER" "$BIN_DIR/$OUT"
+# Preserve the upstream layout: code-mode-host is a sibling of codex, and
+# resources/path are resolved via codex-package.json in the parent directory.
+# Copy only runtime files; existing bundled Grok/Node binaries remain intact.
+cp -R "$TMP/bin/." "$BIN_DIR/"
+cp "$TMP/codex-package.json" "$EXT_DIR/codex-package.json"
+cp -R "$TMP/codex-path" "$TMP/codex-resources" "$EXT_DIR/"
 chmod +x "$BIN_DIR/$OUT"
+node "$(dirname "$0")/verify-codex-runtime.js" "$EXT_DIR" "$TARGET"
 if [ "$TARGET" != "win32" ]; then
   BUNDLED_VERSION="$("$BIN_DIR/$OUT" --version | sed -n 's/^codex-cli \([0-9][0-9.]*\)$/\1/p')"
   awk -v version="$BUNDLED_VERSION" 'BEGIN {

@@ -5,6 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const { codexVersion, compareVersions } = require("../src/stable/extensions/solstice-codex/codexCompatibility");
 const { discoverCodexModels } = require("../src/stable/extensions/solstice-codex/modelDiscovery");
+const { verifyRuntime } = require("./verify-codex-runtime");
 
 const GPT_6_MIN_CODEX_VERSION = "0.153.0";
 
@@ -19,6 +20,7 @@ async function main() {
 	const executable = target === "win32" ? "codex.exe" : "codex";
 	const binary = path.join(__dirname, "..", "src", "stable", "extensions", "solstice-codex", "bin", executable);
 	if (!fs.existsSync(binary)) throw new Error(`bundled Codex binary is missing: ${binary}`);
+	verifyRuntime(path.dirname(path.dirname(binary)), target);
 
 	const version = codexVersion(binary);
 	if (!version.ok) throw new Error(`bundled Codex version probe failed: ${version.output || version.error || "unknown error"}`);
