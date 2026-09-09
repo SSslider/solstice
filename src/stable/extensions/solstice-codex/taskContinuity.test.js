@@ -41,6 +41,67 @@ try {
 	journal.pause("thread-1");
 	journal.notify("turn/completed", { threadId: "thread-1", turn: {} });
 	check("user stop is preserved", () => assert.equal(journal.read(task.id).status, "paused"));
+	for (const method of ['error', 'turn/engineFailed']) {
+		check(`user stop survives late ${method} and turn completion`, () => {
+			const thread = `late-${method}`;
+			const saved = journal.begin(thread, 'Keep the task stopped', 'test');
+			journal.pause(thread);
+			journal.notify(method, { threadId: thread });
+			journal.notify('turn/completed', { threadId: thread, turn: { status: 'failed' } });
+			const disk = new TaskContinuity(root).read(saved.id);
+			assert.equal(disk.status, 'paused');
+			assert.equal(journal.active.get(thread).status, 'paused');
+			assert.equal(disk.events.at(-1).type, 'provider-error-after-stop');
+			assert.match(disk.failure, /Provider failed/);
+		});
+	}
+	check('late tool result after stop reconciles evidence without resuming', () => {
+		const thread = 'late-file-result';
+		const saved = journal.begin(thread, 'Save the completed file', 'test');
+		journal.notify('item/started', { threadId: thread, item: { id: 'late-file', type: 'fileChange' } });
+		journal.pause(thread);
+		fs.writeFileSync(path.join(root, 'late-result.txt'), 'durable result');
+		journal.notify('item/completed', { threadId: thread, item: { id: 'late-file', type: 'fileChange', changes: [{ path: 'late-result.txt' }] } });
+		const disk = new TaskContinuity(root).read(saved.id);
+		assert.equal(disk.status, 'paused');
+		assert.deepEqual(disk.pending, []);
+		assert.equal(disk.evidence[0].sha256, journal.evidence('late-result.txt').sha256);
+	});
+	check('failed stop persistence cannot cancel only the in-memory queue', () => {
+		const thread = 'stop-disk-full';
+		const saved = journal.begin(thread, 'Persist before acknowledging stop', 'test');
+		journal.queueSteering(thread, 'Keep this queued');
+		const before = fs.readFileSync(journal.file(saved.id), 'utf8');
+		const memory = JSON.stringify(journal.active.get(thread));
+		const rename = fs.renameSync;
+		fs.renameSync = () => { throw Object.assign(new Error('disk full'), { code: 'ENOSPC' }); };
+		try { assert.throws(() => journal.pause(thread), /disk full/); }
+		finally { fs.renameSync = rename; }
+		assert.equal(fs.readFileSync(journal.file(saved.id), 'utf8'), before);
+		assert.equal(JSON.stringify(journal.active.get(thread)), memory);
+		assert.equal(fs.readdirSync(journal.dir).some(f => f.endsWith('.tmp')), false);
+		journal.pause(thread);
+		assert.equal(new TaskContinuity(root).read(saved.id).status, 'paused');
+		assert.equal(journal.active.get(thread).steering[0].state, 'cancelled');
+	});
+	check('failed late-result persistence retains unresolved work in memory and on disk', () => {
+		const thread = 'result-disk-full';
+		const saved = journal.begin(thread, 'Reconcile the uncertain operation', 'test');
+		journal.notify('item/started', { threadId: thread, item: { id: 'uncertain', type: 'commandExecution' } });
+		journal.pause(thread);
+		const before = fs.readFileSync(journal.file(saved.id), 'utf8');
+		const memory = JSON.stringify(journal.active.get(thread));
+		const rename = fs.renameSync;
+		fs.renameSync = () => { throw Object.assign(new Error('disk full'), { code: 'ENOSPC' }); };
+		const result = { threadId: thread, item: { id: 'uncertain', type: 'commandExecution', exitCode: 0 } };
+		try { assert.throws(() => journal.notify('item/completed', result), /disk full/); }
+		finally { fs.renameSync = rename; }
+		assert.equal(fs.readFileSync(journal.file(saved.id), 'utf8'), before);
+		assert.equal(JSON.stringify(journal.active.get(thread)), memory);
+		journal.notify('item/completed', result);
+		assert.deepEqual(new TaskContinuity(root).read(saved.id).pending, []);
+		assert.equal(journal.active.get(thread).status, 'paused');
+	});
 	check("other threads cannot change this task", () => {
 		const before = fs.readFileSync(journal.file(task.id), "utf8");
 		journal.notify("error", { threadId: "someone-else" });

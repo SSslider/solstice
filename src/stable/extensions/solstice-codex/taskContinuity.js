@@ -72,8 +72,9 @@ class TaskContinuity {
 		} catch { return null; }
 	}
 	notify(method, params = {}) {
-		const task = this.active.get(params.threadId);
-		if (!task) return;
+		const current = this.active.get(params.threadId);
+		if (!current) return;
+		const task = { ...current, pending: [...current.pending], events: [...current.events] };
 		const item = params.item || {};
 		if (method === "turn/plan/updated") {
 			task.plan = (Array.isArray(params.plan) ? params.plan : []).slice(0, 100)
@@ -94,9 +95,10 @@ class TaskContinuity {
 			// these can contain credentials. Retain outcome and file hashes.
 			this.event(task, method, { itemId: id, tool: item.type, status: clip(item.status, 80), exitCode: Number.isInteger(item.exitCode) ? item.exitCode : null });
 		} else if (method === "turn/engineFailed" || method === "error") {
-			task.status = "interrupted";
+			// A late transport failure cannot undo an explicit user stop.
+			if (task.status !== "paused") task.status = "interrupted";
 			task.failure = "Provider failed; inspect the engine log before continuing.";
-			this.event(task, "interrupted");
+			this.event(task, task.status === "paused" ? "provider-error-after-stop" : "interrupted");
 		} else if (method === "turn/completed") {
 			const status = params.turn && params.turn.status;
 			if (task.status === "paused") return;
@@ -105,13 +107,16 @@ class TaskContinuity {
 			this.event(task, "turn-ended", { status: task.status });
 		} else return;
 		this.save(task);
+		this.active.set(params.threadId, task);
 	}
 	pause(threadId) {
-		for (const [tid, task] of this.active) if (!threadId || tid === threadId) {
+		for (const [tid, current] of this.active) if (!threadId || tid === threadId) {
+			const task = { ...current, events: [...current.events], steering: (current.steering || []).map(x => ({ ...x })) };
 			task.status = "paused";
 			for (const update of task.steering || []) if (update.state === "queued") update.state = "cancelled";
 			this.event(task, "user-stop");
 			this.save(task);
+			this.active.set(tid, task);
 		}
 	}
 	queueSteering(threadId, text, state = "queued") {
