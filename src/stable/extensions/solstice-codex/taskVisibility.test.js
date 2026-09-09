@@ -69,6 +69,33 @@ async function check(name, fn) { await fn(); count++; console.log("ok - " + name
   fs.writeFileSync(journal.file(task.id),JSON.stringify(before));
   assert.equal(c.companionTaskState().plan[0].step,"New plan with identical timestamp");
  });
+ await check("snapshot caps a durable 5000-character objective at exactly 500",()=>{
+  const limits = new TaskContinuity(root), long = "א".repeat(5000);
+  const saved = limits.begin("objective-cap",long,"test");
+  const reopened = new TaskContinuity(root);
+  assert.equal(reopened.read(saved.id).objective,long);
+  assert.equal(taskSnapshot(reopened,saved.id).objective,long.slice(0,500));
+  for (const size of [499,500,501]) {
+   const boundary = limits.begin("objective-"+size,"ב".repeat(size),"test");
+   assert.equal(taskSnapshot(reopened,boundary.id).objective,"ב".repeat(Math.min(size,500)));
+  }
+ });
+ await check("snapshot retains the latest 12 of 40 durable events in order",()=>{
+  const limits = new TaskContinuity(root), saved = limits.begin("event-cap","Events","test");
+  for (let i=0;i<39;i++) limits.notify("item/completed",{threadId:"event-cap",
+   item:{id:"event-"+i,type:"commandExecution",status:"completed",exitCode:i}});
+  const reopened = new TaskContinuity(root), disk = reopened.read(saved.id);
+  assert.equal(disk.events.length,40);
+  const before = fs.readFileSync(limits.file(saved.id),"utf8");
+  const snapshot = taskSnapshot(reopened,saved.id);
+  assert.equal(snapshot.events.length,12);
+  assert.deepEqual(snapshot.events.map(e=>e.exitCode),Array.from({length:12},(_,i)=>i+27));
+  assert.equal(fs.readFileSync(limits.file(saved.id),"utf8"),before);
+  disk.events.push(...Array.from({length:15},()=>({at:"now",type:"heartbeat"})));
+  limits.save(disk);
+  assert.deepEqual(taskSnapshot(reopened,saved.id).events,snapshot.events);
+  assert.equal(reopened.read(saved.id).events.length,55);
+ });
  await check("corrupt journal fails visibly, clears cached evidence and returns failed ACK",async()=>{
   fs.writeFileSync(journal.file(task.id),"broken");
   assert.match(c.companionTaskState().error,/evidence unavailable/);
