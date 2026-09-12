@@ -11,7 +11,7 @@ const engine = fs.readFileSync(path.join(dir, "references", "scrub-engine.js"), 
 
 assert.match(skill, /^---\nname: scroll-world-gpt-image\n/);
 assert.match(skill, /tags: .*scroll-scrub.*gpt-image-2/);
-assert.match(skill, /version: 1/);
+assert.match(skill, /version: 2/);
 assert.match(skill, /agent \+ GPT-Image-2 through `webtools\/image-bridge\.js` only/);
 assert.match(skill, /X-Field\/Higgsfield, Seedance or Kling are video-only/);
 assert.match(skill, /always stop at Thomas's approval card/);

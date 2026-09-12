@@ -1,7 +1,8 @@
 ---
 name: scroll-world-gpt-image
 tags: animation, scroll-scrub, scrollytelling, gpt-image-2, cinematic, video
-version: 1
+description: Build an explicitly requested ScrollWorld with continuous image-based camera motion and optional explorable places.
+version: 2
 provenance: adapted-from:github.com/oso95/scroll-world@2912048
 verified: true
 requirements: ffmpeg; Solstice image bridge; X-Field only for approved video
@@ -48,7 +49,9 @@ The bridge must return `ok:true`, a session id, non-zero dimensions and the exac
 
 ### Free route — default
 
-Use the bundled `animated-assets.js` pipeline. It now calls the same image bridge, creates coherent keyframes, uses ffmpeg interpolation and writes a verified frame manifest plus a ready CanvasScrub scaffold.
+For an explorable world made from images, use `references/scrub-engine.js` directly. Give each chapter a `camera` path; use transparent `layers` only when you have real foreground assets. Add `hotspots` when the brief calls for entering a place. Interpolation alone does not add depth or interaction.
+
+For a frame-sequence brief, `animated-assets.js` produces an interpolated manifest and CanvasScrub scaffold. That scaffold is a separate route: it does not implement the hotspot API below.
 
 ### Premium video route — approval required
 
@@ -82,6 +85,35 @@ Read `references/pipeline.md` before asset work and use `references/scrub-engine
 - reduced-motion stills and full CTA/content parity;
 - local media URLs, never provider hotlinks when a local copy is practical.
 
+### Image-world contract
+
+```js
+const world = mountScrollWorld(container, {
+  backLabel: 'חזרה למסע', detailLabel: 'בתוך העולם',
+  sections: [{
+    id: 'courtyard', label: 'החצר', still: '/world/courtyard.png',
+    camera: { from: { scale: 1.03, x: 0, y: 0 }, to: { scale: 1.22, x: 0, y: -2 }, focusX: 50, focusY: 50 },
+    // Optional full-frame transparent planes, back to front. 1 follows the camera;
+    // values above 1 travel faster. Compose mobile assets separately when needed.
+    layers: [{ src: '/world/foreground.png', srcMobile: '/world/foreground-mobile.png', depth: 1.5 }],
+    hotspots: [{ label: 'כניסה למרחץ', x: 40, y: 40, mobile: { x: 50, y: 28 },
+      still: '/world/bath.png', stillMobile: '/world/bath-mobile.png', zoom: 1.1,
+      title: 'מרחב לנשום', body: 'A real, related interior scene and useful detail.' }]
+  }]
+});
+// React/Next effect cleanup (also safe for Strict Mode remount):
+return () => world?.destroy();
+```
+
+Coordinates are percentages of the viewport. Place hotspots on the visible composition,
+with separate mobile coordinates; do not label a chapter-navigation button as an entry
+into a place. `camera` moves the still; give translated planes enough scale/overscan to
+cover the viewport at both endpoints. Full-frame transparent layers use the same crop
+as their background. A detail can use its own still, or focus the existing still; be
+honest about which was delivered. The native detail dialog supports Escape and a visible
+return button, restores the original scroll position and focus, and suppresses camera
+animation in reduced motion. Keep detail copy usable on small screens.
+
 ## 6. Acceptance gate
 
 Before reporting completion:
@@ -90,7 +122,7 @@ Before reporting completion:
 2. Capture desktop at 0/25/50/75/100% scroll and a full mobile pass.
 3. Confirm visible chapter changes, no blank/stuck frame, no copy overlap and no console errors.
 4. Validate every raster with the image bridge and every frame/video manifest against files on disk.
-5. Verify reduced motion keeps the complete story usable.
+5. Verify reduced motion keeps the complete story usable. Exercise every hotspot with click and keyboard; return through the button and Escape, and check exact scroll/focus restoration. Capture entry and return on mobile. Mount → destroy → remount must leave one world and no old animation loops.
 6. Record route provenance: `agent+gpt-image-2` for stills; `approved-premium-clip` only when the Thomas approval artifact exists.
 
 ## Hard boundaries

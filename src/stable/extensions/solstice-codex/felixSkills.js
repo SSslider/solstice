@@ -313,6 +313,23 @@ class FelixSkills {
 			return copied;
 		};
 		if (this._validPortableSeed(targetSkill, name)) {
+			// Upgrade only the byte-identical previous shipped bundle. Custom edits
+			// stay visible in diagnostics and require the existing explicit Repair.
+			if (name === "scroll-world-gpt-image") {
+				let previous = null;
+				try { previous = JSON.parse(fs.readFileSync(path.join(source, "upgrade-from.json"), "utf8")); } catch { }
+				if (previous && previous.files && Object.keys(previous.files).length) {
+					try {
+						const inventory = new Map(portableInventory(target).map(item => [item.path, item.sha256]));
+						if ([...inventory.keys()].every(file => Object.hasOwn(previous.files, file)) &&
+							Object.entries(previous.files).every(([file, hash]) => inventory.get(file) === hash)) {
+							return this.repairScrollWorld(extensionPath);
+						}
+					} catch (error) {
+						return { name, status: "failed", error: error.message, target };
+					}
+				}
+			}
 			try {
 				const copied = copy(source, target, true);
 				if (copied) {

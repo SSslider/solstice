@@ -64,6 +64,12 @@
    ========================================================================== */
 
 function mountScrollWorld(container, config) {
+  let destroyed = false, frameId = 0, readFrameId = 0;
+  const listeners = [], objectURLs = [];
+  const listen = (target, event, handler, options) => {
+    target.addEventListener(event, handler, options);
+    listeners.push(() => target.removeEventListener(event, handler, options));
+  };
   const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   // Phone detection. `coarse` is captured once (input type doesn't change mid-session);
   // the ≤860px query is read live via isMobile() so a desktop resize/DevTools toggle
@@ -71,7 +77,8 @@ function mountScrollWorld(container, config) {
   const coarse = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
   const smallMQ = window.matchMedia('(max-width: 860px)');
   const isMobile = () => coarse || smallMQ.matches;
-  const SECTIONS = config.sections || [];
+  // Keep callers' configuration reusable across React mount / cleanup / remount.
+  const SECTIONS = (config.sections || []).map(section => ({ ...section }));
   const CONNECTORS = config.connectors || [];
   const CONNECTORS_M = config.connectorsMobile || [];
   const DIVE_W = config.diveScroll || 1.3;
@@ -87,7 +94,7 @@ function mountScrollWorld(container, config) {
   const SEGMENTS = [];
   SECTIONS.forEach((s, i) => {
     const dive = { kind: 'dive', si: i, clip: s.clip, clipM: s.clipMobile, still: s.still, stillM: s.stillMobile,
-                   accent: s.accent, w: s.scroll || DIVE_W, linger: s.linger || 0 };
+                   camera: s.camera, layers: s.layers || [], accent: s.accent, w: s.scroll || DIVE_W, linger: s.linger || 0 };
     SEGMENTS.push(dive);
     s._seg = dive;
     // A connector is optional: if connectors[i] is falsy, the two dives simply
@@ -142,6 +149,12 @@ function mountScrollWorld(container, config) {
     const poster = (isMobile() && s.stillM) ? s.stillM : s.still;
     if (poster) img.src = poster;
     scene.appendChild(img); stage.appendChild(scene);
+    s.layerNodes = s.kind === 'dive' ? s.layers.map(layer => {
+      const node = el('img', 'sw-scene__layer'); node.alt = ''; node.decoding = 'async';
+      node.src = (isMobile() && layer.srcMobile) || layer.src;
+      scene.appendChild(node);
+      return { node, depth: Number.isFinite(layer.depth) ? Math.max(0, Math.min(2, layer.depth)) : 1 };
+    }) : [];
     s.el = scene; s.img = img; s.video = null; s.hasClip = false;
     s.loading = false; s.ready = false; s.cur = 0; s.target = 0; s.visible = false;
   });
@@ -167,6 +180,56 @@ function mountScrollWorld(container, config) {
       const b = el('button', 'sw-nav__item'); b.textContent = s.label || '';
       b.addEventListener('click', () => jumpTo(i)); nav.appendChild(b);
     }
+  });
+
+  // Native dialog supplies focus containment and makes the background inert.
+  // A branch is a full-viewport place inside a scene, with a return to the exact
+  // scroll position. All labels/copy use textContent; the detail is not HTML.
+  const hotspots = el('div', 'sw-hotspots');
+  const detail = el('dialog', 'sw-detail');
+  detail.setAttribute('aria-label', config.detailLabel || 'Explore this place');
+  const detailImage = el('img', 'sw-detail__image'); detailImage.alt = '';
+  const detailCopy = el('article', 'sw-detail__copy');
+  const detailTitle = el('h2'); const detailBody = el('p');
+  const back = el('button', 'sw-detail__back'); back.type = 'button';
+  back.textContent = config.backLabel || 'Back to the journey';
+  detailCopy.append(detailTitle, detailBody, back); detail.append(detailImage, detailCopy);
+  container.append(hotspots, detail);
+  const hotspotGroups = [];
+  let returnY = 0, returnFocus = null, savedOverflow = '';
+  function closeDetail() { if (detail.open) detail.close(); }
+  listen(detail, 'close', () => {
+    document.body.style.overflow = savedOverflow;
+    window.scrollTo({ top: returnY, behavior: 'instant' });
+    if (returnFocus && returnFocus.isConnected) returnFocus.focus({ preventScroll: true });
+  });
+  listen(back, 'click', closeDetail);
+  SECTIONS.forEach((section, si) => {
+    const group = el('div', 'sw-hotspots__group'); group.hidden = true;
+    (section.hotspots || []).forEach(spot => {
+      const button = el('button', 'sw-hotspot'); button.type = 'button';
+      button.textContent = spot.label || section.label || 'Explore';
+      button.setAttribute('aria-haspopup', 'dialog');
+      const position = isMobile() && spot.mobile ? spot.mobile : spot;
+      button.style.left = finite(position.x, 50, 8, 92) + '%';
+      button.style.top = finite(position.y, 40, 15, 80) + '%';
+      button.addEventListener('click', () => {
+        if (destroyed || detail.open) return;
+        returnY = window.scrollY; returnFocus = button;
+        savedOverflow = document.body.style.overflow;
+        detailImage.src = (isMobile() && spot.stillMobile) || spot.still ||
+          (isMobile() && section.stillMobile) || section.still;
+        detailImage.style.transformOrigin = `${finite(position.x, 50, 0, 100)}% ${finite(position.y, 50, 0, 100)}%`;
+        detailImage.style.setProperty('--sw-detail-zoom', finite(spot.zoom, 1.65, 1, 3));
+        detailTitle.textContent = spot.title || spot.label || '';
+        detailBody.textContent = spot.body || '';
+        detail.showModal();
+        document.body.style.overflow = 'hidden';
+        back.focus({ preventScroll: true });
+      });
+      group.append(button);
+    });
+    hotspotGroups.push(group); hotspots.append(group);
   });
 
   // ---- math ----
@@ -198,28 +261,30 @@ function mountScrollWorld(container, config) {
   function loadClip(s) {
     // Under prefers-reduced-motion we never load the clips at all — the stills stay up
     // and simply cross-dissolve as you scroll. No scrubbed video motion, no decode cost.
-    if (reduce || s.loading || !s.clip) return;
+    if (destroyed || reduce || s.loading || !s.clip) return;
     s.loading = true;
     // Serve the lighter mobile encode on phones when one was provided.
     const url = (isMobile() && s.clipM) ? s.clipM : s.clip;
     fetch(url).then(r => r.ok ? r.blob() : Promise.reject(new Error('404')))
       .then(blob => {
+        if (destroyed) return;
         const v = document.createElement('video');
         v.className = 'sw-scene__video';
         v.muted = true; v.playsInline = true; v.preload = 'auto';
         v.setAttribute('muted', ''); v.setAttribute('playsinline', '');
-        v.src = URL.createObjectURL(blob);
-        v.addEventListener('loadedmetadata', () => { s.ready = true; read(); });
+        v.src = URL.createObjectURL(blob); objectURLs.push(v.src);
+        listen(v, 'loadedmetadata', () => { s.ready = true; read(); });
         // Reveal the video (hide the still poster) only once a real frame has
         // painted — on iOS a seeked-but-never-played muted video stays blank, so
         // hiding the still on metadata alone would flash an empty scene.
-        v.addEventListener('seeked', () => { s.el.classList.add('has-clip'); }, { once: true });
-        v.addEventListener('loadeddata', () => { try { v.pause(); } catch (e) {} if (userReady) primeVideo(v); });
+        listen(v, 'seeked', () => { s.el.classList.add('has-clip'); }, { once: true });
+        listen(v, 'loadeddata', () => { try { v.pause(); } catch (e) {} if (userReady) primeVideo(v); });
         s.el.appendChild(v); s.video = v; s.hasClip = true;
       }).catch(() => { s.loading = false; });
   }
 
   function read() {
+    if (destroyed) return;
     const y = window.scrollY || window.pageYOffset;
     const fade = CROSSFADE * vh;
     let ci = 0;
@@ -236,8 +301,17 @@ function mountScrollWorld(container, config) {
       s.el.style.opacity = op; s.visible = op > 0.001;
       s.el.style.zIndex = (i === ci) ? '120' : String(100 + Math.round(op * 10));
       if (!s.hasClip || !s.ready) {
-        const sc = reduce ? 1 : 1.03 + local * 0.14;
-        s.img.style.transform = `translateX(${stageX - 2}vw) scale(${sc.toFixed(3)})`;
+        const camera = s.camera || {};
+        const from = camera.from || { scale: 1.03 }, to = camera.to || { scale: 1.17 };
+        const progress = reduce ? 0 : s.target;
+        const mix = (a, b, fallback, min, max) => finite(a, fallback, min, max) * (1 - progress) + finite(b, fallback, min, max) * progress;
+        const x = mix(from.x, to.x, 0, -20, 20), yy = mix(from.y, to.y, 0, -20, 20);
+        const sc = reduce ? 1 : mix(from.scale, to.scale, 1.12, 1, 3);
+        s.img.style.transform = `translate(${x}%, ${yy}%) scale(${sc})`;
+        s.img.style.transformOrigin = `${finite(camera.focusX, 50, 0, 100)}% ${finite(camera.focusY, 50, 0, 100)}%`;
+        s.layerNodes.forEach(({ node, depth }) => {
+          node.style.transform = reduce ? 'none' : `translate(${x * depth}%, ${yy * depth}%) scale(${1 + (sc - 1) * depth})`;
+        });
       }
     }
 
@@ -251,6 +325,8 @@ function mountScrollWorld(container, config) {
       else cop = (before || after) ? 0 : smooth(1 - Math.abs(pr - 0.5) / 0.5);
       const c = copies[i];
       c.style.opacity = cop;
+      c.inert = cop <= 0.5;
+      c.setAttribute('aria-hidden', String(cop <= 0.5));
       c.style.transform = reduce ? 'none' : `translateY(${(0.5 - pr) * 4}vh)`;
       c.style.pointerEvents = cop > 0.5 ? 'auto' : 'none';
     }
@@ -260,6 +336,7 @@ function mountScrollWorld(container, config) {
       : (((y - cur.start) / (cur.end - cur.start)) > 0.5 ? cur.si + 1 : cur.si), 0, N - 1);
     if (near !== activeIndex) {
       activeIndex = near;
+      hotspotGroups.forEach((group, k) => { group.hidden = k !== near; });
       dots.forEach((d, k) => d.classList.toggle('is-active', k === near));
       nav.querySelectorAll('.sw-nav__item').forEach((n, k) => n.classList.toggle('is-active', k === near));
       container.style.setProperty('--sw-accent', SECTIONS[near].accent || '');
@@ -271,6 +348,7 @@ function mountScrollWorld(container, config) {
   }
 
   function raf() {
+    if (destroyed) return;
     const eps = isMobile() ? 0.02 : 0.008;   // coarser seek step on phones = fewer decodes
     for (let i = 0; i < NSEG; i++) {
       const s = SEGMENTS[i];
@@ -285,7 +363,7 @@ function mountScrollWorld(container, config) {
       const t = clamp(s.cur, 0, 0.999) * dur;
       if (Math.abs(s.video.currentTime - t) > eps) { try { s.video.currentTime = t; } catch (e) {} }
     }
-    requestAnimationFrame(raf);
+    frameId = requestAnimationFrame(raf);
   }
 
   // iOS needs a user gesture before a muted video will decode/paint reliably. On the
@@ -303,12 +381,12 @@ function mountScrollWorld(container, config) {
     userReady = true;
     SEGMENTS.forEach(s => primeVideo(s.video));
   }
-  window.addEventListener('pointerdown', onFirstGesture, { once: true, passive: true });
-  window.addEventListener('touchstart', onFirstGesture, { once: true, passive: true });
+  listen(window, 'pointerdown', onFirstGesture, { once: true, passive: true });
+  listen(window, 'touchstart', onFirstGesture, { once: true, passive: true });
 
   // Particles are a per-frame cost we can't afford alongside video scrubbing on a phone.
   seedParticles(particles, reduce || coarse);
-  window.addEventListener('scroll', () => { if (!ticking) { ticking = true; requestAnimationFrame(read); } }, { passive: true });
+  listen(window, 'scroll', () => { if (!ticking) { ticking = true; readFrameId = requestAnimationFrame(read); } }, { passive: true });
   // Mobile browsers fire `resize` every time the URL bar slides in/out. Re-running
   // layout() there rebuilds the track height and yanks the scroll position, so on
   // touch we ignore height-only changes and only relayout when the width actually
@@ -318,13 +396,32 @@ function mountScrollWorld(container, config) {
     if (coarse && window.innerWidth === laidOutW) return;
     layout();
   }
-  window.addEventListener('resize', onResize);
-  window.addEventListener('orientationchange', layout);
-  window.addEventListener('load', layout);
+  listen(window, 'resize', onResize);
+  listen(window, 'orientationchange', layout);
+  listen(window, 'load', layout);
   layout();
-  requestAnimationFrame(raf);
+  frameId = requestAnimationFrame(raf);
+
+  return { destroy() {
+    if (destroyed) return;
+    if (detail.open) {
+      detail.close();
+      document.body.style.overflow = savedOverflow;
+      window.scrollTo({ top: returnY, behavior: 'instant' });
+    }
+    destroyed = true;
+    cancelAnimationFrame(frameId); cancelAnimationFrame(readFrameId);
+    listeners.forEach(remove => remove());
+    SEGMENTS.forEach(segment => {
+      if (segment.video) { segment.video.pause(); segment.video.removeAttribute('src'); segment.video.load(); }
+    });
+    objectURLs.forEach(url => URL.revokeObjectURL(url));
+    [sky, scrollbar, topbar, stage, copylayer, route, hint, track, hotspots, detail].forEach(node => node.remove());
+    container.classList.remove('sw-root');
+  } };
 
   // ---- helpers ----
+  function finite(value, fallback, min, max) { return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback; }
   function el(tag, cls) { const n = document.createElement(tag); if (cls) n.className = cls; return n; }
   function pad(n) { return String(n).padStart(2, '0'); }
   function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
@@ -383,6 +480,7 @@ function injectCSS() {
   .sw-stage{position:fixed;inset:0;z-index:10;pointer-events:none;}
   .sw-scene{position:absolute;inset:0;opacity:0;overflow:hidden;will-change:opacity;}
   .sw-scene__video,.sw-scene__still{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center 42%;}
+  .sw-scene__layer{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none;will-change:transform;}
   .sw-scene__still{will-change:transform;} .sw-scene.has-clip .sw-scene__still{opacity:0;} .sw-scene__video{z-index:1;}
   .sw-copylayer{position:fixed;inset:0;z-index:20;pointer-events:none;}
   .sw-copylayer::before{content:"";position:absolute;inset:0;width:min(58vw,780px);background:linear-gradient(90deg,var(--sw-bg) 0%,color-mix(in srgb,var(--sw-bg) 82%,transparent) 34%,color-mix(in srgb,var(--sw-bg) 40%,transparent) 62%,transparent 100%);}
@@ -410,6 +508,22 @@ function injectCSS() {
   .sw-hint i::after{content:"";position:absolute;left:50%;top:7px;width:4px;height:7px;border-radius:2px;background:var(--sw-accent);transform:translateX(-50%);animation:sw-wheel 1.7s ease-in-out infinite;}
   @keyframes sw-wheel{0%{opacity:0;top:6px}40%{opacity:1}100%{opacity:0;top:17px}}
   .sw-track{position:relative;z-index:1;width:100%;pointer-events:none;}
+  .sw-hotspots{position:fixed;inset:0;z-index:35;pointer-events:none;}
+  .sw-hotspot{position:absolute;transform:translate(-50%,-50%);min-height:44px;max-width:70vw;padding:12px 20px;border:1px solid #ffffff88;border-radius:999px;background:#172322cc;color:#fff;font:inherit;cursor:pointer;pointer-events:auto;backdrop-filter:blur(12px);}
+  .sw-hotspot::before{content:'+';margin-inline-end:10px;font-size:1.2em;}
+  .sw-hotspot:focus-visible,.sw-detail__back:focus-visible{outline:3px solid var(--sw-accent);outline-offset:4px;}
+  .sw-detail{position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;border:0;margin:0;padding:0;background:#10201d;color:#fff;overflow:auto;}
+  .sw-detail::backdrop{background:#10201d;}
+  .sw-detail__image{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scale(var(--sw-detail-zoom,1.65));}
+  .sw-detail[open] .sw-detail__image{animation:sw-enter .65s ease-out;}
+  @keyframes sw-enter{from{transform:scale(1)}to{transform:scale(var(--sw-detail-zoom,1.65))}}
+  .sw-detail__copy{position:relative;box-sizing:border-box;min-height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-start;padding:clamp(24px,6vw,90px);background:linear-gradient(0deg,#091510ed,transparent 85%);font-family:var(--sw-font-body);}
+  .sw-detail__copy h2{font-size:clamp(2.4rem,6vw,5rem);line-height:1.1;max-width:14ch;margin:0 0 20px;}
+  .sw-detail__copy p{font-size:1.1rem;line-height:1.7;max-width:44ch;}
+  .sw-detail__back{min-height:48px;padding:12px 24px;margin-top:20px;font:inherit;border:1px solid #ffffff88;border-radius:999px;color:#fff;background:#10201dcc;cursor:pointer;}
+  [dir=rtl] .sw-copy{left:auto;right:clamp(18px,5vw,64px);}
+  [dir=rtl] .sw-copylayer::before{margin-left:auto;transform:scaleX(-1);}
+  [dir=rtl] .sw-route{right:auto;left:12px;}
   @media (max-width:860px){
     .sw-nav{display:none;}
     .sw-copylayer::before{width:100%;height:60%;top:auto;bottom:0;background:linear-gradient(0deg,var(--sw-bg) 8%,color-mix(in srgb,var(--sw-bg) 70%,transparent) 46%,transparent 100%);}
@@ -433,7 +547,7 @@ function injectCSS() {
     .sw-route__dot{width:28px;height:28px;}
     .sw-btn{padding:15px 26px;}
   }
-  @media (prefers-reduced-motion:reduce){ .sw-hint i::after{animation:none;} .sw-pt{display:none;} }
+  @media (prefers-reduced-motion:reduce){ .sw-detail__image{animation:none!important;transform:none!important;} .sw-hint i::after{animation:none;} .sw-pt{display:none;} }
   `;
   // Wrap in a cascade layer so the page's own theme tokens (unlayered
   // :root / .sw-root { --sw-bg / --sw-ink / --sw-accent … }) always win over
