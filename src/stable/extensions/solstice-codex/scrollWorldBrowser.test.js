@@ -97,6 +97,59 @@ function check(value, label) { assert.ok(value, label); checks++; }
     await page.waitForTimeout(80);
     check(await page.evaluate(() => createdURLs === 0 && !document.querySelector('video')), 'late fetch after unmount cannot create a media URL or revive a scene');
     await page.close();
+    const resources = await browser.newPage({ reducedMotion: 'no-preference' });
+    await resources.setContent('<div id="world"></div>');
+    await resources.addScriptTag({ path: engine });
+    await resources.evaluate(() => {
+      window.created = []; window.revoked = [];
+      const create = URL.createObjectURL.bind(URL), revoke = URL.revokeObjectURL.bind(URL);
+      URL.createObjectURL = blob => { const url = create(blob); created.push(url); return url; };
+      URL.revokeObjectURL = url => { revoked.push(url); revoke(url); };
+      // Real browser blob URLs; decoding is irrelevant to URL ownership.
+      window.fetch = async () => ({ ok: true, blob: async () => new Blob(['media fixture']) });
+    });
+    for (let cycle = 0; cycle < 3; cycle++) {
+      await resources.evaluate(() => {
+        window.world = mountScrollWorld(document.getElementById('world'), { sections: [
+          { label: 'first', clip: '/first.mp4' }, { label: 'second', clip: '/second.mp4' }
+        ] });
+      });
+      await resources.waitForFunction(n => created.length === n && document.querySelectorAll('video').length === 2, (cycle + 1) * 2);
+      const urls = await resources.evaluate(() => {
+        const before = revoked.slice(); world.destroy(); world.destroy();
+        return { created, revoked, before };
+      });
+      check(urls.before.length === cycle * 2 && new Set(urls.created).size === (cycle + 1) * 2,
+        'blob cleanup: distinct owned URLs exist before teardown, cycle ' + cycle);
+      check(JSON.stringify([...urls.created].sort()) === JSON.stringify([...urls.revoked].sort()),
+        'blob cleanup: destroy revokes every owned URL exactly once, cycle ' + cycle);
+    }
+    await resources.close();
+
+    const frames = await browser.newPage();
+    await frames.setContent('<div id="world"></div>');
+    await frames.addScriptTag({ path: engine });
+    const cleanup = await frames.evaluate(() => {
+      const pending = new Set(), cancelled = [];
+      const request = requestAnimationFrame.bind(window), cancel = cancelAnimationFrame.bind(window);
+      window.requestAnimationFrame = cb => {
+        const id = request(t => { pending.delete(id); cb(t); }); pending.add(id); return id;
+      };
+      window.cancelAnimationFrame = id => { cancelled.push(id); pending.delete(id); cancel(id); };
+      const world = mountScrollWorld(document.getElementById('world'), { sections: [{ label: 'frames' }] });
+      const render = [...pending];
+      // Queue the scroll reader and destroy in this same JS task: neither native RAF can fire first.
+      dispatchEvent(new Event('scroll'));
+      const both = [...pending]; world.destroy(); world.destroy();
+      const after = [...pending]; dispatchEvent(new Event('scroll'));
+      return { render, both, cancelled, after, afterScroll: [...pending] };
+    });
+    check(cleanup.render.length === 1 && cleanup.both.length === 2 && new Set(cleanup.both).size === 2,
+      'RAF cleanup: render and scroll-read requests are both pending before destroy');
+    check(cleanup.both.every(id => cleanup.cancelled.filter(value => value === id).length === 1) && cleanup.after.length === 0,
+      'RAF cleanup: destroy synchronously cancels both pending frame IDs exactly once');
+    check(cleanup.afterScroll.length === 0, 'RAF cleanup: scroll after destroy cannot queue another read');
+    await frames.close();
     console.log(`scrollWorldBrowser.test.js: ${checks}/${checks} browser checks passed`);
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
