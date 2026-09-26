@@ -19,3 +19,6 @@ stores/snapcraft/insider/*.snap
 stores/snapcraft/stable/*.snap
 font-size/node_modules/
 font-size/generate-css.js
+
+# local codex binaries bundled at build time (347MB, never committed)
+src/stable/extensions/solstice-codex/bin/
