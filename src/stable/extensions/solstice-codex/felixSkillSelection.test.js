@@ -49,6 +49,8 @@ function ok(value, message) { checks++; assert.ok(value, message); }
 			if (expectedVertical) ok(names.length === 1 && names[0] === expectedVertical, `bilingual threshold selects only ${expectedVertical}: ${brief}`);
 			else ok(selected.length === 0, `generic subtle-motion brief stays below the relevance threshold: ${brief}`);
 		}
+        const focused = await skills.retrieve("Fix this existing local business app: add a live Hebrew character counter below the details field. Do not call external services.",4);
+        ok(!focused.some(item=>item.meta.name.startsWith("vertical-")),"small application edit cannot select a renovation or other unconfirmed vertical");
 		const dentalPrompt = "בנה לי אתר לרופא שיניים";
 		const approvedDental = approvedSiteBuildPrompt({ prompt: dentalPrompt, brief: buildSiteBrief(dentalPrompt) });
 		const approvedDentalNames = (await skills.retrieve(approvedDental, 4)).map((item) => item.meta.name);

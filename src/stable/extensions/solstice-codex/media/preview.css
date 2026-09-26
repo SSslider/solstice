@@ -149,3 +149,5 @@ body{
 @keyframes pvsheen{0%{background-position:120% 0}100%{background-position:-120% 0}}
 .pvshimtxt{margin-top:14px;background:rgba(245,158,11,.92);color:#231400;font-weight:600;font-size:11px;padding:4px 11px;border-radius:20px;align-self:flex-start;position:relative;top:10px}
 .pv-none .pvshimtxt{top:14px}
+
+.pvdrawer[hidden]{display:none}

@@ -20,7 +20,8 @@
 // below-the-fold sections at opacity:0 in a single no-scroll capture.
 // videoframes exists for case-study videos (Behance/Dribbble embed Vimeo players that
 // 401 on direct download but play fine in-browser with the right referrer).
-const { execFileSync, spawn } = require("child_process");
+const { execFileSync } = require("child_process");
+const { spawnBrowser, waitForDevTools, detachBrowser } = require("./browserLaunch");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -71,21 +72,15 @@ async function scrollshot(bin, url, outPrefix, nStops, dims) {
 	}
 	const [w, h] = dims.split(",").map(Number);
 	const tmpProfile = fs.mkdtempSync(path.join(os.tmpdir(), "solstice-browse-"));
-	const chrome = spawn(bin, [
+	const chrome = spawnBrowser(bin, [
 		"--headless=new", "--disable-gpu", "--no-sandbox", "--mute-audio",
 		"--enable-unsafe-swiftshader", // software WebGL: without it three.js canvases render black in headless
 		"--hide-scrollbars", "--no-first-run", "--disable-extensions",
 		`--user-data-dir=${tmpProfile}`, `--window-size=${w},${h}`,
 		"--remote-debugging-port=0", "about:blank",
 	], { stdio: "ignore", windowsHide: true });
-	const portFile = path.join(tmpProfile, "DevToolsActivePort");
 	try {
-		let port = 0;
-		for (let i = 0; i < 100 && !port; i++) {
-			await new Promise(r => setTimeout(r, 100));
-			try { port = parseInt(fs.readFileSync(portFile, "utf8").split("\n")[0], 10) || 0; } catch { }
-		}
-		if (!port) throw new Error("Chrome DevTools port never appeared");
+		const port = await waitForDevTools(chrome, tmpProfile);
 		// Use the initial tab + Page.navigate: tabs opened via /json/new are backgrounded
 		// and Page.captureScreenshot hangs forever on a hidden target.
 		const tabs = await fetch(`http://127.0.0.1:${port}/json/list`).then(r => r.json());
@@ -142,19 +137,13 @@ async function recordWalkthrough(bin, url, outFile, seconds) {
 	fs.mkdirSync(path.dirname(output), { recursive: true });
 	const tmpProfile = fs.mkdtempSync(path.join(os.tmpdir(), "solstice-record-profile-"));
 	const framesDir = fs.mkdtempSync(path.join(os.tmpdir(), "solstice-record-frames-"));
-	const chrome = spawn(bin, [
+	const chrome = spawnBrowser(bin, [
 		"--headless=new", "--disable-gpu", "--no-sandbox", "--mute-audio",
 		"--enable-unsafe-swiftshader", "--hide-scrollbars", "--no-first-run", "--disable-extensions",
 		`--user-data-dir=${tmpProfile}`, "--window-size=1280,720", "--remote-debugging-port=0", "about:blank",
 	], { stdio: "ignore", windowsHide: true });
 	try {
-		const portFile = path.join(tmpProfile, "DevToolsActivePort");
-		let port = 0;
-		for (let i = 0; i < 100 && !port; i++) {
-			await sleep(100);
-			try { port = parseInt(fs.readFileSync(portFile, "utf8").split("\n")[0], 10) || 0; } catch { }
-		}
-		if (!port) throw new Error("Chrome DevTools port never appeared");
+		const port = await waitForDevTools(chrome, tmpProfile);
 		const tabs = await fetch(`http://127.0.0.1:${port}/json/list`).then((response) => response.json());
 		const tab = tabs.find((target) => target.type === "page");
 		if (!tab) throw new Error("no page target found");
@@ -220,7 +209,7 @@ async function videoframes(bin, url, outPrefix, nFrames, referrer) {
 		process.exit(4);
 	}
 	const tmpProfile = fs.mkdtempSync(path.join(os.tmpdir(), "solstice-browse-"));
-	const chrome = spawn(bin, [
+	const chrome = spawnBrowser(bin, [
 		"--headless=new", "--disable-gpu", "--no-sandbox", "--mute-audio",
 		"--enable-unsafe-swiftshader", // software WebGL: without it three.js canvases render black in headless
 		"--hide-scrollbars", "--no-first-run", "--disable-extensions",
@@ -228,14 +217,8 @@ async function videoframes(bin, url, outPrefix, nFrames, referrer) {
 		`--user-data-dir=${tmpProfile}`, "--window-size=1440,810",
 		"--remote-debugging-port=0", "about:blank",
 	], { stdio: "ignore", windowsHide: true });
-	const portFile = path.join(tmpProfile, "DevToolsActivePort");
 	try {
-		let port = 0;
-		for (let i = 0; i < 100 && !port; i++) {
-			await new Promise(r => setTimeout(r, 100));
-			try { port = parseInt(fs.readFileSync(portFile, "utf8").split("\n")[0], 10) || 0; } catch { }
-		}
-		if (!port) throw new Error("Chrome DevTools port never appeared");
+		const port = await waitForDevTools(chrome, tmpProfile);
 		const tabs = await fetch(`http://127.0.0.1:${port}/json/list`).then(r => r.json());
 		const tab = tabs.find(t => t.type === "page");
 		if (!tab) throw new Error("no page target found");
@@ -256,7 +239,11 @@ async function videoframes(bin, url, outPrefix, nFrames, referrer) {
 		await send("Page.enable");
 		await send("Runtime.enable");
 		await send("Page.navigate", referrer ? { url, referrer } : { url }, 30000);
-		const evalJs = async (expr) => (await send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true })).result.value;
+		const evalJs = async (expr) => {
+            const value = await send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true });
+            if (value.exceptionDetails) throw new Error(value.exceptionDetails.exception?.description || value.exceptionDetails.text || "Browser evaluation failed");
+            return value.result.value;
+        };
 		let duration = 0;
 		for (let i = 0; i < 60; i++) { // wait for a <video> with known duration (player JS + manifest load)
 			duration = await evalJs("(() => { const v = document.querySelector('video'); return v && isFinite(v.duration) ? v.duration : 0; })()");
@@ -322,7 +309,10 @@ async function showcase(bin, url, outDir, maxAssets) {
 			};
 			const domImages = [...document.images].map((img, index) => {
 				const r = img.getBoundingClientRect();
-				return {index, url: bestSrc(img), alt: img.alt || '', width: img.naturalWidth || 0,
+				// Dribbble now renders the shot's own media with an empty alt inside a
+				// content block, while recommendation cards carry descriptive alts.
+				const shotMedia = img.matches('[data-test="v-img"], .content-block') || !!img.closest('.shot-media-container, .media-content, .shot-page-container .content-block');
+				return {index, url: bestSrc(img), alt: img.alt || '', shotMedia, width: img.naturalWidth || 0,
 					height: img.naturalHeight || 0, renderedWidth: Math.round(r.width), renderedHeight: Math.round(r.height)};
 			}).filter(x => x.url && x.width >= 280 && x.height >= 180);
 			const videos = [...document.querySelectorAll('video')].map((v, index) => ({
@@ -365,7 +355,7 @@ async function showcase(bin, url, outDir, maxAssets) {
 			const isProjectAsset = /behance\.net$/i.test(sourceHost)
 				? /mir-s3-cdn-cf\.behance\.net\/project_modules\//i.test(asset.url)
 				: /dribbble\.com$/i.test(sourceHost)
-					? /cdn\.dribbble\.com\/(?:userupload|users\/\d+\/screenshots)\//i.test(asset.url) && (asset.source === "hydration" || !!String(asset.alt || "").trim())
+					? /cdn\.dribbble\.com\/(?:userupload|users\/\d+\/screenshots)\//i.test(asset.url) && (asset.source === "hydration" || asset.shotMedia || !!String(asset.alt || "").trim())
 					: asset.renderedWidth >= 700;
 			if (!isProjectAsset || (asset.source !== "hydration" && asset.renderedWidth < 600)) continue;
 			const clean = asset.url.replace(/([?&])resize=[^&]+/i, '$1').replace(/[?&]$/, '');
@@ -566,15 +556,16 @@ async function functionalCheck(bin, url, outDir) {
 			await send("Emulation.setDeviceMetricsOverride", { width, height, screenWidth: width, screenHeight: height, deviceScaleFactor: 1, mobile: false, scale: 1 });
 			await send("Emulation.setVisibleSize", { width, height });
 		};
+		const controlVisible = "(el)=>{if(el.closest('[inert],[hidden],[aria-hidden=\\\"true\\\"]'))return false;for(let n=el;n;n=n.parentElement){const s=getComputedStyle(n);if(s.display==='none'||s.visibility==='hidden'||Number(s.opacity)===0)return false;}const r=el.getBoundingClientRect();return r.width>2&&r.height>2;}";
 		const pageSnapshot = () => evalJs(`(() => {
-			const visible = (el) => { const s=getComputedStyle(el),r=el.getBoundingClientRect(); return s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity)!==0&&r.width>2&&r.height>2; };
+			const visible = ${controlVisible};
 			const controls=[...document.querySelectorAll('a[href],button,[role="button"],input[type="button"],input[type="submit"],summary')].filter(visible);
 			const forms=[...document.forms].filter(visible);
 			const images=[...document.images].filter(visible).map(img=>({src:String(img.currentSrc||img.src||'').slice(0,300),broken:img.complete&&img.naturalWidth===0}));
 			const parseRgb=(value)=>{const m=String(value||'').match(/rgba?\\(([^)]+)\\)/i);if(!m)return null;const p=m[1].split(',').map(Number);if(p.length<3||p.some((n,i)=>i<3&&!Number.isFinite(n)))return null;return {r:p[0],g:p[1],b:p[2],a:p.length>3&&Number.isFinite(p[3])?p[3]:1};};
 			const luminance=(c)=>{const f=(n)=>{n=n/255;return n<=.03928?n/12.92:Math.pow((n+.055)/1.055,2.4);};return .2126*f(c.r)+.7152*f(c.g)+.0722*f(c.b);};
 			const ratio=(a,b)=>{const x=luminance(a),y=luminance(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05);};
-			const solidBackground=(el)=>{for(let n=el;n&&n!==document.documentElement;n=n.parentElement){const s=getComputedStyle(n);if(s.backgroundImage&&s.backgroundImage!=='none')return null;const c=parseRgb(s.backgroundColor);if(c&&c.a>.92)return c;}return {r:255,g:255,b:255,a:1};};
+			const solidBackground=(el)=>{for(let n=el;n;n=n.parentElement){const s=getComputedStyle(n);if(s.backgroundImage&&s.backgroundImage!=='none')return null;const c=parseRgb(s.backgroundColor);if(c&&c.a>.92)return c;}return {r:255,g:255,b:255,a:1};};
 			const contrast=[...document.querySelectorAll('h1,h2,h3,h4,p,a,button,label,li,span')].filter((el)=>visible(el)&&String(el.innerText||el.textContent||'').trim().length>2).slice(0,240).map((el)=>{const s=getComputedStyle(el),fg=parseRgb(s.color),bg=solidBackground(el),size=parseFloat(s.fontSize)||16,weight=parseInt(s.fontWeight,10)||400;if(!fg||!bg)return null;const value=ratio(fg,bg),required=size>=24||(size>=18.66&&weight>=700)?3:4.5;return {text:String(el.innerText||el.textContent||'').trim().replace(/\\s+/g,' ').slice(0,80),foreground:s.color,background:'rgb('+bg.r+','+bg.g+','+bg.b+')',value:Number(value.toFixed(2)),required,failed:value+0.01<required};}).filter(Boolean);
 			const headings=[...document.querySelectorAll('h1,h2,h3,h4,h5,h6')].filter(visible).map((el)=>({level:Number(el.tagName.slice(1)),fontSize:Math.round(parseFloat(getComputedStyle(el).fontSize)||0),text:String(el.innerText||'').trim().slice(0,80)}));
 			const undersizedControls=controls.filter((el)=>{const r=el.getBoundingClientRect();return r.width<44||r.height<44;}).length;
@@ -584,21 +575,24 @@ async function functionalCheck(bin, url, outDir) {
 				clipped:controls.filter(el=>{const r=el.getBoundingClientRect();const p=el.parentElement&&getComputedStyle(el.parentElement);return (r.right>innerWidth+4||r.left<-4)&&!(p&&/(auto|scroll)/.test(p.overflowX));}).slice(0,12).map(el=>(el.innerText||el.value||el.getAttribute('aria-label')||el.tagName).trim().slice(0,80)),
 				images,forms:forms.length,
 				visual:{h1Count:headings.filter((h)=>h.level===1).length,headings,bodyFontPx:Math.round(parseFloat(getComputedStyle(document.body||document.documentElement).fontSize)||16),contrastSamples:contrast.length,contrastFailures:contrast.filter((item)=>item.failed).length,contrastFailureExamples:contrast.filter((item)=>item.failed).slice(0,8),controlCount:controls.length,undersizedControls,overflowPx:Math.max(0,Math.max(document.documentElement.scrollWidth,document.body?.scrollWidth||0)-innerWidth),clippedControls:controls.filter(el=>{const r=el.getBoundingClientRect();const p=el.parentElement&&getComputedStyle(el.parentElement);return (r.right>innerWidth+4||r.left<-4)&&!(p&&/(auto|scroll)/.test(p.overflowX));}).length,brokenImages:images.filter((item)=>item.broken).length},
-				controls:controls.slice(0,28).map((el,index)=>({index,tag:el.tagName.toLowerCase(),label:(el.innerText||el.value||el.getAttribute('aria-label')||el.title||'').trim().slice(0,100),href:el.href||'',type:el.type||'',disabled:!!el.disabled,form:!!el.form}))
+				controls:controls.slice(0,28).map((el,index)=>({index,tag:el.tagName.toLowerCase(),label:(el.innerText||el.value||el.getAttribute('aria-label')||el.title||'').trim().slice(0,100),href:el.href||'',type:el.type||'',disabled:!!el.disabled,current:!!el.getAttribute('aria-current')&&el.getAttribute('aria-current')!=='false',form:!!el.form}))
 			};
 		})()`);
 		const interactionState = () => evalJs(`(() => ({
 			url:location.href,hash:location.hash,scrollY:Math.round(scrollY),
+			dialogs:[...document.querySelectorAll('dialog[open],[role=\"dialog\"]')].filter(${controlVisible}).map(el=>el.id||el.getAttribute('aria-label')||el.outerHTML.slice(0,500)),
 			body:(document.body?.innerText||'').slice(0,30000),htmlSize:(document.body?.innerHTML||'').length,
 			aria:[...document.querySelectorAll('[aria-expanded],[aria-pressed],[aria-selected],dialog,[role="dialog"]')].map(el=>el.outerHTML.slice(0,500)).join('|')
 		}))()`);
 		const controlsNow = () => evalJs(`(() => {
-			const visible=(el)=>{const s=getComputedStyle(el),r=el.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity)!==0&&r.width>2&&r.height>2;};
-			return [...document.querySelectorAll('a[href],button,[role="button"],input[type="button"],input[type="submit"],summary')].filter(visible).slice(0,28).map((el,index)=>{const r=el.getBoundingClientRect();return {index,x:r.left+r.width/2,y:r.top+r.height/2,tag:el.tagName.toLowerCase(),label:(el.innerText||el.value||el.getAttribute('aria-label')||el.title||'').trim().slice(0,100),href:el.href||'',type:el.type||'',disabled:!!el.disabled,form:!!el.form};});
+			const visible=${controlVisible};
+			return [...document.querySelectorAll('a[href],button,[role="button"],input[type="button"],input[type="submit"],summary')].filter(visible).slice(0,28).map((el,index)=>{const r=el.getBoundingClientRect();return {index,x:r.left+r.width/2,y:r.top+r.height/2,tag:el.tagName.toLowerCase(),label:(el.innerText||el.value||el.getAttribute('aria-label')||el.title||'').trim().slice(0,100),href:el.href||'',type:el.type||'',disabled:!!el.disabled,current:!!el.getAttribute('aria-current')&&el.getAttribute('aria-current')!=='false',form:!!el.form};});
 		})()`);
-		const controlPoint = (index) => evalJs(`(async()=>{const visible=(el)=>{const s=getComputedStyle(el),r=el.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity)!==0&&r.width>2&&r.height>2;};const el=[...document.querySelectorAll('a[href],button,[role="button"],input[type="button"],input[type="submit"],summary')].filter(visible).slice(0,28)[${Number(index) || 0}];if(!el)return null;el.scrollIntoView({block:'center',inline:'center'});await new Promise(r=>setTimeout(r,100));const r=el.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
+		const controlPoint = (index) => evalJs(`(async()=>{const visible=${controlVisible};const el=[...document.querySelectorAll('a[href],button,[role="button"],input[type="button"],input[type="submit"],summary')].filter(visible).slice(0,28)[${Number(index) || 0}];if(!el)return null;const keyboard=el.getBoundingClientRect().bottom<=0;el.focus({preventScroll:true});el.scrollIntoView({block:'center',inline:'center'});await new Promise(r=>setTimeout(r,100));const r=el.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2,keyboard};})()`);
 		const clickAt = async (point) => {
-			for (const type of ["mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x: point.x, y: point.y, button: "left", clickCount: 1 });
+			if (point.keyboard) {
+				for (const type of ["keyDown", "keyUp"]) await send("Input.dispatchKeyEvent", { type, key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+			} else for (const type of ["mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x: point.x, y: point.y, button: "left", clickCount: 1 });
 			await sleep(850);
 		};
 		const returnHome = async () => { await setViewport(1440, 900); await goto(rootUrl, 350); };
@@ -624,12 +618,12 @@ async function functionalCheck(bin, url, outDir) {
 			linksChecked++;
 			const after = await interactionState();
 			const anchorReached = target.hash && (after.hash === target.hash || after.scrollY !== before.scrollY || await evalJs(`(()=>{const el=document.querySelector(${JSON.stringify(target.hash)});if(!el)return false;const r=el.getBoundingClientRect();return r.top<innerHeight&&r.bottom>0;})()`));
-			if (after.url === rootUrl && target.href !== rootUrl && target.hash !== "#" && !anchorReached) add("error", "navigation", `Navigation did not move: ${safeName(original.label || target.pathname)}`, { target: target.href });
+			if (after.url === rootUrl && target.href !== rootUrl && target.hash !== "#" && !anchorReached && JSON.stringify(before.dialogs) === JSON.stringify(after.dialogs)) add("error", "navigation", `Navigation did not move: ${safeName(original.label || target.pathname)}`, { target: target.href });
 			if (/\b(404|page not found|not found|העמוד לא נמצא)\b/i.test(after.body.slice(0,3000))) add("error", "404", `Navigation rendered a not-found page: ${target.pathname}`);
 		}
 
 		const destructive = /delete|remove|pay|purchase|buy|checkout|logout|sign out|מחק|הסר|שלם|רכוש|קנה|יציאה/i;
-		for (const original of testable.filter((item) => item.tag !== "a" && !item.form && !destructive.test(item.label)).slice(0, 8)) {
+		for (const original of testable.filter((item) => item.tag !== "a" && !item.form && !item.current && !destructive.test(item.label)).slice(0, 8)) {
 			await returnHome();
 			const controls = await controlsNow();
 			const point = controls[original.index] && await controlPoint(original.index);
@@ -707,6 +701,7 @@ async function functionalCheck(bin, url, outDir) {
 // opts.headed=true opens a REAL VISIBLE browser window (the "watch Felix browse"
 // mode) instead of headless; opts.keepOpen leaves that window open when done.
 async function withChrome(bin, fn, opts = {}) {
+	let socket;
 	if (typeof WebSocket !== "function") {
 		console.error("This mode needs Node >= 22 (global WebSocket).");
 		process.exit(4);
@@ -727,19 +722,13 @@ async function withChrome(bin, fn, opts = {}) {
 			`--user-data-dir=${tmpProfile}`, "--window-size=1440,900",
 			"--remote-debugging-port=0", "about:blank",
 		];
-	const chrome = spawn(bin, args, { stdio: "ignore", windowsHide: !headed });
-	const portFile = path.join(tmpProfile, "DevToolsActivePort");
+	const chrome = spawnBrowser(bin, args, { stdio: "ignore", windowsHide: !headed });
 	try {
-		let port = 0;
-		for (let i = 0; i < 100 && !port; i++) {
-			await sleep(100);
-			try { port = parseInt(fs.readFileSync(portFile, "utf8").split("\n")[0], 10) || 0; } catch { }
-		}
-		if (!port) throw new Error("Chrome DevTools port never appeared");
+		const port = await waitForDevTools(chrome, tmpProfile);
 		const tabs = await fetch(`http://127.0.0.1:${port}/json/list`).then((r) => r.json());
 		const tab = tabs.find((t) => t.type === "page");
 		if (!tab) throw new Error("no page target found");
-		const ws = new WebSocket(tab.webSocketDebuggerUrl);
+		const ws = new WebSocket(tab.webSocketDebuggerUrl); socket = ws;
 		await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error("CDP socket failed")); });
 		let seq = 0;
 		const pending = new Map();
@@ -758,7 +747,11 @@ async function withChrome(bin, fn, opts = {}) {
 		await send("Page.enable");
 		await send("Runtime.enable");
 		if (headed) await send("Page.bringToFront");
-		const evalJs = async (expr) => (await send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true })).result.value;
+		const evalJs = async (expr) => {
+            const value = await send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true });
+            if (value.exceptionDetails) throw new Error(value.exceptionDetails.exception?.description || value.exceptionDetails.text || "Browser evaluation failed");
+            return value.result.value;
+        };
 		const goto = async (u, settleMs = 800) => {
 			await send("Page.navigate", { url: u }, 30000);
 			if (headed) await send("Page.bringToFront");
@@ -767,10 +760,11 @@ async function withChrome(bin, fn, opts = {}) {
 		};
 		return await fn({ send, evalJs, goto, onEvent: (handler) => { eventHandlers.add(handler); return () => eventHandlers.delete(handler); } });
 	} finally {
+		if (socket) socket.close();
 		if (keepOpen) {
 			// leave the visible window for the user; the temp profile stays until
 			// the OS cleans the tmp dir — a fair price for "keep browsing yourself"
-			try { chrome.unref(); } catch { }
+			try { detachBrowser(chrome); } catch { }
 		} else {
 			try { chrome.kill(); } catch { }
 			try { fs.rmSync(tmpProfile, { recursive: true, force: true }); } catch { }
@@ -1139,4 +1133,5 @@ function main() {
 	}
 }
 
-main();
+if (require.main === module) main();
+module.exports = { withChrome, findBrowser };

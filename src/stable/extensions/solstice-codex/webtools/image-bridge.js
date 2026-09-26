@@ -179,7 +179,76 @@ function imageBridgeStatus({ extensionPath, configuredPath, env = process.env } 
 			message: "ScrollWorld image engine unavailable: Solstice cannot find the Codex/GPT-Image-2 bridge executable. Install or configure Codex, then run the request again.",
 		};
 	}
+	// The bundled codex needs its sibling `codex-code-mode-host` for the image
+	// tool. Without it the model turn runs, the tool fails to spawn, and the
+	// bridge only learns about it as MISSING_SESSION after a paid turn (18/09).
+	const hostMissing = missingCodeModeHost(bin);
+	if (hostMissing) {
+		return {
+			ok: false,
+			code: "SCROLLWORLD_ENGINE_INCOMPLETE",
+			message: `ScrollWorld image engine incomplete: ${hostMissing} is missing next to the bundled Codex binary — the image tool cannot start. Reinstall Solstice (the release bundle ships the full Codex runtime package) or point solstice.codex.path at a complete Codex install.`,
+		};
+	}
 	return { ok: true, bin };
+}
+
+// Only the bundled runtime (bin/codex inside the extension) is checked: a
+// system or npm codex resolves its host through its own package layout.
+function missingCodeModeHost(bin) {
+	const dir = path.dirname(bin);
+	const inExtensionBin = path.basename(dir) === "bin" && fs.existsSync(path.join(dir, "..", "webtools", "image-bridge.js"));
+	if (!inExtensionBin) return "";
+	const host = process.platform === "win32" ? "codex-code-mode-host.exe" : "codex-code-mode-host";
+	return fs.existsSync(path.join(dir, host)) ? "" : path.join(dir, host);
+}
+
+// The bridge is usually launched by Felix from inside a Codex shell tool. That
+// shell runs in Codex's own sandbox, where outbound network is disabled unless
+// the call was escalated. A nested `codex exec` started there cannot reach the
+// image model and only dies on the 12-minute timeout (seen 18/09: ETIMEDOUT
+// after 12:00 with zero generated assets). Fail in under five seconds instead,
+// with a message that tells the agent exactly how to rerun.
+const SANDBOX_HINT = "Solstice starts Felix's workspace sandbox with outbound network enabled (sandbox_workspace_write.network_access=true); this shell was not started that way. Do not retry in this shell and do not substitute placeholder images — report the exact error and stop.";
+function sandboxPreflight({ env = process.env, probe = defaultNetworkProbe, host = "chatgpt.com", port = 443, timeoutMs = 4000 } = {}) {
+	if (String(env.CODEX_SANDBOX_NETWORK_DISABLED || "") === "1") {
+		throw bridgeError("ScrollWorld image engine blocked: this shell runs inside the Codex sandbox with network disabled (CODEX_SANDBOX_NETWORK_DISABLED=1). " + SANDBOX_HINT, "SANDBOX_BLOCKED");
+	}
+	const reach = probe(host, port, timeoutMs);
+	if (!reach.ok) {
+		throw bridgeError(`ScrollWorld image engine unreachable: cannot open ${host}:${port} (${reach.error || "timeout"}) — the image model cannot be contacted from this shell. ` + SANDBOX_HINT, "NETWORK_UNREACHABLE");
+	}
+	return true;
+}
+
+// Synchronous TCP reachability probe (the bridge is synchronous end to end).
+function defaultNetworkProbe(host, port, timeoutMs) {
+	const script = `const s=require("net").connect({host:${JSON.stringify(host)},port:${port}});s.setTimeout(${timeoutMs});s.on("connect",()=>{s.destroy();process.exit(0)});s.on("timeout",()=>{s.destroy();console.error("timeout");process.exit(2)});s.on("error",(e)=>{console.error(e.code||e.message);process.exit(3)});`;
+	const result = spawnSync(process.execPath, ["-e", script], { encoding: "utf8", timeout: timeoutMs + 2000, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+	if (result.status === 0) return { ok: true };
+	return { ok: false, error: String(result.stderr || result.error || "").trim() || `exit ${result.status}` };
+}
+
+// Inside Codex's workspace-write sandbox only the workspace and the temp dir
+// are writable. The nested `codex exec` still has to initialise its home
+// (session files, PATH aliases, generated_images), so when the configured
+// CODEX_HOME is read-only from here we hand it a private writable home under
+// the temp dir carrying only the credentials it needs. Never inside the
+// workspace: a token must not end up in a project folder, a zip or a commit.
+function ensureWritableCodexHome(codexHome, { tmpdir = os.tmpdir(), copy = ["auth.json", "config.toml"] } = {}) {
+	const probe = path.join(codexHome, `.solstice-write-probe-${process.pid}`);
+	try {
+		fs.mkdirSync(codexHome, { recursive: true });
+		fs.writeFileSync(probe, "1"); fs.unlinkSync(probe);
+		return { home: codexHome, fallback: false };
+	} catch { /* read-only from this sandbox — fall through */ }
+	const home = path.join(tmpdir, "solstice-image-bridge", "codex-home");
+	fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+	for (const name of copy) {
+		const from = path.join(codexHome, name);
+		try { if (fs.existsSync(from)) fs.copyFileSync(from, path.join(home, name)); fs.chmodSync(path.join(home, name), 0o600); } catch { }
+	}
+	return { home, fallback: true, reason: `CODEX_HOME ${codexHome} is read-only from this shell` };
 }
 
 function generateImage(options) {
@@ -187,11 +256,14 @@ function generateImage(options) {
 	const prompt = String(options.prompt || "").trim();
 	if (!prompt) throw bridgeError("prompt is required", "BAD_PROMPT");
 	const extensionPath = options.extensionPath || path.resolve(__dirname, "..");
-	const codexHome = options.codexHome || process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+	const configuredHome = options.codexHome || process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+	const homeInfo = options.runCodex && !options.checkHome ? { home: configuredHome, fallback: false } : ensureWritableCodexHome(configuredHome, options.homeOptions);
+	const codexHome = homeInfo.home;
 	const generatedRoot = options.generatedRoot || path.join(codexHome, "generated_images");
 	const readiness = options.runCodex ? null : imageBridgeStatus({ extensionPath, configuredPath: options.codexBin, env: options.env || process.env });
 	if (readiness && !readiness.ok) throw bridgeError(readiness.message, readiness.code);
 	const bin = readiness ? readiness.bin : resolveBridgeCodex(extensionPath, options.codexBin, options.env || process.env);
+	if (!options.runCodex || options.preflight) sandboxPreflight({ env: options.env || process.env, probe: options.networkProbe || defaultNetworkProbe });
 	const contract = [
 		"Use the built-in image generation tool backed by GPT-Image-2.",
 		"Generate exactly ONE raster image for the specification below.",
@@ -201,7 +273,7 @@ function generateImage(options) {
 	].join("\n");
 	// Prompt travels on stdin: image briefs can be large and must not cross the
 	// Windows CreateProcess/cmd-shim argument limit.
-	const args = ["exec", "--skip-git-repo-check", "--full-auto", "--json", "-C", root, "-"];
+	const args = ["exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "-c", 'approval_policy="never"', "--json", "-C", root, "-"];
 	const run = options.runCodex || defaultCodexRun;
 	const startedAt = Date.now();
 	const result = run(bin, args, { cwd: root, env: { ...(options.env || {}), CODEX_HOME: codexHome }, timeoutMs: options.timeoutMs || DEFAULT_TIMEOUT_MS, input: contract });
@@ -226,7 +298,9 @@ function generateImage(options) {
 	if (!expected.has(outputExt)) throw bridgeError(`output extension ${outputExt || "(none)"} does not match generated ${info.format}`, "FORMAT_MISMATCH");
 	atomicCopy(assets[0], destination, Boolean(options.overwrite));
 	const delivered = validateRaster(destination);
-	return { ok: true, provider: "agent+gpt-image-2", sessionId, output: destination, relativeOutput: rel.replace(/\\/g, "/"), source: assets[0], ...delivered, sourceBytes: info.bytes };
+	return { ok: true, provider: "agent+gpt-image-2",
+		codexHome,
+		codexHomeFallback: homeInfo.fallback ? homeInfo.reason : null, sessionId, output: destination, relativeOutput: rel.replace(/\\/g, "/"), source: assets[0], ...delivered, sourceBytes: info.bytes };
 }
 
 function shellQuote(value, platform = process.platform) {
@@ -235,15 +309,26 @@ function shellQuote(value, platform = process.platform) {
 	return `'${text.replace(/'/g, `'"'"'`)}'`;
 }
 
-function capabilityInstructions({ extensionPath, nodePath = process.execPath, platform = process.platform } = {}) {
+// The exact command head every agent runs. Shared with the Claude runner's
+// --allowedTools rule so a headless Claude turn may call the bridge without a
+// permission prompt it can never answer.
+function bridgeCommandPrefix({ extensionPath, nodePath = process.execPath, platform = process.platform } = {}) {
 	const script = path.join(extensionPath || path.resolve(__dirname, ".."), "webtools", "image-bridge.js");
+	return platform === "win32"
+		? `cmd /d /s /c "set ELECTRON_RUN_AS_NODE=1&& ""${String(nodePath).replace(/"/g, '""')}"" ""${String(script).replace(/"/g, '""')}"" generate`
+		: `ELECTRON_RUN_AS_NODE=1 ${shellQuote(nodePath, platform)} ${shellQuote(script, platform)} generate`;
+}
+
+function capabilityInstructions({ extensionPath, nodePath = process.execPath, platform = process.platform } = {}) {
+	const prefix = bridgeCommandPrefix({ extensionPath, nodePath, platform });
 	const command = platform === "win32"
-		? `cmd /d /s /c "set ELECTRON_RUN_AS_NODE=1&& ""${String(nodePath).replace(/"/g, '""')}"" ""${String(script).replace(/"/g, '""')}"" generate --workspace ""<workspace>"" --output public/images/<descriptive-name>.png --prompt-file ""<workspace>/.solstice/image-prompts/<name>.txt"""`
-		: `ELECTRON_RUN_AS_NODE=1 ${shellQuote(nodePath, platform)} ${shellQuote(script, platform)} generate --workspace <workspace> --output public/images/<descriptive-name>.png --prompt-file <workspace>/.solstice/image-prompts/<name>.txt`;
+		? `${prefix} --workspace ""<workspace>"" --output public/images/<descriptive-name>.png --prompt-file ""<workspace>/.solstice/image-prompts/<name>.txt"""`
+		: `${prefix} --workspace <workspace> --output public/images/<descriptive-name>.png --prompt-file <workspace>/.solstice/image-prompts/<name>.txt`;
 	return [
 		"- IMAGE GENERATION (available to this model through agent + GPT-Image-2):",
 		`  Write one detailed image brief to a workspace prompt file, then run the Solstice-owned bridge: ${command}`,
 		"  The bridge uses the IDE-bundled Codex image capability, isolates the Codex session, validates raster magic + dimensions, and atomically delivers the exact asset. Success means the JSON says ok:true AND the output exists; an exit code alone is never success.",
+		"  If the JSON says code SANDBOX_BLOCKED or NETWORK_UNREACHABLE, this shell has no outbound network (Solstice normally enables it for the workspace sandbox): do not retry in the same shell, never substitute placeholder images — save the exact error and stop.",
 		"  GPT-Image-2 is the only still-image generation route. X-Field/Higgsfield/Seedance/Kling are video-only and always require Thomas's approval card, even in Autonomous.",
 	].join("\n");
 }
@@ -285,6 +370,11 @@ if (require.main === module) {
 
 module.exports = {
 	assertWorkspaceDestination,
+	bridgeCommandPrefix,
+	ensureWritableCodexHome,
+	missingCodeModeHost,
+	sandboxPreflight,
+	defaultNetworkProbe,
 	capabilityInstructions,
 	generateImage,
 	imageBridgeStatus,

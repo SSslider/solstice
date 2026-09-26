@@ -1,5 +1,6 @@
 "use strict";
 const http = require("http");
+const crypto = require("crypto");
 const net = require("net");
 const fs = require("fs");
 const path = require("path");
@@ -66,6 +67,16 @@ const SELECT_SCRIPT = `<script data-solstice-select>
   var hoverBox = mk("position:fixed;pointer-events:none;z-index:" + (Z + 40) + ";border:2px solid #38bdf8;border-radius:4px;display:none;box-shadow:0 0 0 1px rgba(255,255,255,.35) inset;");
   var crumb = mk("position:fixed;left:12px;bottom:12px;z-index:" + (Z + 46) + ";display:none;flex-wrap:wrap;gap:4px;max-width:82vw;font:600 11px/1 ui-monospace,monospace;");
 
+  function selectorFor(el) {
+    var parts = [], node = el;
+    while (node && node.tagName && parts.length < 12) {
+      if (node.id && document.querySelectorAll("#" + CSS.escape(node.id)).length === 1) { parts.unshift("#" + CSS.escape(node.id)); break; }
+      var tag = node.tagName.toLowerCase(), index = 1, prev = node.previousElementSibling;
+      while (prev) { if (prev.tagName === node.tagName) index++; prev = prev.previousElementSibling; }
+      parts.unshift(tag + ":nth-of-type(" + index + ")"); node = node.parentElement;
+    }
+    return parts.join(" > ");
+  }
   function describe(el) {
     var classes = (typeof el.className === "string" ? el.className : "")
       .split(/\\s+/).filter(Boolean).slice(0, 6).join(" ");
@@ -76,6 +87,8 @@ const SELECT_SCRIPT = `<script data-solstice-select>
       path.unshift(seg); n = n.parentElement; hops++;
     }
     return {
+      selector: selectorFor(el),
+      rect: { x: el.getBoundingClientRect().x, y: el.getBoundingClientRect().y, width: el.getBoundingClientRect().width, height: el.getBoundingClientRect().height },
       tag: el.tagName ? el.tagName.toLowerCase() : "",
       id: el.id || "",
       classes: classes,
@@ -136,13 +149,18 @@ const SELECT_SCRIPT = `<script data-solstice-select>
     else selected = [el];
     drawSel();
   }
-  function sendEdit() {
-    if (!selected.length) return;
-    var picks = selected.map(describe);
-    var primary = picks[picks.length - 1];
-    primary.picks = picks;
-    try { fetch(ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(primary) }); } catch (err) {}
-    clearSel(); disarm();
+  async function sendEdit() {
+    if (!selected.length || editBtn.disabled) return;
+    var picks = selected.slice(0, 20).map(describe);
+    var payload = Object.assign({}, picks[picks.length - 1], { picks: picks,
+      page: { pathname: location.pathname, hash: location.hash, viewport: { width: innerWidth, height: innerHeight }, scroll: { x: scrollX, y: scrollY }, capturedAt: new Date().toISOString() } });
+    editBtn.disabled = true; editBtn.textContent = "Sending…";
+    try {
+      var response = await fetch(ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      if (!response.ok) throw new Error("Selection was not accepted");
+      clearSel(); disarm();
+    } catch (err) { editBtn.textContent = "Retry edit"; editBtn.title = "Selection could not be sent. Click to retry."; }
+    finally { editBtn.disabled = false; }
   }
 
   function arm() {
@@ -328,7 +346,7 @@ function hasFramework(root) {
 		if (deps.next || deps.vite || deps["react-scripts"] || deps.astro ||
 			deps["@sveltejs/kit"] || deps.nuxt || deps["@vitejs/plugin-react"]) return true;
 		const dev = (pkg.scripts && (pkg.scripts.dev || pkg.scripts.start)) || "";
-		return /\b(vite|next|astro|nuxt|react-scripts|webpack|parcel)\b/.test(dev);
+		return /\b(vite|next|astro|nuxt|react-scripts|webpack|parcel)\b/.test(dev) || /\bnode\s+[\w./-]+\.(?:c?js|mjs)\b/.test(dev);
 	} catch { return false; }
 }
 
@@ -423,13 +441,18 @@ class PreviewServer {
 			// even in proxy mode, so it never reaches the dev server)
 			if (urlPath === SELECT_ENDPOINT) {
 				if (req.method !== "POST") { res.writeHead(405); res.end(); return; }
-				let body = "";
-				req.on("data", (c) => { body += c; if (body.length > 1e6) req.destroy(); });
-				req.on("end", () => {
-					try { if (this.onSelect) this.onSelect(JSON.parse(body || "{}")); } catch { }
-					res.writeHead(204, { "Access-Control-Allow-Origin": "*" });
-					res.end();
-				});
+                const chunks = []; let bytes = 0, tooLarge = false;
+                req.on("data", chunk => { bytes += chunk.length; if (bytes > 64 * 1024) tooLarge = true; else chunks.push(chunk); });
+                req.on("end", async () => {
+                    try {
+                        if (tooLarge) { res.writeHead(413); res.end("selection too large"); return; }
+                        const pick = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+                        if (!pick || !Array.isArray(pick.picks) || !pick.picks.length || pick.picks.length > 20 || pick.picks.some(p => !p || typeof p.tag !== "string")) throw new Error("invalid selection");
+                        if (!this.onSelect) { res.writeHead(503); res.end("selection handler unavailable"); return; }
+                        await this.onSelect(pick);
+                        res.writeHead(204); res.end();
+                    } catch { res.writeHead(400); res.end("selection was not accepted"); }
+                });
 				return;
 			}
 
@@ -477,6 +500,7 @@ class PreviewServer {
 		let target;
 		try { target = new URL(this.proxyTarget); } catch { res.writeHead(502); res.end("bad proxy target"); return; }
 		const headers = { ...req.headers, host: target.host };
+		if (headers.origin === "http://" + req.headers.host) headers.origin = target.origin;
 		// Force identity so HTML comes back uncompressed and is injectable.
 		headers["accept-encoding"] = "identity";
 		const opts = { protocol: target.protocol, hostname: target.hostname, port: target.port, method: req.method, path: req.url, headers };
@@ -492,6 +516,14 @@ class PreviewServer {
 					delete h["content-length"]; delete h["content-encoding"]; delete h["transfer-encoding"];
 					h["content-length"] = out.length;
 					h["cache-control"] = "no-store";
+                    if (h["content-security-policy"]) {
+                        const hashes = [...(SELECT_SCRIPT + BRIDGE_SCRIPT).matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map(m => "'sha256-" + crypto.createHash("sha256").update(m[1]).digest("base64") + "'");
+                        const directives = String(h["content-security-policy"]).split(";").map(s => s.trim().split(/\s+/)).filter(a => a[0]);
+                        const fallback = directives.find(d => d[0] === "default-src")?.slice(1) || [];
+                        if (!directives.some(d => d[0] === "script-src")) directives.push(["script-src", ...fallback]);
+                        for (const d of directives) if (d[0] === "script-src" || d[0] === "script-src-elem") d.push(...hashes);
+                        h["content-security-policy"] = directives.map(d => d.join(" ")).join("; ");
+                    }
 					res.writeHead(pRes.statusCode || 200, h);
 					res.end(out);
 				});

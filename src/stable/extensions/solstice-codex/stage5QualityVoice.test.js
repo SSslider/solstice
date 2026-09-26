@@ -69,7 +69,11 @@ const planPanel = fs.readFileSync(path.join(__dirname, "media", "plan.js"), "utf
 const extension = fs.readFileSync(path.join(__dirname, "extension.js"), "utf8");
 ok(browse.includes("scoreVisualQuality"), "real-browser QA invokes the scored visual critic");
 ok(browse.includes("visualScore"), "browser evidence publishes the visual score");
-ok(/case "transcribed"[\s\S]{0,600}send\(\)/.test(panel), "push-to-talk sends automatically after transcription");
+// Execute the production transcript handler; voiceCapture.test.js also uses real MediaRecorder.
+const vm=require('vm'),voice=panel.slice(panel.indexOf('\tfunction receiveVoice(msg)'),panel.indexOf("\n\tmicBtn.addEventListener('click'",panel.indexOf('\tfunction receiveVoice(msg)')));
+const voiceState={voiceSession:{id:'test',draft:''},voiceTimer:null,inputEl:{value:'',dispatchEvent(){},focus(){}},clearTimeout(){},resetMic(){},sysLine(){},Event:class{},send(){voiceState.submitted=voiceState.inputEl.value;}};
+vm.createContext(voiceState);vm.runInContext(voice,voiceState);voiceState.receiveVoice({type:'transcribed',requestId:'test',text:'תקן את הטופס'});
+ok(voiceState.submitted==='תקן את הטופס', 'push-to-talk sends matching unchanged draft after transcription');
 ok(panel.includes("בריף קולי"), "the microphone control is labeled as a voice brief");
 const planPanelSource = extension.slice(extension.indexOf("openPlanPanel()"), extension.indexOf("planProjectType(", extension.indexOf("openPlanPanel()")));
 ok(planPanelSource.indexOf("onDidReceiveMessage") < planPanelSource.indexOf("webview.html ="), "plan-panel ready listener is installed before HTML can emit ready");

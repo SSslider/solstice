@@ -34,6 +34,9 @@ function fakeRun(session, files, result = {}) {
 		for (const [name, body] of Object.entries(files || {})) fs.writeFileSync(path.join(dir, name), body);
 		assert.equal(args[0], "exec");
 		assert.ok(args.includes("--json"));
+		assert.ok(!args.includes("--full-auto"), "removed CLI flag must not return");
+		assert.equal(args[args.indexOf("--sandbox") + 1], "workspace-write");
+		assert.ok(args.includes('approval_policy="never"'));
 		assert.equal(args[args.length - 1], "-");
 		assert.match(options.input, /Do not run shell commands, do not copy or move files/);
 		return { code: 0, stdout: JSON.stringify({ type: "thread.started", thread_id: session }) + "\n", stderr: "", ...result };
@@ -108,4 +111,59 @@ assert.match(animated, /generateImage\(\{ workspace: root/);
 assert.doesNotMatch(animated, /function codexBinary|run\(codexBinary/);
 
 fs.rmSync(root, { recursive: true, force: true });
-console.log("imageBridge.test.js: 39/39 checks passed");
+console.log("imageBridge.test.js: 42/42 checks passed");
+
+// Sandbox preflight: a nested codex started from a network-disabled Codex shell
+// must fail in seconds with an actionable code, not after the 12-minute timeout.
+(function sandboxPreflightGuards() {
+	const { sandboxPreflight, defaultNetworkProbe } = require("./webtools/image-bridge");
+	assert.throws(() => sandboxPreflight({ env: { CODEX_SANDBOX_NETWORK_DISABLED: "1" }, probe: () => ({ ok: true }) }), (e) => e.code === "SANDBOX_BLOCKED" && /network_access=true/.test(e.message));
+	assert.throws(() => sandboxPreflight({ env: {}, probe: () => ({ ok: false, error: "ENETUNREACH" }) }), (e) => e.code === "NETWORK_UNREACHABLE" && /ENETUNREACH/.test(e.message));
+	assert.strictEqual(sandboxPreflight({ env: {}, probe: () => ({ ok: true }) }), true);
+	// generateImage runs the preflight for real runs and passes the env through.
+	const blockedWs = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-blocked-"));
+	assert.throws(() => generateImage({ workspace: blockedWs, output: "blocked.png", prompt: "x", generatedRoot: blockedWs, runCodex: () => { throw new Error("must not spawn"); }, preflight: true, env: { CODEX_SANDBOX_NETWORK_DISABLED: "1" } }), (e) => e.code === "SANDBOX_BLOCKED");
+	// The real probe against a closed local port fails fast, not after the timeout.
+	const t0 = Date.now(); const closed = defaultNetworkProbe("127.0.0.1", 9, 3000);
+	assert.strictEqual(closed.ok, false); assert.ok(Date.now() - t0 < 3000, "closed port must fail fast");
+	console.log("sandbox preflight guards: ok");
+})();
+
+// Read-only CODEX_HOME (what the nested codex sees from inside the workspace
+// sandbox, 18/09: "failed to initialize in-process app-server client:
+// Read-only file system") must fall back to a private writable home in tmp,
+// carrying the credentials only — never a directory inside the workspace.
+(function writableHomeFallback() {
+	const { ensureWritableCodexHome } = require("./webtools/image-bridge");
+	const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-home-"));
+	const writable = path.join(tmp, "writable"); fs.mkdirSync(writable);
+	assert.deepStrictEqual(ensureWritableCodexHome(writable, { tmpdir: tmp }), { home: writable, fallback: false });
+	const ro = path.join(tmp, "ro"); fs.mkdirSync(ro); fs.writeFileSync(path.join(ro, "auth.json"), "{\"t\":1}"); fs.writeFileSync(path.join(ro, "config.toml"), "x=1\n"); fs.chmodSync(ro, 0o500);
+	try {
+		const r = ensureWritableCodexHome(ro, { tmpdir: tmp });
+		assert.strictEqual(r.fallback, true);
+		assert.strictEqual(r.home, path.join(tmp, "solstice-image-bridge", "codex-home"));
+		assert.strictEqual(fs.readFileSync(path.join(r.home, "auth.json"), "utf8"), "{\"t\":1}");
+		assert.strictEqual(fs.statSync(path.join(r.home, "auth.json")).mode & 0o777, 0o600);
+		assert.ok(!r.home.startsWith(ro), "fallback home must not live in the read-only tree");
+	} finally { fs.chmodSync(ro, 0o700); }
+	console.log("writable codex home fallback: ok");
+})();
+
+// Bundled codex without its code-mode host must be reported before any model
+// turn, and only for the extension's own bin/ layout.
+(function codeModeHostCheck() {
+	const { missingCodeModeHost, imageBridgeStatus } = require("./webtools/image-bridge");
+	const ext = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-ext-"));
+	fs.mkdirSync(path.join(ext, "webtools")); fs.writeFileSync(path.join(ext, "webtools", "image-bridge.js"), "");
+	fs.mkdirSync(path.join(ext, "bin")); fs.writeFileSync(path.join(ext, "bin", "codex"), "#!/bin/sh\n"); fs.chmodSync(path.join(ext, "bin", "codex"), 0o755);
+	assert.ok(missingCodeModeHost(path.join(ext, "bin", "codex")), "bundled codex without host is flagged");
+	const st = imageBridgeStatus({ extensionPath: ext, configuredPath: path.join(ext, "bin", "codex") });
+	assert.strictEqual(st.ok, false); assert.strictEqual(st.code, "SCROLLWORLD_ENGINE_INCOMPLETE");
+	fs.writeFileSync(path.join(ext, "bin", process.platform === "win32" ? "codex-code-mode-host.exe" : "codex-code-mode-host"), "");
+	assert.strictEqual(missingCodeModeHost(path.join(ext, "bin", "codex")), "", "host present → ok");
+	assert.strictEqual(imageBridgeStatus({ extensionPath: ext, configuredPath: path.join(ext, "bin", "codex") }).ok, true);
+	const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "npm-codex-")); fs.writeFileSync(path.join(elsewhere, "codex"), "");
+	assert.strictEqual(missingCodeModeHost(path.join(elsewhere, "codex")), "", "non-bundled codex is not checked");
+	console.log("code-mode host check: ok");
+})();

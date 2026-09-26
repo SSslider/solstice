@@ -237,6 +237,44 @@ try {
 		assert.equal(rows.at(-1).state, 'queued');
 		assert.equal(c.steerQueue.length, 1);
 	});
+	// Saved visual bindings refer to the pre-edit revision. Recovery must inspect
+	// that historical context without treating it as a new selected-edit request.
+	const { captureVisualReview, assertReviewCurrent } = require('./visualReview');
+	fs.writeFileSync(path.join(root, 'index.html'), '<button>Before</button>');
+	const screenshot = path.join(root, '.solstice', 'resume-before.png');
+	fs.writeFileSync(screenshot, Buffer.from('89504e470d0a1a0a', 'hex'));
+	const visual = await captureVisualReview(root, { picks: [{ selector: 'button' }] }, async () => screenshot);
+	fs.writeFileSync(path.join(root, 'index.html'), '<button>After</button>');
+	check('fresh requests still reject the original stale visual selection', () => {
+		assert.throws(() => assertReviewCurrent(root, visual.reviewPrompt), /הקוד השתנה/);
+	});
+	for (const field of ['objective', 'steering', 'plan', 'recentEvents']) {
+		check(`recovery of stale visual context in ${field} reaches the current-source check`, () => {
+			const tid = 'visual-recovery-' + field;
+			const original = journal.begin(tid, 'Verify the completed button edit', 'gpt-6-astra');
+			journal.pause(tid);
+			const row = journal.read(original.id);
+			if (field === 'objective') row.objective = visual.reviewPrompt + '\nKeep Hebrew';
+			if (field === 'steering') row.steering = [{ id: 'saved-update', state: 'accepted', text: visual.reviewPrompt }];
+			if (field === 'plan') row.plan = [{ step: visual.reviewPrompt, status: 'completed' }];
+			if (field === 'recentEvents') row.events.push({ type: 'dispatch', instruction: visual.reviewPrompt });
+			journal.save(row);
+			const before = fs.readFileSync(journal.file(row.id), 'utf8');
+			const prompt = new TaskContinuity(root).recoveryPrompt(row.id);
+			assert.doesNotThrow(() => assertReviewCurrent(root, prompt));
+			assert.ok(!prompt.includes('[FELIX_VISUAL_REVIEW:'));
+			assert.ok(!prompt.includes('[/FELIX_VISUAL_REVIEW]'));
+			assert.match(prompt, /historical.*fresh selection/i);
+			const data = JSON.parse(prompt.split('\n').find(line => line.startsWith('{')));
+			assert.equal(data.taskId, row.id);
+			assert.equal(data.status, 'paused');
+			assert.ok(JSON.stringify(data).includes(visual.reviewId));
+			assert.ok(JSON.stringify(data).includes('HISTORICAL_VISUAL_REVIEW'));
+			if (field === 'objective') assert.ok(data.objective.endsWith('Keep Hebrew'));
+			if (field === 'steering') assert.equal(data.steering[0].state, 'accepted');
+			assert.equal(fs.readFileSync(journal.file(row.id), 'utf8'), before);
+		});
+	}
 	console.log(`taskContinuity.test.js: ${passed}/${passed} checks passed`);
 } finally { fs.rmSync(root, { recursive: true, force: true }); }
 

@@ -554,7 +554,8 @@
 			card.appendChild(el("strong", "artifactTask", item.taskId || "build"));
 			const qualityMeta = item.quality ? `${item.quality.score || 0}/100 ${item.quality.grade || ""}` : "";
 			const replicaMeta = item.replica ? `replica ${item.replica.score || 0}/${item.replica.targetScore || 80}` : "";
-			const meta = [qualityMeta, replicaMeta, `gate round ${item.selfCheckRound || "?"}`].filter(Boolean).join(" · ");
+			const freshness = item.verificationStatus === "current" ? "Current source" : item.verificationStatus === "stale" ? "Source changed · recheck required" : "Source version unverified";
+			const meta = [freshness, qualityMeta, replicaMeta, `gate round ${item.selfCheckRound || "?"}`].filter(Boolean).join(" · ");
 			card.appendChild(el("div", "artifactMeta", meta));
 			if (item.recordingUri) {
 				const video = el("video", "artifactVideo");

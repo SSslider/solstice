@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { spawnSync } = require("child_process");
+const {sourceRevision,sameRevision}=require("../sourceRevision");
 const { registerReview } = require("../reviewShare");
 const { auditSecurity } = require("../securityAudit");
 const { safeTaskId, latestGreenSelfCheck, registerArtifact } = require("../artifactStore");
@@ -70,7 +71,9 @@ let security;
 try { security = await auditSecurity(root, previewUrl); }
 catch (error) { fail(`security gate failed: ${error.message}`); }
 fs.writeFileSync(path.join(out, "security-audit.json"), JSON.stringify(security, null, 2) + "\n");
+if(!sameRevision(selfCheck.report.sourceRevision,sourceRevision(root))) fail("project changed while packaging; rerun verification");
 const manifest = {
+	sourceRevision:selfCheck.report.sourceRevision,
 	createdAt: new Date().toISOString(),
 	taskId,
 	previewUrl,
@@ -129,6 +132,7 @@ const md = [
 fs.writeFileSync(path.join(out, "WALKTHROUGH.md"), md);
 const artifactRecord = registerArtifact(root, {
 	taskId,
+	sourceRevision:selfCheck.report.sourceRevision,
 	path: out,
 	createdAt: manifest.createdAt,
 	type: "build-walkthrough",

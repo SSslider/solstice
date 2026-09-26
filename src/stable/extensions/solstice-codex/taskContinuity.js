@@ -167,8 +167,12 @@ class TaskContinuity {
 			"Inspect the current files and tests first. Do not repeat an unresolved command or external action until its outcome is reconciled.",
 			"A completed model turn is not a completed task. Verify the acceptance criteria and link existing artifacts before reporting success.",
 			"Apply queued user updates after checking the files. Dispatching/accepted updates may already have taken effect: reconcile them before repeating anything. Cancelled updates must not be applied.",
+			"Visual selections below are historical evidence only. Obtain a fresh selection before making another selected visual edit; verify already-completed changes without replaying the old selection.",
 			JSON.stringify({ taskId: task.id, objective: task.objective, status: task.status, plan: task.plan,
-				pending: task.pending, steering: task.steering || [], evidence, recentEvents: task.events.slice(-8) }), "[/FELIX_TASK_RECOVERY]"].join("\n");
+				pending: task.pending, steering: task.steering || [], evidence, recentEvents: task.events.slice(-8) })
+				// Archived markers may occur in any saved field. They must not activate
+				// the live selection gate on the recovery envelope. Keep the saved journal intact.
+				.replace(/\[(\/?)FELIX_VISUAL_REVIEW(?=[:\]])/g, '[$1HISTORICAL_VISUAL_REVIEW'), "[/FELIX_TASK_RECOVERY]"].join("\n");
 	}
 	ownerAlive(task) {
 		if (!Number.isInteger(task.pid) || task.pid <= 0) return false;

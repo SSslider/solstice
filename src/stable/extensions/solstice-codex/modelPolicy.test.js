@@ -20,6 +20,7 @@ assert.doesNotMatch(extension.match(/suggestFallback\(\)[\s\S]*?\n\t}/)[0], /Cla
 assert.match(extension, /model:\s*selected\.claudeId \|\| undefined/);
 assert.match(grok, /"claude-fable-5"[\s\S]{0,220}claudeId:\s*"claude-fable-5"[\s\S]{0,180}manualOnly:\s*true/);
 assert.match(grok, /"claude-fable-5-1"[\s\S]{0,220}claudeId:\s*"claude-fable-5-1"[\s\S]{0,180}manualOnly:\s*true/);
+assert.match(grok, /"claude-opus-5-5"[\s\S]{0,220}claudeId:\s*"claude-opus-5-5"[\s\S]{0,180}manualOnly:\s*true/);
 assert.match(grok, /"claude-opus-5"[\s\S]{0,220}claudeId:\s*"claude-opus-5"[\s\S]{0,180}manualOnly:\s*true/);
 assert.match(grok, /"claude-opus-4-8"[\s\S]{0,220}claudeId:\s*"claude-opus-4-8"[\s\S]{0,180}manualOnly:\s*true/);
 assert.match(grok, /"claude-opus-4-7"[\s\S]{0,220}claudeId:\s*"claude-opus-4-7"[\s\S]{0,180}manualOnly:\s*true/);

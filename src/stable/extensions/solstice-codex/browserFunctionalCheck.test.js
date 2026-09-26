@@ -28,6 +28,15 @@ function runCheck(url, outDir) {
 }
 
 function page(kind) {
+	if (kind === "dialog") return `<!doctype html><html><head><title>Dialog fixture</title><meta name="viewport" content="width=device-width"><style>
+	body{margin:0;padding:24px;font:18px/1.5 system-ui;color:#172126;background:#fff}h1{font-size:48px}a,button{display:inline-block;min-height:48px;padding:12px 16px;font:inherit;box-sizing:border-box}.skip{position:fixed;top:-100px;left:16px}.skip:focus{top:16px}
+	</style></head><body><h1>Explorable world</h1><p>Dialogs and active navigation are working controls.</p>
+	<a class="skip" href="#story">Read full story</a><a href="#details">Open details</a>
+	<button aria-current="true">Current chapter</button><button id="toggle">Open menu</button><p id="state">closed</p>
+	<div style="opacity:0"><button>Invisible dead button</button></div><div inert><button>Inert dead button</button></div>
+	<dialog id="information"><h2>Information</h2><p>Detailed place information.</p></dialog><dialog id="story"><h2>Full story</h2><p>A complete readable narrative.</p></dialog>
+	<script>document.querySelector('a[href="#details"]').onclick=e=>{e.preventDefault();document.querySelector('#information').showModal()};document.querySelector('.skip').onclick=e=>{e.preventDefault();document.querySelector('#story').showModal()};document.querySelector('#toggle').onclick=()=>document.querySelector('#state').textContent='open';</script></body></html>`;
+
 	if (kind === "green") return `<!doctype html><html><head><title>Green fixture</title><meta name="viewport" content="width=device-width"><style>
 		body{margin:0;padding:32px;font:18px/1.5 system-ui;color:#172126;background:#fff}main{max-width:720px;margin:auto}h1{font-size:48px;line-height:1.05}h2{font-size:30px}a,button,input{box-sizing:border-box;min-height:48px;padding:12px 16px;font:inherit}form{display:grid;gap:12px;max-width:420px}
 	</style></head><body><main>
@@ -67,6 +76,13 @@ function page(kind) {
 		ok(fs.statSync(path.join(tmp, "green", "desktop.png")).size > 0, "desktop evidence screenshot is written");
 		ok(fs.statSync(path.join(tmp, "green", "mobile.png")).size > 0, "mobile evidence screenshot is written");
 
+		mode = "dialog";
+		const dialog = await runCheck(url, path.join(tmp, "dialog"));
+		if (!dialog.ok) console.error(JSON.stringify(dialog.findings));
+		ok(dialog.ok === true, "dialog links, keyboard skip link and current chapter pass without fake navigation");
+		ok(dialog.summary.linksChecked === 2, "both the dialog link and focus-revealed skip link are exercised");
+		ok(dialog.summary.buttonsChecked === 1, "inert, ancestor-hidden and current navigation controls are excluded; working menu is checked");
+
 		mode = "broken";
 		const red = await runCheck(url, path.join(tmp, "broken"));
 		ok(red.ok === false, "broken site fails the browser gate");
@@ -76,7 +92,7 @@ function page(kind) {
 		ok(categories.has("dead-control"), "dead button is reported");
 		ok(categories.has("layout"), "mobile overflow is reported");
 		ok(categories.has("resource"), "broken image is reported");
-		if (evidenceDir) fs.writeFileSync(path.join(tmp, "results.json"), JSON.stringify({ green, red, submitHits }, null, 2) + "\n");
+		if (evidenceDir) fs.writeFileSync(path.join(tmp, "results.json"), JSON.stringify({ green, dialog, red, submitHits }, null, 2) + "\n");
 		console.log(`browserFunctionalCheck.test.js: ${passed}/${passed} checks passed`);
 	} finally {
 		await new Promise((resolve) => server.close(resolve));

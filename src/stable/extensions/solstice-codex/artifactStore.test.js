@@ -12,6 +12,7 @@ const {
 	latestGreenSelfCheck,
 } = require("./artifactStore");
 
+const {sourceRevision}=require("./sourceRevision");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "solstice-artifacts-"));
 let passed = 0;
 function ok(value, label) { assert.ok(value, label); passed++; console.log("ok - " + label); }
@@ -21,7 +22,7 @@ try {
 	ok(taskId === "client-alpha-build-42", "task ids are filesystem-safe and stable");
 	const round = path.join(root, ".solstice", "self-check", taskId, "round-2");
 	fs.mkdirSync(round, { recursive: true });
-	fs.writeFileSync(path.join(round, "report.json"), JSON.stringify({ ok: true, summary: { linksChecked: 2 } }));
+	fs.writeFileSync(path.join(round, "report.json"), JSON.stringify({ ok: true, url:"http://127.0.0.1/", findings:[], sourceRevision:sourceRevision(root), summary: { linksChecked: 2, buttonsChecked:0,formsChecked:0,desktopWidth:1440,mobileWidth:390 } }));
 	fs.writeFileSync(path.join(round, "desktop.png"), Buffer.from([137, 80, 78, 71]));
 	fs.writeFileSync(path.join(round, "mobile.png"), Buffer.from([137, 80, 78, 71, 1]));
 	const gate = latestGreenSelfCheck(root, taskId);

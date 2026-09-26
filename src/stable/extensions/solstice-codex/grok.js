@@ -157,16 +157,17 @@ const MODEL_REGISTRY = {
 	"codex-auto": { label: "Codex CLI default (auto)", desc: "Resolved from live Codex model/list discovery", runner: "codex", provider: "gpt", hidden: true, order: -1 },
 	"gpt-5.6": { label: "GPT-5.6 Sol (legacy alias)", desc: "Migrates to the model reported by live Codex discovery", runner: "codex", codexId: "gpt-5.6", provider: "gpt", hidden: true, order: 0 },
 	"gpt-5.5": { label: "GPT-5.5 (Codex)", desc: "ChatGPT subscription — full agent: plans, approvals, image gen", runner: "codex", codexId: "gpt-5.5", order: 1 },
-	"claude-opus-5": { label: "Claude Opus 5", desc: "Claude Code CLI — manual selection only", runner: "claude", claudeId: "claude-opus-5", provider: "claude", gated: true, manualOnly: true, order: 2 },
-	"claude-fable-5": { label: "Claude Fable 5", desc: "Claude Code CLI — manual selection only", runner: "claude", claudeId: "claude-fable-5", provider: "claude", gated: true, manualOnly: true, order: 3 },
-	"claude-fable-5-1": { label: "Claude Fable 5.1", desc: "Claude Code CLI — manual selection only", runner: "claude", claudeId: "claude-fable-5-1", provider: "claude", gated: true, manualOnly: true, order: 4 },
-	"claude-opus-4-8": { label: "Claude Opus 4.8", desc: "Claude Code CLI — manual selection only", runner: "claude", claudeId: "claude-opus-4-8", provider: "claude", gated: true, manualOnly: true, order: 5 },
-	"claude-opus-4-7": { label: "Claude Opus 4.7", desc: "Claude Code CLI — manual selection only", runner: "claude", claudeId: "claude-opus-4-7", provider: "claude", gated: true, manualOnly: true, order: 6 },
-	"claude-sonnet-5": { label: "Claude Sonnet 5", desc: "Claude Code CLI — manual selection only", runner: "claude", claudeId: "claude-sonnet-5", provider: "claude", gated: true, manualOnly: true, order: 7 },
+	"claude-opus-5-5": { label: "Claude Opus 5.5", desc: "Claude Code CLI — manual selection only; images via GPT-Image-2 bridge", runner: "claude", claudeId: "claude-opus-5-5", provider: "claude", gated: true, manualOnly: true, order: 2 },
+	"claude-opus-5": { label: "Claude Opus 5", desc: "Claude Code CLI — manual selection only", runner: "claude", claudeId: "claude-opus-5", provider: "claude", gated: true, manualOnly: true, order: 3 },
+	"claude-fable-5": { label: "Claude Fable 5", desc: "Claude Code CLI — manual selection only", runner: "claude", claudeId: "claude-fable-5", provider: "claude", gated: true, manualOnly: true, order: 4 },
+	"claude-fable-5-1": { label: "Claude Fable 5.1", desc: "Claude Code CLI — manual selection only", runner: "claude", claudeId: "claude-fable-5-1", provider: "claude", gated: true, manualOnly: true, order: 5 },
+	"claude-opus-4-8": { label: "Claude Opus 4.8", desc: "Claude Code CLI — manual selection only", runner: "claude", claudeId: "claude-opus-4-8", provider: "claude", gated: true, manualOnly: true, order: 6 },
+	"claude-opus-4-7": { label: "Claude Opus 4.7", desc: "Claude Code CLI — manual selection only", runner: "claude", claudeId: "claude-opus-4-7", provider: "claude", gated: true, manualOnly: true, order: 7 },
+	"claude-sonnet-5": { label: "Claude Sonnet 5", desc: "Claude Code CLI — manual selection only", runner: "claude", claudeId: "claude-sonnet-5", provider: "claude", gated: true, manualOnly: true, order: 8 },
 	// Grok CLI >=0.2.93 advertises this exact id via `grok models`.
-	"grok-4.5": { label: "Grok 4.5 Build", desc: "אין מנוי — בחירה ידנית בלבד דרך grok CLI", runner: "grok", grokId: "grok-4.5", provider: "grok", manualOnly: true, order: 8 },
-	"composer-2.5": { label: "Composer 2.5 Fast", desc: "אין מנוי — בחירה ידנית בלבד דרך grok CLI", runner: "grok", grokId: "grok-composer-2.5-fast", provider: "composer", manualOnly: true, order: 9 },
-	"kimi-k3": { label: "Kimi K3", desc: "Moonshot direct API — connects when selected", runner: "moonshot", moonshotId: "kimi-k3", provider: "moonshot", manualOnly: true, order: 10 },
+	"grok-4.5": { label: "Grok 4.5 Build", desc: "אין מנוי — בחירה ידנית בלבד דרך grok CLI", runner: "grok", grokId: "grok-4.5", provider: "grok", manualOnly: true, order: 9 },
+	"composer-2.5": { label: "Composer 2.5 Fast", desc: "אין מנוי — בחירה ידנית בלבד דרך grok CLI", runner: "grok", grokId: "grok-composer-2.5-fast", provider: "composer", manualOnly: true, order: 10 },
+	"kimi-k3": { label: "Kimi K3", desc: "Moonshot direct API — connects when selected", runner: "moonshot", moonshotId: "kimi-k3", provider: "moonshot", manualOnly: true, order: 11 },
 };
 
 // Which CLI runner serves a given model key (defaults to codex).

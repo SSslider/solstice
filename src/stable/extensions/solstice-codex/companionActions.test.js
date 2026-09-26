@@ -1,0 +1,14 @@
+'use strict';
+const assert=require('assert/strict'),fs=require('fs'),os=require('os'),path=require('path');const {CompanionActions}=require('./companionActions');
+const root=fs.mkdtempSync(path.join(os.tmpdir(),'felix-actions-'));const deadline=setTimeout(()=>{console.error('remote action timeout');process.exit(1);},5000);let n=0;
+const action={requestId:'one',action:'prompt',payload:{text:'שלום'}};
+(async()=>{try{let effects=0,release;const gate=new CompanionActions(root);const check=async(name,f)=>{await f();n++;console.log('ok - '+name);};
+await check('concurrent retry executes side effect once and both callers receive same ACK',async()=>{const work=()=>{effects++;return new Promise(r=>release=r);};const one=gate.run(action,work),two=gate.run(action,work);release({ok:true,error:''});assert.deepEqual(await one,await two);assert.equal(effects,1);});
+await check('completed receipt survives controller restart without repeating prompt',async()=>{assert.equal((await new CompanionActions(root).run(action,()=>assert.fail('replayed'))).ok,true);assert.equal(effects,1);});
+await check('same id with different payload fails; cannot repurpose approved action',async()=>{assert.equal((await gate.run({...action,payload:{text:'other'}},()=>assert.fail('reused'))).ok,false);});
+await check('interrupted action is unknown after restart and never silently repeated',async()=>{const p=gate.run({...action,requestId:'interrupted'},()=>new Promise(r=>release=r));const result=await new CompanionActions(root).run({...action,requestId:'interrupted'},()=>assert.fail('replayed'));assert.match(result.error,/unknown/);release({ok:true});await p;});
+await check('failed action is replayed as failure, not retried behind user back',async()=>{const frame={...action,requestId:'failed'};assert.equal((await gate.run(frame,()=>{throw Error('failure');})).ok,false);assert.equal((await gate.run(frame,()=>assert.fail('replayed'))).error,'failure');});
+await check('prototype and overlong request ids cannot execute',async()=>{for(const id of ['__proto__','x'.repeat(97)])assert.equal((await gate.run({...action,requestId:id},()=>assert.fail('invalid id'))).ok,false);});
+await check('corrupt receipt store blocks mutations',async()=>{fs.writeFileSync(gate.file,'broken');const result=await gate.run({...action,requestId:'new'},()=>assert.fail('unsafe'));assert.match(result.error,/unavailable/);});
+console.log(`companionActions.test.js: ${n}/${n} passed`);
+}finally{clearTimeout(deadline);fs.rmSync(root,{recursive:true,force:true});}})().catch(e=>{console.error(e);process.exitCode=1;});

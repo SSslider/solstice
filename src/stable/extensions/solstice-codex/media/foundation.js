@@ -4,8 +4,37 @@
 	const app = document.getElementById("app");
 	let state = {
 		board: null, endpoint: "", connectedAt: "", busy: true, detailBusy: false,
-		selectedBusiness: null, error: "",
+		selectedBusiness: null, error: "", connected: false, saving: false, pendingSlug: "",
 	};
+
+	const drafts = new Map();
+	const imageDialog = document.createElement("dialog");
+	imageDialog.className = "image-viewer";
+	imageDialog.setAttribute("aria-label", "תצוגת תמונה");
+	imageDialog.innerHTML = '<button type="button" class="back" aria-label="סגור תמונה">סגור ×</button><figure><img alt=""><figcaption></figcaption></figure><p role="status" hidden>לא ניתן לטעון את התמונה.</p>';
+	document.body.appendChild(imageDialog);
+	let imageOrigin = null;
+	imageDialog.querySelector("button").onclick = () => imageDialog.close();
+	imageDialog.onclick = (event) => { if (event.target === imageDialog) imageDialog.close(); };
+	imageDialog.addEventListener("close", () => {
+		const origin = imageOrigin;
+		imageOrigin = null;
+		imageDialog.querySelector("img").removeAttribute("src");
+		const trigger = origin && [...app.querySelectorAll('[data-action="view-image"]')].find((button) => button.querySelector("img").getAttribute("src") === origin.src && button.querySelector("img").alt === origin.alt);
+		if (trigger) trigger.focus();
+	});
+	function viewImage(button) {
+		const source = button.querySelector("img");
+		if (!source) return;
+		imageOrigin = { src: source.getAttribute("src"), alt: source.alt };
+		const image = imageDialog.querySelector("img"), error = imageDialog.querySelector('[role="status"]');
+		error.hidden = true; image.hidden = false;
+		image.onerror = () => { image.hidden = true; error.hidden = false; };
+		image.alt = source.alt;
+		imageDialog.querySelector("figcaption").textContent = source.alt;
+		image.src = imageOrigin.src;
+		imageDialog.showModal();
+	}
 
 	function esc(value) {
 		return String(value === undefined || value === null ? "" : value)
@@ -48,11 +77,12 @@
 
 	function renderBoard() {
 		const businesses = state.board ? list(state.board.businesses) : [];
-		return `<header class="app-header"><div><small>SOLSTICE · LIVE BUSINESS OS</small><h1>Foundation</h1><p>לוח העסקים החי — לחץ על עסק כדי לפתוח את כל החיבורים, המחקר, הסגל והפעילות.</p></div><button class="action" data-action="refresh" ${state.busy ? "disabled" : ""}>${state.busy ? "טוען…" : "רענון חי"}</button></header>
+		return `<header class="app-header"><div><small>SOLSTICE · LIVE BUSINESS OS</small><h1>Foundation</h1><p>לוח העסקים החי — לחץ על עסק כדי לפתוח את כל החיבורים, המחקר, הסגל והפעילות.</p></div><button class="action" data-action="refresh" ${state.busy ? "disabled" : ""}>${state.busy ? "טוען…" : "רענון"}</button></header>
 			${state.error ? `<div class="error">${esc(state.error)}</div>` : ""}
-			<section class="connection ${businesses.length ? "online" : "pending"}"><div><span class="pulse"></span><strong>${businesses.length ? "FOUNDATION CONNECTED" : "CONNECTING"}</strong></div><code>${esc(state.endpoint || "Tailscale endpoint")}</code><small>${state.connectedAt ? `עודכן ${date(state.connectedAt)}` : "ממתין לשרת"}</small></section>
-			<section class="summary"><div><small>VL-1 BOARD</small><h2>${businesses.length} עסקים חיים</h2></div>${metric("אירועים", number(businesses.reduce((sum, item) => sum + Number(item.events || 0), 0)))}${metric("חיבורים", number(businesses.reduce((sum, item) => sum + Number(item.connections || 0), 0)))}${metric("קשרים", number(businesses.reduce((sum, item) => sum + Number(item.relationships || 0), 0)))}</section>
-			<main class="board-grid">${businesses.length ? businesses.map(businessCard).join("") : `<div class="empty"><span>F</span><h2>${state.error ? "Foundation לא זמין" : "טוען את הלוח החי…"}</h2><p>${state.error ? "בדוק Tailscale והרשאות גישה; אין fallback לנתוני mock." : "הנתונים מגיעים ישירות מ־/api/foundation/businesses."}</p></div>`}</main>`;
+			<section class="connection ${state.connected ? "online" : state.busy ? "pending" : "offline"}" role="status"><div><span class="pulse"></span><strong>${state.connected ? "FOUNDATION CONNECTED" : state.busy ? "CONNECTING" : "FOUNDATION OFFLINE"}</strong></div><span>${state.connected ? "הנתונים נטענו מהשרת" : state.board ? "מוצגים נתונים מהעדכון האחרון" : "אין חיבור מאומת לשרת"}</span><small>${state.connectedAt ? `עדכון מוצלח אחרון: ${date(state.connectedAt)}` : "ממתין לשרת"}</small></section>
+			${state.detailBusy ? `<p role="status">פותח את העסק… <button class="back" data-action="back">ביטול</button></p>` : ""}
+			<section class="summary"><div><small>VL-1 BOARD</small><h2>${state.board ? `${businesses.length} עסקים${state.connected ? "" : " · טרם רועננו"}` : "הנתונים טרם נטענו"}</h2></div>${metric("אירועים", state.board ? number(businesses.reduce((sum, item) => sum + Number(item.events || 0), 0)) : "—")}${metric("חיבורים", state.board ? number(businesses.reduce((sum, item) => sum + Number(item.connections || 0), 0)) : "—")}${metric("קשרים", state.board ? number(businesses.reduce((sum, item) => sum + Number(item.relationships || 0), 0)) : "—")}</section>
+			<main class="board-grid">${businesses.length ? businesses.map(businessCard).join("") : `<div class="empty"><span>F</span><h2>${state.error ? "Foundation לא זמין" : state.board ? "אין עסקים להצגה" : "טוען את הלוח החי…"}</h2><p>${state.error ? "בדוק Tailscale והרשאות גישה; אין fallback לנתוני mock." : state.board ? "החיבור הצליח. עדיין אין עסקים בחשבון הזה." : "הנתונים מגיעים ישירות מ־/api/foundation/businesses."}</p></div>`}</main>`;
 	}
 
 	function influencersPanel(domain) {
@@ -60,7 +90,7 @@
 		if (!influencers.length) return "";
 		return `<section class="panel panel-wide"><div class="panel-head"><div><small>AI Influencers</small><h2>סגל המשפיענים</h2></div><span class="panel-count">${influencers.length}</span></div>
 			<div class="influencers">${influencers.map((person) => `<article class="influencer">
-				<div class="portrait">${person.baseImageUrl ? `<img src="${esc(person.baseImageUrl)}" alt="${esc(person.name)}">` : `<span>${esc(String(person.name || "?").slice(0, 1))}</span>`}<i class="state-dot ${esc(person.status || "unknown")}"></i></div>
+				<div class="portrait">${person.baseImageUrl ? `<button type="button" class="image-trigger" data-action="view-image" aria-label="הגדל תמונה: ${esc(person.name)}"><img src="${esc(person.baseImageUrl)}" alt="${esc(person.name)}"></button>` : `<span>${esc(String(person.name || "?").slice(0, 1))}</span>`}<i class="state-dot ${esc(person.status || "unknown")}"></i></div>
 				<div class="person-copy"><h3>${esc(person.name || "ללא שם")}</h3><p>${esc(person.status || "unknown")} · ${person.approved ? "מאושר לסגל" : "ממתין לאישור"}</p><div>${pills([`${number(person.sceneCount)} סצנות`, person.elementId ? `element ${String(person.elementId).slice(0, 8)}` : "ללא element"])}</div></div>
 			</article>`).join("")}</div>
 		</section>`;
@@ -108,10 +138,10 @@
 		const nodes = list(snapshot.nodes);
 		const images = nodes.filter((node) => node && (node.imageDataUri || node.imageUrl));
 		return `<section class="panel panel-wide canvas-panel" data-testid="solstice-foundation-canvas">
-			<div class="panel-head"><div><small>SHARED EVENT LOG · ORIGIN SOLSTICE</small><h2>קנבס קנוני משותף</h2><p>revision ${number(canvas && canvas.revision)} · ${nodes.length} חלונות · ${images.length} תמונות · אותו backend של Atrium ו־Vega</p></div><span class="canvas-live">LIVE</span></div>
-			<div class="canvas-compose"><input id="canvasNodeTitle" placeholder="נוד חדש שיסתנכרן ל־Vega ול־Atrium"><button data-action="add-canvas-node">הוסף דרך הלוג</button></div>
+			<div class="panel-head"><div><small>SHARED EVENT LOG · ORIGIN SOLSTICE</small><h2>קנבס קנוני משותף</h2><p>revision ${number(canvas && canvas.revision)} · ${nodes.length} חלונות · ${images.length} תמונות · אותו backend של Atrium ו־Vega</p></div><span class="canvas-live ${state.connected ? "" : "offline"}">${state.connected ? "מסונכרן" : "לא מסונכרן"}</span></div>
+			<div class="canvas-compose"><input id="canvasNodeTitle" aria-label="כותרת נוד חדש" maxlength="600" value="${esc(drafts.get(state.selectedBusiness.business.slug) || "")}" placeholder="נוד חדש שיסתנכרן ל־Vega ול־Atrium"><button data-action="add-canvas-node" ${state.saving || !state.connected ? "disabled" : ""}>${state.saving ? "שומר…" : "הוסף לקנבס"}</button></div>
 			<div class="canvas-grid">${nodes.length ? nodes.map((node) => `<article class="canvas-node ${node.imageDataUri ? "has-image" : ""}">
-				${node.imageDataUri ? `<img src="${esc(node.imageDataUri)}" alt="${esc(node.title || "Imagine asset")}">` : ""}
+				${node.imageDataUri ? `<button type="button" class="image-trigger" data-action="view-image" aria-label="הגדל תמונה: ${esc(node.title || "Imagine asset")}"><img src="${esc(node.imageDataUri)}" alt="${esc(node.title || "Imagine asset")}"></button>` : ""}
 				<div><small>${esc(node.type || node.ftype || "node")}</small><h3>${esc(node.title || node.note || "ללא כותרת")}</h3><p>${esc(node.meta || String(node.id || "").slice(0, 8))}</p></div>
 			</article>`).join("") : `<div class="panel-empty">הקנבס ריק. הנוד הראשון יופיע כאן מכל אחד משלושת המשטחים.</div>`}</div>
 		</section>`;
@@ -134,15 +164,19 @@
 	}
 
 	function bind() {
+		const input = document.getElementById("canvasNodeTitle");
+		if (input) input.oninput = () => drafts.set(state.selectedBusiness.business.slug, input.value);
 		app.querySelectorAll("[data-action]").forEach((element) => {
 			element.onclick = () => {
 				const action = element.dataset.action;
-				if (action === "refresh") {
+				if (action === "view-image") {
+					viewImage(element);
+				} else if (action === "refresh") {
 					state.busy = true; state.error = ""; render(); vscode.postMessage({ type: "refresh" });
 				} else if (action === "show-business") {
-					state.detailBusy = true; state.error = ""; render(); vscode.postMessage({ type: "show_business", slug: element.dataset.slug });
+					state.pendingSlug = element.dataset.slug; state.detailBusy = true; state.error = ""; render(); vscode.postMessage({ type: "show_business", slug: element.dataset.slug });
 				} else if (action === "back") {
-					state.selectedBusiness = null; state.detailBusy = false; state.error = ""; render();
+					state.selectedBusiness = null; state.detailBusy = false; state.pendingSlug = ""; state.error = ""; render(); vscode.postMessage({ type: "show_board" });
 				} else if (action === "refresh-detail") {
 					state.detailBusy = true; state.error = ""; render(); vscode.postMessage({ type: "show_business", slug: state.selectedBusiness.business.slug });
 				} else if (action === "open-surface") {
@@ -151,19 +185,30 @@
 					const input = document.getElementById("canvasNodeTitle");
 					const title = String(input && input.value || "").trim();
 					if (!title) return;
-					element.disabled = true;
+					element.disabled = true; state.saving = true;
 					vscode.postMessage({ type: "add_canvas_node", slug: state.selectedBusiness.business.slug, title });
 				}
 			};
 		});
 	}
-	function render() { app.innerHTML = state.selectedBusiness ? renderDetail() : renderBoard(); bind(); }
+	function render() {
+		if (!state.selectedBusiness && imageDialog.open) imageDialog.close();
+		const input = document.getElementById("canvasNodeTitle");
+		const focused = input && document.activeElement === input;
+		const selection = focused ? [input.selectionStart, input.selectionEnd] : null;
+		app.innerHTML = state.selectedBusiness ? renderDetail() : renderBoard(); bind();
+		const next = document.getElementById("canvasNodeTitle");
+		if (focused && next) { next.focus(); next.setSelectionRange(...selection); }
+	}
 	window.addEventListener("message", (event) => {
 		const data = event.data || {};
-		if (data.type === "state") state = { ...state, ...data.state, busy: false, error: "" };
-		else if (data.type === "detailBusy") state = { ...state, detailBusy: true, error: "" };
-		else if (data.type === "detail") state = { ...state, selectedBusiness: data.detail, connectedAt: data.connectedAt || state.connectedAt, detailBusy: false, error: "" };
-		else if (data.type === "error") state = { ...state, busy: false, detailBusy: false, error: data.message || "Foundation request failed" };
+		if (data.type === "state") state = { ...state, ...data.state, busy: false, connected: true, error: "" };
+		else if (data.type === "detailBusy") state = { ...state, detailBusy: true, pendingSlug: data.slug, error: "" };
+		else if (data.type === "detail") state = { ...state, selectedBusiness: data.detail, connectedAt: data.connectedAt || state.connectedAt, detailBusy: false, connected: true, pendingSlug: "", error: "" };
+		else if (data.type === "connection") state = { ...state, connected: true, connectedAt: data.connectedAt, error: "" };
+		else if (data.type === "saving") state = { ...state, saving: data.saving };
+		else if (data.type === "saved") { if (drafts.get(data.slug) === data.title) drafts.delete(data.slug); }
+		else if (data.type === "error") state = { ...state, busy: false, detailBusy: false, connected: false, error: data.message || "Foundation request failed" };
 		render();
 	});
 	render();

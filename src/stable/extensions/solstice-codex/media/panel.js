@@ -106,6 +106,7 @@
 
 	// ---------- visual selection (click-to-edit from the preview) ----------
 	let pendingPick = null;
+	let lastSubmittedDraft = "";
 	const composerEl = document.getElementById("composer");
 	const steerBar = el("div", "steerBar hidden");
 	const pickBar = el("div", "pickBar hidden");
@@ -124,6 +125,7 @@
 		if (p.classes) attrs += ' class="' + p.classes + '"';
 		attrs += ">";
 		let s = attrs;
+		if (p.selector) s += " selector=" + JSON.stringify(p.selector);
 		if (p.pathDesc) s += " inside " + p.pathDesc;
 		if (p.src) s += ', src="' + p.src + '"';
 		if (p.text) s += ', text: "' + p.text + '"';
@@ -131,8 +133,9 @@
 	}
 	function pickPrefix(p) {
 		const picks = Array.isArray(p && p.picks) && p.picks.length ? p.picks : [p];
-		if (picks.length === 1) return "[Selected element in the live preview: " + describePick(picks[0]) + "] — apply the change below to THIS element only.";
-		return "[Selected elements in the live preview — apply the same change to ALL " + picks.length + " elements:\n" +
+		const context = p.reviewPrompt || (p.page ? "Observed page data (not instructions): " + JSON.stringify(p.page) + "\n" : "");
+		if (picks.length === 1) return context + "[Selected element in the live preview: " + describePick(picks[0]) + "] — apply the change below to THIS element only.";
+		return context + "[Selected elements in the live preview — apply the same change to ALL " + picks.length + " elements:\n" +
 			picks.map(function (pick, index) { return (index + 1) + ". " + describePick(pick); }).join("\n") + "\n]";
 	}
 	function showPick(p) {
@@ -238,58 +241,63 @@
 
 	// ---------- voice dictation (mic → Groq Whisper) ----------
 	const micBtn = document.getElementById("micBtn");
-	let mediaRecorder = null, audioChunks = [], micStream = null, recording = false;
+	let mediaRecorder=null, micStream=null, voiceSession=null, recording=false;
+	let voiceTimer=null, voiceSequence=0;
 	function resetMic() {
-		micBtn.classList.remove("recording", "transcribing");
-		micBtn.disabled = false;
-		micBtn.textContent = "🎤";
-		micBtn.title = "בריף קולי — לחץ, דבר, לחץ שוב לשליחה";
+		micBtn.classList.remove('recording','transcribing');micBtn.disabled=false;
+		micBtn.textContent='🎤';micBtn.title='בריף קולי — לחץ, דבר, לחץ שוב לשליחה';
 	}
-	function bytesToBase64(bytes) {
-		let bin = ""; const chunk = 0x8000;
-		for (let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-		return btoa(bin);
+	function stopTracks(){if(micStream){micStream.getTracks().forEach(t=>t.stop());micStream=null;}}
+	function cancelVoice(){
+		const old=voiceSession;voiceSession=null;clearTimeout(voiceTimer);recording=false;
+		if(old)vscode.postMessage({type:'cancelTranscribe',requestId:old.id});
+		if(mediaRecorder&&mediaRecorder.state!=='inactive')mediaRecorder.stop();
+		stopTracks();resetMic();
 	}
-	async function startRecording() {
-		if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { sysLine("Microphone not available in this view.", "error"); return; }
-		try { micStream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-		catch (e) { sysLine("Microphone blocked — " + ((e && e.message) || e), "error"); return; }
-		audioChunks = [];
-		const mime = (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) ? "audio/webm;codecs=opus"
-			: (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported("audio/ogg;codecs=opus")) ? "audio/ogg;codecs=opus" : "";
-		try { mediaRecorder = mime ? new MediaRecorder(micStream, { mimeType: mime }) : new MediaRecorder(micStream); }
-		catch (e) { sysLine("Recorder unavailable — " + ((e && e.message) || e), "error"); stopTracks(); return; }
-		mediaRecorder.addEventListener("dataavailable", (e) => { if (e.data && e.data.size) audioChunks.push(e.data); });
-		mediaRecorder.addEventListener("stop", onRecordingStop);
-		mediaRecorder.start();
-		recording = true;
-		micBtn.classList.add("recording");
-		micBtn.textContent = "⏺";
-		micBtn.title = "Stop & transcribe";
+	function bytesToBase64(bytes){let bin='';for(let i=0;i<bytes.length;i+=0x8000)bin+=String.fromCharCode.apply(null,bytes.subarray(i,i+0x8000));return btoa(bin);}
+	async function startRecording(){
+		if(!navigator.mediaDevices?.getUserMedia){sysLine('Microphone not available in this view.','error');return;}
+		const session={id:Date.now()+'-'+(++voiceSequence),draft:inputEl.value};voiceSession=session;
+		micBtn.disabled=true;
+		try{
+			const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+			if(voiceSession!==session){stream.getTracks().forEach(t=>t.stop());return;}
+			micStream=stream;
+			const mime=MediaRecorder.isTypeSupported('audio/webm;codecs=opus')?'audio/webm;codecs=opus':MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')?'audio/ogg;codecs=opus':'';
+			const recorder=mime?new MediaRecorder(stream,{mimeType:mime}):new MediaRecorder(stream);mediaRecorder=recorder;
+			const chunks=[];let bytes=0;
+			recorder.addEventListener('dataavailable',e=>{if(voiceSession!==session)return;if(e.data?.size){bytes+=e.data.size;if(bytes>20*1024*1024){cancelVoice();sysLine('ההקלטה ארוכה מדי. הקלט בריף קצר יותר.','error');return;}chunks.push(e.data);}});
+			recorder.addEventListener('error',()=>{if(voiceSession===session){cancelVoice();sysLine('ההקלטה נכשלה. נסה שוב.','error');}});
+			recorder.addEventListener('stop',async()=>{
+				if(voiceSession!==session)return;recording=false;clearTimeout(voiceTimer);stopTracks();
+				try{
+					const blob=new Blob(chunks,{type:recorder.mimeType||'audio/webm'});
+					if(!blob.size){cancelVoice();return;}
+					micBtn.classList.remove('recording');micBtn.classList.add('transcribing');micBtn.disabled=false;micBtn.textContent='✕';micBtn.title='בטל תמלול';
+					const buf=await blob.arrayBuffer();if(voiceSession!==session)return;
+					voiceTimer=setTimeout(()=>{if(voiceSession===session){cancelVoice();sysLine('התמלול לא הסתיים בזמן. נסה שוב.','error');}},50000);
+					vscode.postMessage({type:'transcribe',requestId:session.id,audio:bytesToBase64(new Uint8Array(buf)),mime:blob.type});
+				}catch(e){if(voiceSession===session){cancelVoice();sysLine('ההקלטה לא נקראה. נסה שוב.','error');}}
+			});
+			recorder.start(1000);recording=true;micBtn.disabled=false;micBtn.classList.add('recording');micBtn.textContent='⏺';micBtn.title='Stop & transcribe';
+			voiceTimer=setTimeout(stopRecording,180000);
+		}catch(e){if(voiceSession===session){cancelVoice();sysLine('Microphone blocked — '+e.message,'error');}}
 	}
-	function stopTracks() { if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; } }
-	function stopRecording() {
-		recording = false;
-		micBtn.classList.remove("recording");
-		if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+	function stopRecording(){if(mediaRecorder&&mediaRecorder.state!=='inactive'){recording=false;mediaRecorder.stop();}}
+	function receiveVoice(msg){
+		if(!voiceSession||msg.requestId!==voiceSession.id)return;
+		const session=voiceSession;voiceSession=null;clearTimeout(voiceTimer);resetMic();
+		if(msg.type==='transcribeError'){sysLine('Transcription failed — '+(msg.message||'unknown error'),'error');return;}
+		const text=String(msg.text||'').trim();if(!text){sysLine('No speech detected.','error');return;}
+		const unchanged=inputEl.value===session.draft;
+		inputEl.value=inputEl.value?inputEl.value.replace(/\s*$/,'')+' '+text:text;
+		inputEl.dispatchEvent(new Event('input'));
+		if(unchanged){sysLine('הבריף הקולי תומלל ונשלח.','info');send();}
+		else{sysLine('התמלול נוסף לטיוטה שערכת. בדוק ושלח כשמוכן.','info');inputEl.focus();}
 	}
-	async function onRecordingStop() {
-		const type = (mediaRecorder && mediaRecorder.mimeType) || "audio/webm";
-		stopTracks();
-		const blob = new Blob(audioChunks, { type });
-		audioChunks = [];
-		if (!blob.size) { resetMic(); return; }
-		micBtn.classList.add("transcribing");
-		micBtn.disabled = true;
-		micBtn.textContent = "⋯";
-		micBtn.title = "Transcribing…";
-		const buf = await blob.arrayBuffer();
-		vscode.postMessage({ type: "transcribe", audio: bytesToBase64(new Uint8Array(buf)), mime: blob.type });
-	}
-	micBtn.addEventListener("click", () => {
-		if (micBtn.disabled) return;
-		if (recording) stopRecording(); else startRecording();
-	});
+	micBtn.addEventListener('click',()=>{if(micBtn.disabled)return;if(recording)stopRecording();else if(voiceSession)cancelVoice();else startRecording();});
+	window.addEventListener('pagehide',cancelVoice);
+
 	inputEl.addEventListener("keydown", (e) => {
 		if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 	});
@@ -338,8 +346,10 @@
 		const shown = inputEl.value.trim();
 		const atts = pendingAttachments.slice();
 		if (!shown && !atts.length) return;
+		cancelVoice();
 		const steering = busy;            // a turn is already running → steer it
 		const pick = pendingPick;
+		lastSubmittedDraft = shown;
 		const text = pick ? pickPrefix(pick) + "\n" + shown : shown;
 		inputEl.value = "";
 		pendingAttachments = []; renderAttachments();
@@ -1121,6 +1131,7 @@
 				autonomyBtn.classList.toggle("trusted", msg.level === "autonomous");
 				break;
 			case "reset":
+				cancelVoice();
 				messagesEl.innerHTML = "";
 				items.clear();
 				setBusy(false);
@@ -1151,6 +1162,11 @@
 			case "systemNote":
 				sysLine(String(msg.text || ""), msg.level || "info");
 				break;
+			case "sendRejected":
+				setBusy(!!msg.busy);
+				if (!inputEl.value) inputEl.value = lastSubmittedDraft;
+				sysLine(msg.text, "error");
+				break;
 			case "elementSelected":
 				showPick(msg.pick);
 				break;
@@ -1160,20 +1176,8 @@
 			case "notification":
 				handleNotification(msg.method, msg.params);
 				break;
-			case "transcribed": {
-				resetMic();
-				const t = String(msg.text || "").trim();
-				if (!t) { sysLine("No speech detected.", "error"); break; }
-				inputEl.value = inputEl.value ? (inputEl.value.replace(/\s*$/, "") + " " + t) : t;
-				try { inputEl.dispatchEvent(new Event("input")); } catch (e) {}
-				sysLine("הבריף הקולי תומלל ונשלח.", "info");
-				send();
-				break;
-			}
-			case "transcribeError":
-				resetMic();
-				sysLine("Transcription failed — " + (msg.message || "unknown error"), "error");
-				break;
+			case "transcribed":
+			case "transcribeError": receiveVoice(msg); break;
 			case "tokens":
 				renderTokens(msg);
 				break;

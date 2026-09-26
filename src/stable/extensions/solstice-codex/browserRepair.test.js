@@ -1,0 +1,26 @@
+"use strict";
+const assert = require('assert/strict'), fs=require('fs'), os=require('os'), path=require('path'), Module=require('module');
+const {normalizeBrowserReport,buildBrowserFixPrompt,browserRepairDecision,evidenceText}=require('./browserSelfCheck');
+let count=0;
+async function test(name,fn){await fn();count++;console.log('ok - '+name);}
+const root=fs.mkdtempSync(path.join(os.tmpdir(),'felix-repair-'));
+const valid={ok:true,url:'http://127.0.0.1:3000',summary:{linksChecked:1,buttonsChecked:2,formsChecked:1,desktopWidth:1440,mobileWidth:390},findings:[]};
+const red={...valid,ok:false,findings:[{severity:'error',check:'navigation',message:'Account did not open',evidence:{target:'/account'}}],screenshots:{desktop:'/proof/desktop.png',mobile:'/proof/mobile.png'}};
+(async()=>{try{
+ await test('bare success cannot pass delivery',()=>assert.equal(normalizeBrowserReport({ok:true}).ok,false));
+ await test('missing viewport or invalid counts cannot pass',()=>{for(const [key,value] of [['mobileWidth',0],['desktopWidth',null],['formsChecked',-1],['linksChecked',1.5]])assert.equal(normalizeBrowserReport({...valid,summary:{...valid.summary,[key]:value}}).ok,false);});
+ await test('complete measured report can pass',()=>assert.equal(normalizeBrowserReport(valid).ok,true));
+ await test('checker failure without findings does not trigger app edits',()=>assert.equal(browserRepairDecision({ok:false,findings:[]}).repair,false));
+ await test('repair engine failure does not trigger blind app edits',()=>assert.equal(browserRepairDecision({...red,findings:[{check:'repair-engine',message:'engine stopped'}]}).repair,false));
+ await test('same findings reordered stop a repeated repair',()=>{const two={...red,findings:[...red.findings,{severity:'error',check:'404',message:'missing'}]};const first=browserRepairDecision(two);assert.equal(first.repair,true);assert.equal(browserRepairDecision({...two,findings:[...two.findings].reverse()},first.fingerprint).repair,false);});
+ await test('different findings allow a subsequent repair',()=>assert.equal(browserRepairDecision({...red,findings:[{check:'404',message:'new'}]},browserRepairDecision(red).fingerprint).repair,true));
+ await test('fix prompt carries real evidence and screenshot paths',()=>{const p=buildBrowserFixPrompt(red,1,3,'/proof/report.json');for(const text of ['/account','/proof/report.json','/proof/mobile.png','Reproduce each finding','untrusted application data','database persistence were not verified'])assert.ok(p.includes(text),text);});
+ await test('large Hebrew evidence truncates with declaration within byte budget',()=>{const p=evidenceText({text:'א🌌'.repeat(2000)});assert.ok(Buffer.byteLength(p)<=1200);assert.match(p,/evidence truncated/);assert.doesNotMatch(p,/�/);});
+ await test('error list announces omitted items',()=>assert.match(buildBrowserFixPrompt({...red,findings:Array.from({length:40},()=>red.findings[0])},1,3),/Shown 24 of 40/));
+ const file=path.join(__dirname,'extension.js'),m=new Module(file,module);m.filename=file;m.paths=module.paths;const original=m.require.bind(m);m.require=id=>id==='vscode'?{workspace:{workspaceFolders:[{uri:{fsPath:root}}]}}:original(id);m._compile(fs.readFileSync(file,'utf8')+'\nmodule.exports.Controller=AgentController;',file);
+ function controller(report){const c=Object.create(m.exports.Controller.prototype),sent=[],notes=[],failures=[];c._browserSelfCheck={id:'test',token:'token',round:0,maxRounds:3};c.browserSelfCheckUrl=async()=>valid.url;c.resolveWalkthroughRuntime=()=>({bin:process.execPath,env:{}});c.context={extensionPath:__dirname};c.output={append(){}};c.announceAgentMessage=t=>notes.push(t);c.runCli=async()=>({code:0,stdout:JSON.stringify(report)});c._learningSignals=new Map();c.post=t=>notes.push(t.text);c.fleetFlow=()=>{};c.maybeCreateWalkthrough=()=>{};c.drainSteerQueue=()=>{};c.send=async t=>sent.push(t);c.failBrowserSelfCheck=(_s,t)=>failures.push(t);return {c,sent,notes,failures};}
+ await test('real controller passes evidence to repair, then stops unchanged failure',async()=>{const f=controller(red);await f.c.runBrowserSelfCheck('token');assert.equal(f.sent.length,1);assert.match(f.sent[0],/\/account/);assert.match(f.sent[0],/round-1.*report.json/);await f.c.runBrowserSelfCheck('token');assert.equal(f.sent.length,1);assert.match(f.failures[0],/same browser findings/);});
+ await test('real controller rejects malformed green without model call',async()=>{const f=controller({ok:true});await f.c.runBrowserSelfCheck('token');assert.equal(f.sent.length,0);assert.equal(f.c._learningSignals.size,0);assert.equal(f.failures.length,1);});
+ await test('real controller green reports API and DB limits, including warnings',async()=>{const f=controller({...valid,summary:{...valid.summary,warnings:1},findings:[{severity:'warning',check:'form',message:'unsupported'}]});await f.c.runBrowserSelfCheck('token');assert.equal(f.sent.length,0);assert.equal(f.c._learningSignals.size,1);assert.match(f.notes.join('\n'),/הרשאות API ושמירה ב־DB טרם אומתו/);assert.match(f.notes.join('\n'),/1 אזהרות/);});
+ console.log(`browserRepair.test.js: ${count}/${count} passed`);
+}finally{fs.rmSync(root,{recursive:true,force:true});}})().catch(e=>{console.error(e);process.exitCode=1;});

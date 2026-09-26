@@ -22,7 +22,7 @@ try {
 	const red = normalizeBrowserReport({ ok: true, findings: [{ severity: "error", check: "404", message: "missing" }] });
 	ok(red.ok === false, "an error cannot be normalized as green");
 	ok(red.findings[0].check === "404", "finding category survives normalization");
-	const green = normalizeBrowserReport({ ok: true, summary: { linksChecked: 2 }, findings: [{ severity: "warning", check: "form", message: "file input skipped" }] });
+	const green = normalizeBrowserReport({ ok: true, url: "http://localhost:3000", summary: { linksChecked: 2, buttonsChecked: 0, formsChecked: 0, desktopWidth: 1440, mobileWidth: 390 }, findings: [{ severity: "warning", check: "form", message: "file input skipped" }] });
 	ok(green.ok === true, "warnings do not fail the browser gate");
 	ok(green.summary.linksChecked === 2, "browser coverage summary survives normalization");
 	const saved = writeBrowserSelfCheckReport(root, "build-1", 1, red);
@@ -36,7 +36,7 @@ try {
 	const extension = fs.readFileSync(path.join(__dirname, "extension.js"), "utf8");
 	const browse = fs.readFileSync(path.join(__dirname, "webtools", "browse.js"), "utf8");
 	const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
-ok(extension.includes("browserCheckStarted = this.maybeRunBrowserSelfCheck()"), "turn completion is held behind the browser gate");
+// Completion ordering is exercised through the controller in mercuryCompletion.test.js.
 ok(extension.includes("this.isBuildIntent(text) || browserBuildIntent"), "browser follow-up edits enter the same build and QA flow");
 ok(extension.includes("add|change|update|polish|style|refactor"), "browser follow-up mutation verbs arm the QA gate");
 ok(extension.includes("await this.send(fixPrompt)"), "red browser findings trigger an automatic fix turn");

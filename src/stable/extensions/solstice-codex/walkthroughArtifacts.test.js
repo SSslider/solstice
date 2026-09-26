@@ -51,7 +51,7 @@ function run(file, args, timeout = 240000) {
 		fs.writeFileSync(path.join(replicaDir, "SOURCE_DECONSTRUCT.md"), "# Authorized source evidence\n");
 		fs.writeFileSync(path.join(replicaDir, "VISUAL_DIFF.md"), "# Replica visual comparison\n");
 		const replica = { ok: true, score: 96.2, targetScore: 80, sourceUrl: "https://client-owned.example/", evidenceDir: path.relative(root, replicaDir).split(path.sep).join("/") };
-		fs.writeFileSync(path.join(round, "report.json"), JSON.stringify({ ...report, buildId: taskId, round: 1, replica }, null, 2) + "\n");
+		fs.writeFileSync(path.join(round, "report.json"), JSON.stringify({ ...report, sourceRevision:require("./sourceRevision").sourceRevision(root), buildId: taskId, round: 1, replica }, null, 2) + "\n");
 		const result = JSON.parse(await run(walkthrough, [root, url, "", taskId]));
 		ok(result.ok === true && result.manifest.taskId === taskId, "walkthrough manifest is bound to taskId");
 		ok(result.manifest.selfCheck.round === 1, "manifest records the green gate round");

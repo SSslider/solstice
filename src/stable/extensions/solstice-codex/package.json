@@ -42,6 +42,18 @@
     },
     "commands": [
       {
+        "command": "solstice.agent.showReadiness",
+        "title": "Project Readiness",
+        "category": "Solstice",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "solstice.agent.scaffoldBusiness",
+        "title": "Scaffold Business App (SQLite)",
+        "category": "Solstice",
+        "icon": "$(database)"
+      },
+      {
         "command": "solstice.agent.showTaskEvidence",
         "title": "Show Felix Task Evidence",
         "category": "Solstice",
@@ -259,6 +271,11 @@
           "command": "solstice.agent.openTerminal",
           "when": "view == solstice.agentPanel",
           "group": "navigation@7"
+        },
+        {
+          "command": "solstice.agent.showReadiness",
+          "when": "view == solstice.agentPanel",
+          "group": "navigation@4.4"
         }
       ]
     },
@@ -319,9 +336,9 @@
             "autonomous"
           ],
           "enumDescriptions": [
-            "Supervised — ask before every file edit, command, and tool call (safest).",
-            "Auto-edit — apply file edits and reads automatically, but ask before running shell commands and external tools.",
-            "Autonomous — fully trust the agent: approve everything automatically and never interrupt."
+            "Supervised \u2014 ask before every file edit, command, and tool call (safest).",
+            "Auto-edit \u2014 apply file edits and reads automatically, but ask before running shell commands and external tools.",
+            "Autonomous \u2014 fully trust the agent: approve everything automatically and never interrupt."
           ],
           "default": "supervised",
           "description": "How much the agent can do without asking. Switch live from the agent panel (shield icon) or 'Solstice: Set Agent Autonomy'. 'Autonomous' = the 'I trust the agent, run on its own' mode. Legacy approvalPolicy='never' also forces full autonomy."
@@ -374,13 +391,18 @@
         },
         "solstice.codex.foundationApiUrl": {
           "type": "string",
-          "default": "https://srv1404664.tailf3ebe4.ts.net:10000/api/foundation/events",
-          "description": "Foundation event-sync endpoint over Tailscale. Override with SOLSTICE_FOUNDATION_API_URL; authentication comes from SOLSTICE_FOUNDATION_STUDIO_KEY or ~/.solstice/foundation-studio-key."
+          "default": "https://srv1404664.tailf3ebe4.ts.net:8444/api/foundation/events",
+          "description": "Foundation event-sync endpoint over Tailscale (port 8444 = the production Atrium instance that serves the live businesses; 10000 is the Atrium dev server). Override with SOLSTICE_FOUNDATION_API_URL; authentication comes from SOLSTICE_FOUNDATION_STUDIO_KEY or ~/.solstice/foundation-studio-key."
         },
         "solstice.codex.brandDnaUrl": {
           "type": "string",
           "default": "http://100.88.154.26:8794",
           "description": "Brand-DNA service over Tailscale. Override with SOLSTICE_BRAND_DNA_URL; authentication comes from SOLSTICE_BRAND_DNA_AUTH_KEY or ~/.solstice/brand-dna-key."
+        },
+        "solstice.codex.foundationStudioKey": {
+          "type": "string",
+          "default": "",
+          "description": "Foundation studio key (x-studio-key) for machines without the on-disk key, e.g. Windows/Mac. Env SOLSTICE_FOUNDATION_STUDIO_KEY or ~/.solstice/foundation-studio-key take precedence."
         },
         "solstice.codex.foundationBusinessId": {
           "type": "string",
@@ -412,7 +434,7 @@
         "solstice.codex.skillEmbedderUrl": {
           "type": "string",
           "default": "",
-          "description": "Base URL of the central fleet embedder (POST /embed) used to rank Felix's accrued skills against a task at dispatch time (Phase 6 self-improvement). When empty, retrieval falls back to keyword/tag overlap. Uses the shared embedding service — never an in-process model — to avoid memory bloat. Skills are Felix-private; write-back is gated behind the self-verify pass."
+          "description": "Base URL of the central fleet embedder (POST /embed) used to rank Felix's accrued skills against a task at dispatch time (Phase 6 self-improvement). When empty, retrieval falls back to keyword/tag overlap. Uses the shared embedding service \u2014 never an in-process model \u2014 to avoid memory bloat. Skills are Felix-private; write-back is gated behind the self-verify pass."
         },
         "solstice.codex.galleryServerUrl": {
           "type": "string",
@@ -435,24 +457,24 @@
             {
               "id": "orion",
               "name": "Orion",
-              "role": "CTO · architecture & planning",
-              "glyph": "◆",
+              "role": "CTO \u00b7 architecture & planning",
+              "glyph": "\u25c6",
               "model": "Opus",
               "wsUrl": "ws://100.88.154.26:8782/solstice/ws"
             },
             {
               "id": "jasper",
               "name": "Jasper",
-              "role": "Web production · sites & landing pages",
-              "glyph": "❖",
+              "role": "Web production \u00b7 sites & landing pages",
+              "glyph": "\u2756",
               "model": "GPT-5.5",
               "wsUrl": "ws://100.88.154.26:8783/solstice/ws"
             },
             {
               "id": "asher",
               "name": "Asher",
-              "role": "Systems · CRMs, software, bigger builds",
-              "glyph": "▲",
+              "role": "Systems \u00b7 CRMs, software, bigger builds",
+              "glyph": "\u25b2",
               "model": "Composer 2.5",
               "wsUrl": "ws://100.88.154.26:8784/solstice/ws"
             }
@@ -499,7 +521,7 @@
         "solstice.liveness.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Progress-aware liveness model for the Solstice builder. Unlike the wall-clock watchdog, it only counts REAL output (token deltas, streaming text, file/tool events) as 'alive'. A busy animation with no strong signal degrades alive→quiet→stalled, so a hung turn can't masquerade as working for hours."
+          "description": "Progress-aware liveness model for the Solstice builder. Unlike the wall-clock watchdog, it only counts REAL output (token deltas, streaming text, file/tool events) as 'alive'. A busy animation with no strong signal degrades alive\u2192quiet\u2192stalled, so a hung turn can't masquerade as working for hours."
         },
         "solstice.liveness.freshSeconds": {
           "type": "number",
@@ -509,7 +531,7 @@
         "solstice.liveness.stallSeconds": {
           "type": "number",
           "default": 300,
-          "description": "Seconds with no strong output signal after which the build is flagged 'stalled' (red) and recovery-by-resume is offered — drains any queued steering messages and nudges the agent instead of a blind restart."
+          "description": "Seconds with no strong output signal after which the build is flagged 'stalled' (red) and recovery-by-resume is offered \u2014 drains any queued steering messages and nudges the agent instead of a blind restart."
         },
         "solstice.atrium.clientsDir": {
           "type": "string",
@@ -519,12 +541,12 @@
         "solstice.atrium.baseUrl": {
           "type": "string",
           "default": "",
-          "description": "Base URL of the Atrium app (e.g. http://localhost:5180 or the deployed URL). When set, the Solstice→Atrium handoff panel deep-links the client card at <baseUrl>/clients/<client>. Empty = no deep-link (folder handoff still works)."
+          "description": "Base URL of the Atrium app (e.g. http://localhost:5180 or the deployed URL). When set, the Solstice\u2192Atrium handoff panel deep-links the client card at <baseUrl>/clients/<client>. Empty = no deep-link (folder handoff still works)."
         },
         "solstice.fleet.hidden": {
           "type": "array",
           "default": [],
-          "description": "Agent ids hidden from the Fleet roster. Built-in agents (orion/jasper/asher) removed via the Fleet panel's × button are recorded here; add an id back to the roster by removing it from this list.",
+          "description": "Agent ids hidden from the Fleet roster. Built-in agents (orion/jasper/asher) removed via the Fleet panel's \u00d7 button are recorded here; add an id back to the roster by removing it from this list.",
           "items": {
             "type": "string"
           }

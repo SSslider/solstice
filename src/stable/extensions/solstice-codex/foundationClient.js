@@ -14,6 +14,18 @@ const STUDIO_KEY_PATHS = [
 	"/home/thomas/Julius-cc-x/agents/atrium/output/_marketing/_agent_access/key",
 ].filter(Boolean);
 
+// Resolve the studio key the way the IDE controller needs it: explicit env,
+// then an optional configured value, then every on-disk location Atrium mints.
+// Returns "" when nothing is found so callers can fall back to the ?dev=studio
+// read bypass (dev servers only — production Atrium answers 401 to it).
+function resolveStudioKey({ env = process.env, configured = "" } = {}) {
+	const fromEnv = String((env && env.SOLSTICE_FOUNDATION_STUDIO_KEY) || "").trim();
+	if (fromEnv) return fromEnv;
+	const fromConfig = String(configured || "").trim();
+	if (fromConfig) return fromConfig;
+	return readStudioKeyFromDisk();
+}
+
 function readStudioKeyFromDisk() {
 	for (const candidate of STUDIO_KEY_PATHS) {
 		try {
@@ -24,7 +36,7 @@ function readStudioKeyFromDisk() {
 	return "";
 }
 
-const FOUNDATION_EVENTS_URL = "https://srv1404664.tailf3ebe4.ts.net:10000/api/foundation/events";
+const FOUNDATION_EVENTS_URL = "https://srv1404664.tailf3ebe4.ts.net:8444/api/foundation/events";
 const BUSINESS_NAME_EVENT = "business.name_updated";
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
@@ -196,10 +208,24 @@ function foundationAssetUrl(endpoint, assetPath, studioKey = "") {
 	let url;
 	try { url = new URL(String(assetPath || ""), String(endpoint || FOUNDATION_EVENTS_URL)); }
 	catch { throw new FoundationSyncError("Foundation asset URL is invalid.", { code: "invalid_url" }); }
-	if (!/^https?:$/.test(url.protocol) || !url.pathname.startsWith("/api/foundation/imagine/assets/")) {
+	if (!/^https?:$/.test(url.protocol) || url.origin !== new URL(String(endpoint || FOUNDATION_EVENTS_URL)).origin
+		|| url.username || url.password || !url.pathname.startsWith("/api/foundation/imagine/assets/")) {
 		throw new FoundationSyncError("Foundation asset URL is outside the canonical asset route.", { code: "invalid_asset_url" });
 	}
 	if (!String(studioKey || "").trim()) url.searchParams.set("dev", "studio");
+	return url.toString();
+}
+
+// Portraits are served as public static files by Atrium; only the origin needs
+// fixing. Anything that is not an http(s) URL after resolution (javascript:,
+// data:, file:) is dropped so the webview falls back to the initial-letter tile.
+function foundationPortraitUrl(endpoint, portraitPath) {
+	const raw = String(portraitPath || "").trim();
+	if (!raw) return "";
+	let url;
+	try { url = new URL(raw, String(endpoint || FOUNDATION_EVENTS_URL)); }
+	catch { return ""; }
+	if (!/^https?:$/.test(url.protocol) || url.username || url.password) return "";
 	return url.toString();
 }
 
@@ -378,6 +404,20 @@ class FoundationClient {
 			|| !Array.isArray(response.connections) || !Array.isArray(response.events) || !Array.isArray(response.relationships)) {
 			throw new FoundationSyncError("Foundation returned an invalid business workspace.", { code: "invalid_business_detail_response" });
 		}
+		if (Array.isArray(response.domain.influencers)) {
+			// Atrium hands back portrait paths relative to its own origin ("/uploads/..").
+			// The Foundation webview runs on a vscode-webview:// origin, so a relative
+			// path there resolves to nothing and every portrait renders broken.
+			// Resolve against the Foundation endpoint so the webview's `img-src https:`
+			// can actually fetch them.
+			response.domain = {
+				...response.domain,
+				influencers: response.domain.influencers.map((person) => {
+					if (!person || typeof person !== "object") return person;
+					return { ...person, baseImageUrl: foundationPortraitUrl(this.endpoint, person.baseImageUrl) };
+				}),
+			};
+		}
 		return { ...response, canvas };
 	}
 
@@ -411,7 +451,7 @@ class FoundationClient {
 		if (!this.studioKey) {
 			throw new FoundationSyncError("Foundation canvas writes require the shared studio key.", { code: "missing_studio_key" });
 		}
-		return requestJson(foundationCanvasUrl(this.endpoint, businessSlug, this.studioKey), {
+		const response = await requestJson(foundationCanvasUrl(this.endpoint, businessSlug, this.studioKey), {
 			method: "POST",
 			headers: this._headers(),
 			body: {
@@ -423,6 +463,11 @@ class FoundationClient {
 			},
 			timeout: this.timeout,
 		});
+		if (!response || response.ok !== true || !Number.isSafeInteger(response.revision) || response.revision < 0
+			|| !response.snapshot || !Array.isArray(response.snapshot.nodes) || !Array.isArray(response.snapshot.edges)) {
+			throw new FoundationSyncError("Foundation did not confirm the saved canvas revision.", { code: "invalid_canvas_ack" });
+		}
+		return response;
 	}
 
 	async pollEvents(since = null) {
@@ -546,6 +591,7 @@ class FoundationClient {
 }
 
 module.exports = {
+	resolveStudioKey,
 	BUSINESS_NAME_EVENT,
 	FOUNDATION_EVENTS_URL,
 	FoundationClient,
@@ -556,6 +602,7 @@ module.exports = {
 	foundationBusinessesUrl,
 	foundationCanvasUrl,
 	foundationAssetUrl,
+	foundationPortraitUrl,
 	normalizeBusinessId,
 	normalizeBusinessName,
 	normalizeBusinessSlug,

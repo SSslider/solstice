@@ -519,7 +519,7 @@ class FelixSkills {
 		const q = new Set(tokenize(queryText).filter((token) => token.length >= 3 && !generic.has(token)));
 		return skills.filter((skill) => {
 			const name = String(skill.meta.name || "");
-			if (routedVerticalName && name.startsWith("vertical-") && name !== routedVerticalName) return false;
+			if (name.startsWith("vertical-") && name !== routedVerticalName) return false;
 			if (name === "animated-website-kit") return motion === MOTION_LEVELS.CINEMATIC;
 			if (name === "scroll-world-gpt-image") return motion === MOTION_LEVELS.SCROLLWORLD;
 			return true;

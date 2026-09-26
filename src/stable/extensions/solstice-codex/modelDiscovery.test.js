@@ -31,10 +31,10 @@ const claudeModels = Object.entries(MODEL_REGISTRY)
 	.map(([key, model]) => ({ key, modelId: model.claudeId, label: model.label, runner: model.runner, provider: model.provider, manualOnly: model.manualOnly }));
 const open = groupModels([...codex, ...grok, ...claudeModels], true);
 const claude = open.find((group) => group.key === "claude");
-assert.deepEqual(claude.models.map((model) => model.key), ["claude-opus-5", "claude-fable-5", "claude-fable-5-1", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5"]);
+assert.deepEqual(claude.models.map((model) => model.key), ["claude-opus-5-5", "claude-opus-5", "claude-fable-5", "claude-fable-5-1", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5"]);
 assert.ok(claude.models.every((model) => model.manualOnly));
-assert.equal(groupModels([...codex, ...grok, ...claude.models], true).find((group) => group.key === "claude").models.length, 6);
-assert.deepEqual(claudeModels.map((model) => model.modelId), ["claude-opus-5", "claude-fable-5", "claude-fable-5-1", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5"]);
+assert.equal(groupModels([...codex, ...grok, ...claude.models], true).find((group) => group.key === "claude").models.length, 7);
+assert.deepEqual(claudeModels.map((model) => model.modelId), ["claude-opus-5-5", "claude-opus-5", "claude-fable-5", "claude-fable-5-1", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5"]);
 const withMoonshot = groupModels([...codex, ...grok, ...claudeModels, { key: "kimi-k3", modelId: "kimi-k3", label: "Kimi K3", runner: "moonshot", provider: "moonshot" }], true);
 assert.deepEqual(withMoonshot.map((group) => group.key), ["gpt", "grok", "composer", "claude", "moonshot"]);
 assert.equal(withMoonshot.at(-1).models[0].key, "kimi-k3");

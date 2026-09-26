@@ -115,5 +115,13 @@ async function check(name, fn) { await fn(); count++; console.log("ok - " + name
   await c.handleCompanionAction({instanceId:c.companionInstanceId(),requestId:"unknown",action:"invented"});
   assert.equal(sent.at(-1).ok,false);
  });
+ await check("stale manager Stop cannot interrupt another task",async()=>{
+  const interrupted=[];c.interrupt=async id=>interrupted.push(id);c.managerTasks=new Map();
+  await c.handleCompanionAction({instanceId:c.companionInstanceId(),requestId:'stop-stale',action:'stop',payload:{taskId:'gone'}});
+  assert.equal(sent.at(-1).ok,false);assert.deepEqual(interrupted,[]);
+  c.managerTasks.set('active',{threadId:'manager-thread'});
+  await c.handleCompanionAction({instanceId:c.companionInstanceId(),requestId:'stop-valid',action:'stop',payload:{taskId:'active'}});
+  assert.equal(sent.at(-1).ok,true);assert.deepEqual(interrupted,['manager-thread']);
+ });
  console.log(`taskVisibility.test.js: ${count}/${count} checks passed`);
 } finally {fs.rmSync(root,{recursive:true,force:true});} })().catch(e=>{console.error(e);process.exitCode=1;});

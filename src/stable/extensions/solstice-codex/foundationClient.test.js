@@ -5,7 +5,7 @@ const fs = require("fs");
 const http = require("http");
 const os = require("os");
 const path = require("path");
-const { FoundationClient, foundationBusinessDetailUrl, foundationBusinessesUrl, foundationCanvasUrl } = require("./foundationClient");
+const { FoundationClient, foundationBusinessDetailUrl, foundationBusinessesUrl, foundationCanvasUrl, foundationAssetUrl, foundationPortraitUrl } = require("./foundationClient");
 
 function listen(server) { return new Promise((resolve) => server.listen(0, "127.0.0.1", resolve)); }
 function close(server) { return new Promise((resolve) => server.close(resolve)); }
@@ -48,7 +48,15 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 					connections: [{ id: "conn-1", provider: "stripe", status: "live" }],
 					events: [{ id: "event-1", eventType: "research.completed" }],
 					relationships: [],
-					domain: { kindKey: "service", catalog: { domains: ["services"] }, pipelines: [] },
+					domain: {
+						kindKey: "service", catalog: { domains: ["services"] }, pipelines: [],
+						influencers: [
+							{ id: "inf-1", name: "Sofia", status: "ready", baseImageUrl: "/uploads/ai-influencer/inf-1/identity-anchor.png" },
+							{ id: "inf-2", name: "Mia", status: "ready", baseImageUrl: "https://cdn.example.test/mia.png" },
+							{ id: "inf-3", name: "Luna", status: "creating", baseImageUrl: "" },
+							{ id: "inf-4", name: "Eve", status: "ready", baseImageUrl: "javascript:alert(1)" },
+						],
+					},
 					surfaceLinks: { atrium: "/foundation/rafael" },
 				}));
 				return;
@@ -87,6 +95,10 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 			res.end(JSON.stringify({ events, cursor, count: events.length }));
 		});
 	});
+
+	assert.throws(() => foundationAssetUrl("https://foundation.example/api/foundation/events", "https://foreign.example/api/foundation/imagine/assets/a/x.png"), /outside the canonical asset route/);
+	assert.throws(() => foundationAssetUrl("https://foundation.example/api/foundation/events", "https://user:pass@foundation.example/api/foundation/imagine/assets/a/x.png"), /outside the canonical asset route/);
+	assert.equal(new URL(foundationAssetUrl("https://foundation.example/api/foundation/events", "/api/foundation/imagine/assets/a/x.png", "test-key")).origin, "https://foundation.example");
 
 	const offlinePort = 19000 + Math.floor(Math.random() * 1000);
 	let client = new FoundationClient({
@@ -135,6 +147,17 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 	assert.equal(detailRequests[0].projection, "atrium");
 	assert.equal(detail.canvas.revision, 4);
 	assert.match(detail.canvas.snapshot.nodes[0].imageDataUri, /^data:image\/png;base64,/);
+	// Portraits come back relative to Atrium; the webview needs them absolute on the endpoint origin.
+	const portraits = Object.fromEntries(detail.domain.influencers.map((person) => [person.id, person.baseImageUrl]));
+	assert.equal(portraits["inf-1"], `http://127.0.0.1:${server.address().port}/uploads/ai-influencer/inf-1/identity-anchor.png`);
+	assert.equal(portraits["inf-2"], "https://cdn.example.test/mia.png");
+	assert.equal(portraits["inf-3"], "");
+	assert.equal(portraits["inf-4"], "");
+	assert.equal(detail.domain.influencers[0].name, "Sofia");
+	assert.equal(detail.domain.kindKey, "service");
+	assert.equal(foundationPortraitUrl("https://atrium.example.test:8444/api/foundation/events", "/uploads/a.png"), "https://atrium.example.test:8444/uploads/a.png");
+	assert.equal(foundationPortraitUrl("https://atrium.example.test:8444/api/foundation/events", "data:image/png;base64,AAAA"), "");
+	assert.equal(foundationPortraitUrl("https://atrium.example.test:8444/api/foundation/events", "https://user:pw@atrium.example.test/x.png"), "");
 	assert.equal(canvasRequests[0].key, "test-studio-key");
 	assert.equal(foundationBusinessDetailUrl(client.endpoint, "rafael", "test-studio-key"), `http://127.0.0.1:${server.address().port}/api/foundation/businesses/rafael?projection=atrium`);
 	assert.equal(foundationCanvasUrl(client.endpoint, "rafael", "test-studio-key"), `http://127.0.0.1:${server.address().port}/api/foundation/canvas/rafael`);
@@ -207,5 +230,17 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 	assert.equal(fs.readFileSync(path.join(corruptDir, "outbox.json"), "utf8"), "{broken-json\n");
 	corruptClient.dispose();
 	fs.rmSync(root, { recursive: true, force: true });
-	console.log("foundationClient.test.js: 47/47 checks passed");
+	console.log("foundationClient.test.js: 50/50 checks passed");
 })().catch((error) => { console.error(error); process.exit(1); });
+
+(function resolveStudioKeyPrecedence() {
+	const { resolveStudioKey } = require("./foundationClient");
+	assert.strictEqual(resolveStudioKey({ env: { SOLSTICE_FOUNDATION_STUDIO_KEY: " msk-env " }, configured: "msk-cfg" }), "msk-env");
+	assert.strictEqual(resolveStudioKey({ env: {}, configured: " msk-cfg " }), "msk-cfg");
+	const disk = resolveStudioKey({ env: {}, configured: "" });
+	assert.strictEqual(typeof disk, "string");
+	// On this server Atrium's minted key is on disk; an empty result here would
+	// send every Foundation read down the ?dev=studio path that production rejects.
+	if (fs.existsSync("/home/thomas/Julius-cc-x/agents/atrium/output/_marketing/_agent_access/key")) assert.match(disk, /^msk-/);
+	console.log("resolveStudioKey precedence: ok");
+})();

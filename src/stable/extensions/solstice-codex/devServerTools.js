@@ -311,7 +311,13 @@ function codexMcpConfigArgs(executable, script) {
 		'required=true,default_tools_approval_mode="auto"',
 		"}",
 	].join("");
-	return ["--config", `mcp_servers.solstice_dev_servers=${config}`];
+	// Felix's shell tool runs inside Codex's workspace-write sandbox. Codex ships
+	// that sandbox with outbound network DISABLED, so `curl`, `npm install` and
+	// above all the nested `codex exec` behind webtools/image-bridge.js cannot
+	// reach anything (DNS EAI_AGAIN; the bridge died on its 12-minute timeout,
+	// 18/09). Escalation cannot lift it under approval_policy="never". Felix is a
+	// site builder — network inside its workspace sandbox is part of the job.
+	return ["--config", `mcp_servers.solstice_dev_servers=${config}`, "--config", "sandbox_workspace_write.network_access=true"];
 }
 
 function commandStrings(value, key = "", depth = 0, out = []) {

@@ -164,6 +164,11 @@ async function main() {
 	const codexConfig = codexMcpConfigArgs("/opt/Solstice/Electron", "/opt/Solstice/devServerTools.js").join(" ");
 	ok(MCP_TOOLS.length === 3 && /mcp_servers\.solstice_dev_servers/.test(codexConfig) && /dev_server_stop_all/.test(codexConfig), "Codex receives a real MCP tool schema for list, stop, and stop-all");
 	ok(/configArgs: codexMcpConfigArgs/.test(extension) && /this\.opts\.configArgs/.test(codex), "Codex app-server starts with the session-scoped MCP configuration");
+	{
+		const args = codexMcpConfigArgs("/usr/bin/node", "/ext/devServerTools.js");
+		const net = args.indexOf("sandbox_workspace_write.network_access=true");
+		ok(net > 0 && args[net - 1] === "--config", "Felix's workspace-write sandbox is started with outbound network enabled (image-bridge / curl / npm need it)");
+	}
 	ok(/stopOwnedDevServer\(this\.devServer, this\.managerDevServers, id/.test(extension), "extension maps the tool to workspace and manager DevServer registries");
 	ok(/stopAllDevServers\("window-dispose"\)/.test(extension) && /onDidChangeWorkspaceFolders/.test(extension), "window and project closure trigger owned-server cleanup");
 	ok(/devServersCard/.test(fs.readFileSync(path.join(__dirname, "media", "manager.js"), "utf8")), "Manager View renders the running-server inventory");

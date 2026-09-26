@@ -18,12 +18,14 @@ const { FelixSkills, skillProgress, hasExclusiveScrollWorldRoute, composeSkillsP
 const { selectVerticalTemplates, buildVerticalTemplatePack } = require("./verticalTemplates");
 const { SkillInstaller } = require("./skillInstaller");
 const { BrandDnaClient } = require("./brandDnaClient");
-const { FoundationClient, foundationBusinessesUrl } = require("./foundationClient");
+const { FoundationClient, resolveStudioKey } = require("./foundationClient");
+const { FoundationBoard } = require("./foundationBoard");
 const { FelixLearning, LEARNING_MODE } = require("./felixLearning");
 const { captureBuild, projectContext, workspaceContext, captureAnnotation, ensureScheduledCheck, dueScheduledChecks } = require("./projectBrain");
 const { TaskContinuity } = require("./taskContinuity");
 const { taskSnapshot } = require("./taskVisibility");
 const { companionFrame } = require("./companionFrame");
+const { parseMercuryCredential, mercuryClientSource, mercuryClientSourceJs, mercuryHealth, openMercuryStore, mercuryStoreStatus, syncMercurySeedFromProject, MERCURY_DEFAULT_BASE, MERCURY_CURRENCIES, MERCURY_SEED_FILE } = require("./mercuryBridge");
 const { taskReport } = require("./taskReport");
 const { ManagerWorktrees } = require("./managerWorktrees");
 const { createReviewHandler } = require("./reviewShare");
@@ -39,6 +41,12 @@ const {
 	appendSiteBuildPolicy,
 } = require("./siteBuildPolicy");
 const { grokApprovalDescriptor, isSafeGrokTool } = require("./grokApprovalBridge");
+const { targetedChange, focusInstructions } = require("./taskFocus");
+const { acceptanceContext } = require("./projectReadiness");
+const { showReadiness } = require("./readinessPanel");
+const { scaffoldBusinessApp } = require("./businessApp");
+const { sourceRevision, sameRevision } = require("./sourceRevision");
+const { captureVisualReview, assertReviewCurrent, completeVisualReview } = require("./visualReview");
 const { listArtifacts } = require("./artifactStore");
 const { BRAND_PACK_APPROVAL, CANONICAL_BRAND_PACK, brandPackContext, installBrandDnaDocument, installBrandPack, loadBrandPack } = require("./brandPack");
 const {
@@ -46,6 +54,7 @@ const {
 	selfCheckRoundDir,
 	writeBrowserSelfCheckReport,
 	buildBrowserFixPrompt,
+	browserRepairDecision,
 } = require("./browserSelfCheck");
 const {
 	DevServerToolBridge,
@@ -56,7 +65,7 @@ const {
 	stopAllOwnedDevServers,
 	stopOwnedDevServer,
 } = require("./devServerTools");
-const { capabilityInstructions: imageCapabilityInstructions, imageBridgeStatus } = require("./webtools/image-bridge");
+const { capabilityInstructions: imageCapabilityInstructions, imageBridgeStatus, bridgeCommandPrefix: imageBridgeCommandPrefix } = require("./webtools/image-bridge");
 
 // Resolve a bare CLI name against PATH the same way child_process.spawn would,
 // so we can tell BEFORE spawning whether the model binary actually exists on
@@ -255,6 +264,7 @@ function creditRiskSignal(method, params) {
 function needsResearchContract(text) {
 	const t = String(text || "");
 	if (!t || /SOLSTICE_RESEARCH_CONTRACT/.test(t)) return false;
+	if (t.includes("[FELIX_TARGETED_CHANGE]") && !t.includes("[FELIX_TARGETED_RESEARCH]")) return false;
 	const asksAnalysis = /\b(analy[sz]e|inspect|deconstruct|research|reference|references|inspiration|imitat(?:e|ion)|clone|recreate|study|break\s+down|style|look\s+like|based\s+on|attached)\b|(?:נתח|תנתח|לנתח|פרק|תפרק|לפרק|חקור|תחקור|רפרנס|רפרנסים|השראה|סגנון|כמו|לפי|מצורף)/i;
 	const hasVisualTarget = /https?:\/\/|www\.|behance|dribbble|awwwards|\b(site|website|web\s*app|app|page|landing|screenshot|image|photo|picture|video|mp4|webm|motion|animation)\b|(?:אתר|אפליקציה|דף|עמוד|צילום|סקרינשוט|תמונה|וידאו|סרטון|אנימציה)/i;
 	return asksAnalysis.test(t) && hasVisualTarget.test(t);
@@ -467,11 +477,11 @@ class AgentController {
 		try {
 			const root = workspaceCwd();
 			if (root) {
-				let foundationStudioKey = process.env.SOLSTICE_FOUNDATION_STUDIO_KEY || "";
-				if (!foundationStudioKey) {
-					try { foundationStudioKey = fs.readFileSync(path.join(os.homedir(), ".solstice", "foundation-studio-key"), "utf8").trim(); }
-					catch { }
-				}
+				// env → setting → every on-disk key location (resolveStudioKey). An
+				// explicit "" here used to disable the client's own disk lookup and
+				// silently downgrade every read to ?dev=studio, which production
+				// Atrium answers with 401.
+				const foundationStudioKey = resolveStudioKey({ configured: this.cfg().get("foundationStudioKey") || "" });
 				this.foundationClient = new FoundationClient({
 					endpoint: process.env.SOLSTICE_FOUNDATION_API_URL || this.cfg().get("foundationApiUrl") || undefined,
 					storageDir: path.join(context.globalStorageUri.fsPath, "foundation-sync"),
@@ -880,6 +890,20 @@ class AgentController {
 	}
 	companionUserMessage(text) { const s = this._companion(); s.messages.push({ role: "user", text: String(text).slice(0, 2000) }); s.ts = Date.now(); this.scheduleCompanionRelay(); }
 	async handleCompanionAction(frame) {
+        if (String(frame.instanceId || '') !== this.companionInstanceId()) return;
+        const root=workspaceCwd();
+        let result;
+        if(['task_evidence','refresh_preview'].includes(frame.action)) result=await this.executeCompanionAction(frame);
+        else if(!root)result={ok:false,error:'Open a project before controlling it remotely.'};
+        else {
+            if(!this._companionActions||this._companionActionsRoot!==root){this._companionActions=new (require('./companionActions').CompanionActions)(root);this._companionActionsRoot=root;}
+            result=await this._companionActions.run(frame,()=>this.executeCompanionAction(frame));
+        }
+        this.scheduleCompanionRelay();
+        const rec=this.fleetBridges.get(this.companionBridgeId());
+        try{rec?.ws?.send({type:'companion_ack',instanceId:this.companionInstanceId(),requestId:String(frame.requestId||''),...result});}catch{}
+    }
+	async executeCompanionAction(frame) {
 		if (String(frame.instanceId || "") !== this.companionInstanceId()) return;
 		const requestId = String(frame.requestId || "");
 		const action = String(frame.action || "");
@@ -916,24 +940,24 @@ class AgentController {
 			} else if (action === "stop") {
 				const taskId = String(payload.taskId || "");
 				const task = taskId && this.managerTasks && this.managerTasks.get(taskId);
+				if(taskId&&(!task||!task.threadId))throw new Error("Selected task is no longer available. Refresh the task list.");
 				await this.interrupt(task && task.threadId ? task.threadId : this.threadId);
 			} else if (action === "task_evidence") {
 				const snapshot = this.companionTaskState(true);
 				if (!snapshot || snapshot.error) throw new Error(snapshot && snapshot.error || "No saved task evidence");
 			} else if (action === "refresh_preview") {
 				if (!this.previewUrl) throw new Error("No live preview yet");
-				const shot = await this.capturePreviewShot(this.previewUrl, "companion", "390x844");
+				const shot = await this.captureCompanionPreview(this.previewUrl);
 				if (!shot) throw new Error("Preview capture failed");
 				const data = fs.readFileSync(shot);
 				if (data.length > 1_400_000) throw new Error("Preview capture is too large to relay");
-				this._companionPreviewImage = "data:image/png;base64," + data.toString("base64");
+				this._companionPreviewImage = "data:image/jpeg;base64," + data.toString("base64");
 			} else throw new Error("Unknown companion action");
 			ok = true;
 		} catch (e) { error = String(e && e.message || e); }
-		this.scheduleCompanionRelay();
-		const rec = this.fleetBridges.get(this.companionBridgeId());
-		try { if (rec && rec.ws) rec.ws.send({ type: "companion_ack", instanceId: this.companionInstanceId(), requestId, ok, error }); } catch { }
+		return {ok,error};
 	}
+
 	async startCompanion() {
 		this.ensureCompanionRelay();
 		if (this._companionServer) { vscode.window.showInformationMessage(`📱 Companion 2.0 מחובר ל-Vega. אבחון מקומי: 127.0.0.1:${this._companionPort}`); return this._companionPort; }
@@ -1096,7 +1120,7 @@ class AgentController {
 			"- Prefer an SPA stack (Vite + React/Router) unless told otherwise; keep it runnable with `npm run dev`.",
 			"- Treat each screen as a deliverable: build the navigation skeleton first, then fill screens so the preview is always interactive.",
 			"- A runnable PWA app-shell scaffold (index.html + app.js hash-router + bottom tab bar + manifest + service worker + data.js mock store) may already exist in the workspace (Solstice's 'Scaffold App Shell'). If so, BUILD ON IT — add screens/routes and flesh out the existing tabs rather than starting a single-page site from scratch.",
-			"- Data layer: read/write app data through `window.DB` (data.js) — a seeded localStorage CRUD store. Build lists/detail screens off it; swap it for a real backend later. Every write surfaces live in Solstice's State inspector.",
+			"- Data layer: use a real API with validation, authorization and durable storage when the brief requests business persistence. A localStorage/mock store is only a clearly labelled prototype; it cannot prove API/DB success. For local test starters use businessApp.js and templates/business; preserve existing backends. Verify save, readback, failure and retry without duplicates.",
 			"- Solstice's live preview gives you app tooling: a phone/tablet/desktop device switcher, a 'מסכים' screens-flow map (reads your hash routes / data-route screens), and a 'State' inspector (live localStorage). Use hash routes (#/screen) and localStorage so these light up.",
 		].join("\n");
 	}
@@ -1162,7 +1186,7 @@ class AgentController {
 			"- SELF-VERIFY before saying done: run/preview what you built, screenshot the live result, VIEW the screenshot, compare it to the goal, and fix issues — including a mobile-width pass. Placeholders, console errors, or an unopened preview mean it is NOT done.",
 			"- CONVERGE \u2014 don't loop: for a SMALL or incremental change (a tweak, a menu/style fix, one element, fixing a few links), make the edit, do AT MOST ONE quick verify, then STOP and report. Do NOT re-screenshot, re-edit and re-verify the same thing in a loop. Deep iterative self-verify is for a full from-scratch build, not a small follow-up. If the requested change is applied and reasonable you are DONE \u2014 never chase a subjective 'perfect' across dozens of steps; if you've taken many steps on one small ask, stop and hand back what you have.",
 			"- ASK only when genuinely blocked: if the request is truly ambiguous or you're missing something essential you cannot reasonably infer (brand, required content/copy, a decision with real trade-offs), ask the user ONE short, specific question instead of guessing wrong. Don't ask about things you can decide sensibly yourself — proceed and note the assumption.",
-			"- COMMERCE (Mercury bridge): if `lib/mercury.ts` exists, the project is connected to a live Mercury commerce store — BUILD THE STOREFRONT AGAINST IT, not mock data. Import its helpers (`getProducts`, `getProduct`, `createCheckout`, `trackEvent`) for catalog, cart, checkout, and the analytics pixel. The storefront is CUSTOMER-FACING: render products and buying flow, but NEVER show store analytics/sales/revenue to the shopper — that data belongs only to the owner's admin (MercuryShell). Prefer Next.js.",
+			"- COMMERCE (Mercury bridge): if `lib/mercury.ts` / `lib/mercury.js` exists, the project is connected to a live Mercury commerce store — BUILD THE STOREFRONT AGAINST IT, not mock data. Import its helpers (`getProducts`, `getProduct`, `createCheckout`, `trackEvent`, `PIXEL_SRC`) for catalog, cart, checkout and analytics (static sites: `import { getProducts } from './lib/mercury.js'` from a module script, and add `<script src=PIXEL_SRC data-store=STORE_ID>` for the first-party pixel). Products carry `variants[]` (id/title/price_cents/stock); a checkout sends `[{ variant_id, qty }]` and returns `url` — send the shopper there. Read the file for the exact API. The storefront is CUSTOMER-FACING: render products and buying flow, but NEVER show store analytics/sales/revenue to the shopper — that data belongs only to the owner's admin (MercuryShell). Prefer Next.js. If the store needs products that do not exist yet, write `.solstice/mercury/seed.json` as `{ \"products\": [{ \"title\", \"description\", \"image\", \"variants\": [{ \"title\", \"sku\", \"price_cents\", \"stock\" }] }] }` (real product images you generated, integer prices in agorot/cents) — the IDE pushes it into the live store at the end of the current turn: it creates missing titles and updates existing products while retaining variant IDs. Keep stable product titles and variant SKUs; renaming a title creates a different product. Unlisted variants are preserved. Read .solstice/mercury/sync-status.json and never claim completion if sync failed. Then `getProducts()` then returns those products; never hardcode a catalog in the page. If the project is a shop and `lib/mercury.*` is MISSING, do not mock: request the connector (`connect` → provider `mercury`) — the owner opens a brand-new Mercury store from that prompt in one click.",
 			"- KNOW YOUR IDE WINDOWS: the CENTER window is a LIVE PREVIEW of the running site/app exactly as the user sees it (plan and research dashboards also render there); YOU are the RIGHT panel (this chat). The center preview AUTO-REFRESHES after every one of your turns, so the user sees your latest changes each prompt. If the user says \"the center/the site isn't updated\", it means the live preview isn't reflecting your work — ensure the dev server is running and your file changes are saved so the center shows them; the IDE will reload it. When the user SELECTS a component/section in the live preview, you are handed that element's identity (tag/id/class/text/path) — scope your change to THAT specific element.",
 		].join("\n");
 	}
@@ -1365,6 +1389,36 @@ self.addEventListener("fetch", (e) => {
 		return { written, skipped };
 	}
 
+    async captureSelectedElement(pick, root = workspaceCwd()) {
+        if (root !== workspaceCwd()) throw new Error("Open this task workspace before editing its preview.");
+        return captureVisualReview(root, pick, async (id, page) => {
+            const url = new URL(this.previewUrl);
+            const location = new URL((page.pathname || "/") + (page.hash || ""), url);
+            if (location.origin !== url.origin) throw new Error("Selection left the preview origin");
+            const dir = path.join(root, ".solstice", "reviews", id);
+            fs.mkdirSync(dir, {recursive:true});
+            const spec = path.join(dir, "capture.json"), shot = path.join(dir, "capture.png");
+            fs.writeFileSync(spec, JSON.stringify({url:location.href,viewport:page.viewport,scroll:page.scroll,selectors:pick.picks.map(p=>p.selector),expected:pick.picks.map(p=>({selector:p.selector,text:p.text})),output:shot}));
+            const runtime=this.resolveWalkthroughRuntime();
+            const result=await this.runCli(runtime.bin,[path.join(this.context.extensionPath,"webtools","project-check.js"),"capture",spec],root,runtime.env);
+            if(result.code!==0) throw new Error("Could not capture the selected page. Retry selection.");
+            return shot;
+        });
+    }
+
+    async completeSelectedReview(root,id,reportFile,url) {
+        return completeVisualReview(root,id,reportFile,async record=>{
+            const location=new URL((record.page.pathname||'/')+(record.page.hash||''),url);
+            if(location.origin!==new URL(url).origin)throw new Error('Review left the preview origin');
+            const dir=path.join(root,'.solstice','reviews',id), nonce=crypto.randomUUID();
+            const spec=path.join(dir,'after-capture-'+nonce+'.json'),shot=path.join(dir,'after-capture-'+nonce+'.png');
+            fs.writeFileSync(spec,JSON.stringify({url:location.href,viewport:record.page.viewport,scroll:record.page.scroll,selectors:[],output:shot}));
+            const runtime=this.resolveWalkthroughRuntime(),result=await this.runCli(runtime.bin,[path.join(this.context.extensionPath,'webtools','project-check.js'),'capture',spec],root,runtime.env);
+            if(result.code!==0)throw new Error('After capture failed; rerun visual verification.');
+            return shot;
+        });
+    }
+
 	async openPreview(explicitUrl) {
 		let url = explicitUrl || "";
 		if (!url) {
@@ -1400,7 +1454,7 @@ self.addEventListener("fetch", (e) => {
 			rel = vscode.workspace.asRelativePath(found[0]);
 		}
 		if (!this.preview) this.preview = new PreviewServer(root, {
-			onSelect: (pick) => this.post({ type: "elementSelected", pick }),
+			onSelect: async (pick) => this.post({ type: "elementSelected", pick: await this.captureSelectedElement(pick) }),
 		});
 		const port = await this.preview.ensure();
 		const urlPath = String(rel).split(/[\\/]/).map(encodeURIComponent).join("/");
@@ -1416,7 +1470,7 @@ self.addEventListener("fetch", (e) => {
 		try { u = new URL(url); } catch { return url; }
 		if (u.hostname !== "127.0.0.1" && u.hostname !== "localhost") return url;
 		if (!this.preview) this.preview = new PreviewServer(workspaceCwd(), {
-			onSelect: (pick) => this.post({ type: "elementSelected", pick }),
+			onSelect: async (pick) => this.post({ type: "elementSelected", pick: await this.captureSelectedElement(pick) }),
 		});
 		const port = await this.preview.ensure();
 		if (Number(u.port) === port) return url; // already our static server → already injected
@@ -1652,8 +1706,32 @@ self.addEventListener("fetch", (e) => {
 		].join("\n");
 	}
 
+	// Command heads of the Solstice-owned tools (image bridge, browse.js) the
+	// preambles hand to every agent. Headless Claude denies any Bash call that is
+	// not allow-listed, so without these an Anthropic model can neither research
+	// nor generate a single image.
+	solsticeToolCommandPrefixes() {
+		const node = process.execPath;
+		const browseJs = path.join(this.context.extensionPath, "webtools", "browse.js");
+		const browse = process.platform === "win32"
+			? `cmd /c "set ELECTRON_RUN_AS_NODE=1&& ""${node}"" ""${browseJs}""`
+			: `ELECTRON_RUN_AS_NODE=1 "${node}" "${browseJs}"`;
+		const image = imageBridgeCommandPrefix({ extensionPath: this.context.extensionPath, nodePath: node, platform: process.platform });
+		return [image, browse];
+	}
+
+	// Explicit user setting wins; otherwise Autonomous means what it says for
+	// Claude too (no prompts), and the other levels keep acceptEdits.
+	claudePermissionMode() {
+		const info = this.cfg().inspect ? this.cfg().inspect("claudePermissionMode") : null;
+		const explicit = info && (info.workspaceFolderValue || info.workspaceValue || info.globalValue);
+		if (explicit) return explicit;
+		return this.autonomyLevel() === "autonomous" ? "bypassPermissions" : "acceptEdits";
+	}
+
 	claudeDevServerAllowedTools() {
 		const commands = [
+			...this.solsticeToolCommandPrefixes().map((prefix) => `${prefix}:*`),
 			this.devServerToolCommand("list"),
 			this.devServerToolCommand("stop", "workspace"),
 			this.devServerToolCommand("close-all"),
@@ -1975,36 +2053,11 @@ self.addEventListener("fetch", (e) => {
 
 	// Voice dictation: webview records mic audio → Groq Whisper → text back into the composer.
 	// Same engine as the fleet's Telegram dictation (whisper-large-v3, Hebrew-first).
-	async transcribeVoice(b64, mime) {
-		try {
-			const key = String(this.cfg().get("groqApiKey") || process.env.GROQ_API_KEY || "").trim();
-			if (!key) {
-				this.post({ type: "transcribeError", message: "Voice needs a Groq key — set solstice.codex.groqApiKey (or GROQ_API_KEY)." });
-				return;
-			}
-			const bytes = Buffer.from(String(b64 || ""), "base64");
-			if (!bytes.length) { this.post({ type: "transcribeError", message: "empty recording" }); return; }
-			const ext = mime && mime.includes("ogg") ? "ogg" : "webm";
-			const lang = String(this.cfg().get("dictationLanguage") || "he").trim() || "he";
-			const form = new FormData();
-			form.append("file", new Blob([bytes], { type: mime || "audio/webm" }), "voice." + ext);
-			form.append("model", "whisper-large-v3");
-			if (lang && lang !== "auto") form.append("language", lang);
-			const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
-				method: "POST",
-				headers: { Authorization: "Bearer " + key },
-				body: form,
-			});
-			if (!res.ok) {
-				const t = await res.text().catch(() => "");
-				this.post({ type: "transcribeError", message: "Groq " + res.status + " " + t.slice(0, 200) });
-				return;
-			}
-			const data = await res.json();
-			this.post({ type: "transcribed", text: String((data && data.text) || "").trim() });
-		} catch (e) {
-			this.post({ type: "transcribeError", message: String((e && e.message) || e) });
-		}
+	async transcribeVoice(b64, mime, requestId) {
+		this._voiceTranscription ||= new (require('./voiceTranscription').VoiceTranscription)();
+		await this._voiceTranscription.run({audio:b64,mime,requestId,
+			key:String(this.cfg().get('groqApiKey') || process.env.GROQ_API_KEY || '').trim(),
+			language:String(this.cfg().get('dictationLanguage') || 'he')}, data=>this.post(data));
 	}
 
 	// spawn (or reveal) an integrated terminal in the workspace root — opens in the
@@ -2365,7 +2418,7 @@ self.addEventListener("fetch", (e) => {
 		if (this._discoveredModelChoices) {
 			const list = [...this._discoveredModelChoices];
 			if (this.claudeAllowed()) {
-				for (const key of ["claude-opus-5", "claude-fable-5", "claude-fable-5-1", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5"]) {
+				for (const key of ["claude-opus-5-5", "claude-opus-5", "claude-fable-5", "claude-fable-5-1", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5"]) {
 					const m = MODEL_REGISTRY[key];
 					list.push({ key, modelId: m.claudeId, label: m.label, description: m.desc, runner: m.runner, provider: "claude", manualOnly: true });
 				}
@@ -2422,6 +2475,7 @@ self.addEventListener("fetch", (e) => {
 
 	// True while a build/turn is actively running (don't switch model mid-build).
 	agentBusy() {
+		if (this._mercuryCompletion) return true;
 		const runner = runnerFor(this.providerKey());
 		const prov = runner === "claude" ? this.claude : runner === "moonshot" ? this.moonshot : this.grok;
 		return !!(prov && prov.busy);
@@ -2781,6 +2835,7 @@ self.addEventListener("fetch", (e) => {
 				this.agentBehavior(),
 				this.appModeGuidance(),
 				playbook ? "\n" + playbook : "",
+				focusInstructions(text),
 			].join("\n");
 		}
 
@@ -2810,6 +2865,7 @@ self.addEventListener("fetch", (e) => {
 			`- Extract a Behance/Dribbble showcase as structured evidence (forces lazy-load, downloads best image variants, inventories players): ${shot.replace(" shot <url> <out.png>", ' showcase <url> <outDir> [maxAssets]')}`,
 			`- Authorized site replica evidence (client-owned/licensed sources only; rendered evidence, never copied source code): ${shot.replace(" shot <url> <out.png>", ' replica-source <url> <outDir> --authorized')}. The CP-F1 gate runs replica-compare automatically after the rebuild.`,
 			"- Research workflow: when the user asks you to imitate/take inspiration from a site or find references, SEARCH for it, READ or CRAWL the top results, and SCROLLSHOT the best ones before designing — don't guess from memory.",
+			"- IMAGES: this model (Anthropic Claude / Kimi) has no native image generation. Every image you need (hero, gallery, products, scroll-world keyframes) comes from OpenAI GPT-Image-2 through the Solstice image bridge below — it is pre-approved for you, so run it directly; never skip images or fall back to placeholders because you cannot draw.",
 			"- You CAN view images: open any screenshot/reference image with your Read tool and study it in exhaustive detail (layout, sections, colors with hex, typography, imagery style, spacing, mood). Always do this for every reference screenshot before designing, and for your own verification screenshots before declaring done.",
 			`- Capture a design TOP-TO-BOTTOM in DESKTOP and MOBILE (Behance/Dribbble show both): desktop full-page → ${shot.replace(" shot <url> <out.png>", ' scrollshot <url> <outPrefix> [stops]')}; mobile full-page → ${shot.replace("shot <url> <out.png>", "shot <url> <out.png> 390x3000")}. Open each with your Read tool to study both viewports.`,
 				this.imageCapabilityInstructions(),
@@ -2824,6 +2880,7 @@ self.addEventListener("fetch", (e) => {
 				this.agentBehavior(),
 				this.appModeGuidance(),
 				playbook ? "\n" + playbook : "",
+				focusInstructions(text),
 			].join("\n");
 		}
 
@@ -2843,7 +2900,7 @@ self.addEventListener("fetch", (e) => {
 				cwd,
 				bin: this.cfg().get("claudePath") || undefined,
 				model: selected.claudeId || undefined,
-				permissionMode: this.cfg().get("claudePermissionMode") || undefined,
+				permissionMode: this.claudePermissionMode(),
 				env: devServerToolEnv,
 				allowedTools: this.claudeDevServerAllowedTools(),
 				log: (s) => this.output.append(s),
@@ -3015,7 +3072,7 @@ self.addEventListener("fetch", (e) => {
 			server.touch("preview-open");
 		} else if (!url) {
 			let server = this.managerPreviews.get(taskId);
-			if (!server) { server = new PreviewServer(root, { onSelect: (pick) => this.postManager({ type: "elementSelected", taskId, pick }) }); this.managerPreviews.set(taskId, server); }
+			if (!server) { server = new PreviewServer(root, { onSelect: async (pick) => this.post({ type: "elementSelected", pick: await this.captureSelectedElement(pick, root) }) }); this.managerPreviews.set(taskId, server); }
 			const port = await server.ensure();
 			const rel = fs.existsSync(path.join(root, "index.html")) ? "index.html" : "";
 			url = `http://127.0.0.1:${port}/${rel}`;
@@ -3153,7 +3210,7 @@ self.addEventListener("fetch", (e) => {
 			if (!String(tid).startsWith("grok-") && !String(tid).startsWith("claude-")) this.activeCodexThreadId = tid;
 			const managerTask = this.managerTasks && this.managerTasks.forThread(tid);
 			if (managerTask) { this.managerTasks.setStatus(managerTask.id, "running", { phase: "execution" }); this.pushManagerTasks(); }
-			if (tid === this.threadId) { this.markBusy("_builder", true); this.notePulse("_builder", "state"); this.postPreview({ type: "building", on: true }); this.fleetFlow("building"); this.injectMercuryClient().catch(() => { }); }
+			if (tid === this.threadId) { this._mercuryCompletion = null; this.markBusy("_builder", true); this.notePulse("_builder", "state"); this.postPreview({ type: "building", on: true }); this.fleetFlow("building"); this.injectMercuryClient({ sync: false }).catch(() => { }); }
 			this.pushThreads();
 		} else if (method === "turn/completed" && tid) {
 			let browserCheckStarted = false;
@@ -3163,15 +3220,16 @@ self.addEventListener("fetch", (e) => {
 			if (this.activeCodexThreadId === tid) this.activeCodexThreadId = null;
 			const managerTask = this.managerTasks && this.managerTasks.forThread(tid);
 			if (managerTask) {
-				this.managerTasks.setStatus(managerTask.id, "ready_review", { phase: "review" });
-				this.managerTasks.inspect(managerTask.id).then(() => this.pushManagerTasks()).catch((e) => this.output.append("[manager] inspect failed: " + e.message + "\n"));
+				const pendingCommerce = tid === this.threadId && workspaceCwd() && fs.existsSync(path.join(workspaceCwd(), MERCURY_SEED_FILE));
+				this.managerTasks.setStatus(managerTask.id, pendingCommerce ? "running" : "ready_review", { phase: pendingCommerce ? "commerce_sync" : "review" });
+				if (!pendingCommerce) this.managerTasks.inspect(managerTask.id).then(() => this.pushManagerTasks()).catch((e) => this.output.append("[manager] inspect failed: " + e.message + "\n"));
 			}
 			if (tid === this.threadId) {
 				this.markBusy("_builder", false);
 				this.postPreview({ type: "building", on: false });
 				this._failoverTried = null;
 				this.refreshPreview();
-				browserCheckStarted = this.maybeRunBrowserSelfCheck();
+				browserCheckStarted = this.maybeFinishMercuryTurn(tid) || this.maybeRunBrowserSelfCheck();
 				if (!browserCheckStarted) this.fleetFlow("done");
 			}
 			if (tid === this.threadId) this.noteFidelityDraftEligibility();
@@ -3398,6 +3456,7 @@ self.addEventListener("fetch", (e) => {
 				this.agentBehavior(),
 				this.appModeGuidance(),
 				playbook ? "\n" + playbook : "",
+				focusInstructions(text),
 			].join("\n");
 		}
 
@@ -3505,6 +3564,7 @@ self.addEventListener("fetch", (e) => {
 
 	// sidebar send: lazily creates the sidebar thread
 	async send(text) {
+		try { assertReviewCurrent(workspaceCwd(), text); } catch (error) { this.post({type:"sendRejected", text:error.message, busy:this.agentBusy()}); return; }
 		let rawText = text;
 		const browserFixTurn = /^\s*\[FELIX_BROWSER_SELF_CHECK\]/.test(String(text || ""));
 		const replicaUrl = !browserFixTurn && siteReplicaSourceUrl(rawText);
@@ -3519,6 +3579,7 @@ self.addEventListener("fetch", (e) => {
 			text = rawText;
 		}
 		const browserBuildIntent = !browserFixTurn && this.isBrowserBuildIntent(rawText);
+		const focusedChange = targetedChange(rawText);
 		// Runtime-only continuation actions are resolved before any model context is
 		// assembled. With a workspace-owned dev-server registration, "open the site"
 		// therefore opens the exact live URL without a discovery or inventory turn.
@@ -3540,9 +3601,14 @@ self.addEventListener("fetch", (e) => {
 				this.armBrowserSelfCheck(rawText);
 				this._walkthroughPending = true;
 			}
-			this.beginFlowingPlan(text);
-			text = this.flowingBuildPrompt(text);
+			if (focusedChange) {
+				this.beginFlowingPlan(text);
+			} else {
+				this.beginFlowingPlan(text);
+				text = this.flowingBuildPrompt(text);
+			}
 		}
+		if (focusedChange) text = focusInstructions(rawText) + text;
 		if (text && !String(text).includes("[FELIX_WORKSPACE_STATE]")) {
 			const state = workspaceContext(workspaceCwd());
 			if (state) text = state + text;
@@ -3552,10 +3618,11 @@ self.addEventListener("fetch", (e) => {
 			if (memory) text = memory + text;
 		}
 		if (text && !String(text).includes("[FELIX_SKILLS]")) {
-			const hint = await this.skillsHint(text);
+			const hint = await this.skillsHint(rawText);
 			if (this._skillsDispatchBlocked) return;
 			if (hint) text = hint + text;
 		}
+		if (browserBuildIntent || browserFixTurn || this.buildMode === "app" || (workspaceCwd() && fs.existsSync(path.join(workspaceCwd(), MERCURY_SEED_FILE)))) text = acceptanceContext(workspaceCwd(), this.context.extensionPath) + text;
 		// remember the last prompt so auto-failover can transparently re-run it
 		// on the next model in the chain after a quota/rate-limit error.
 		if (rawText && !browserFixTurn) this._lastUserPrompt = rawText;
@@ -3586,6 +3653,7 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	async steer(threadId, text, userText = text) {
+        try { assertReviewCurrent(this.brandPackRootForThread(threadId),text); } catch(error) { this.post({type:"sendRejected",text:error.message,busy:this.agentBusy()}); return; }
 		text = appendResearchContract(this.withBrandPack(text, this.brandPackRootForThread(threadId)));
 		const provider = this.providerKey();
 		// grok / claude run as spawned CLIs with no native mid-turn injection.
@@ -3639,6 +3707,7 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	async interrupt(threadId) {
+		if (!threadId || threadId === this.threadId) this._mercuryCompletion = null;
 		if (this._taskCheckpoints) for (const journal of this._taskCheckpoints.values()) {
 			try { journal.pause(threadId); } catch (e) { this.output.append(`[continuity] stop checkpoint failed: ${e.message}\n`); }
 		}
@@ -3733,6 +3802,7 @@ self.addEventListener("fetch", (e) => {
 	}
 
 	newThread() {
+		this._voiceTranscription?.cancel();
 		if (this.threadId) this.stopDevServerForAgent("workspace");
 		this.threadId = null;
 		this.lastDiff = "";
@@ -4600,6 +4670,7 @@ self.addEventListener("fetch", (e) => {
 			maxRounds: 3,
 			token: crypto.randomBytes(12).toString("hex"),
 			replicaSourceUrl: siteReplicaSourceUrl(task),
+			visualReviewId: String(task || "").match(/\[FELIX_VISUAL_REVIEW:([0-9a-f-]{36})\]/)?.[1] || "",
 		};
 		this._walkthroughTaskId = this._browserSelfCheck.id;
 		this._browserSelfCheckRunning = false;
@@ -4647,6 +4718,7 @@ self.addEventListener("fetch", (e) => {
 		const tool = path.join(this.context.extensionPath, "webtools", "browse.js");
 		this.output.append(`[browser-check] round=${state.round}/${state.maxRounds} url=${url}\n`);
 		this.announceAgentMessage(`🔍 בדיקת דפדפן אוטומטית · סבב ${state.round}/${state.maxRounds}`);
+		const checkedRevision = sourceRevision(cwd);
 		const result = await this.runCli(runtime.bin, [tool, "check", url, roundDir], cwd, runtime.env);
 		if (!this._browserSelfCheck || this._browserSelfCheck.token !== token) return;
 		if (result.code !== 0) {
@@ -4696,9 +4768,37 @@ self.addEventListener("fetch", (e) => {
 			}
 			normalized = normalizeBrowserReport({ ...normalized, ok: normalized.ok && replica.ok, replica, findings });
 		}
-		const saved = writeBrowserSelfCheckReport(cwd, state.id, state.round, normalized);
+        if (normalized.ok && ["design-contract.json","acceptance.json"].some(name=>fs.existsSync(path.join(cwd,".solstice",name)))) {
+            const projectOut=path.join(cwd,".solstice","project-check",state.id+"-"+state.round+"-"+Date.now());
+            const checked=await this.runCli(runtime.bin,[path.join(this.context.extensionPath,"webtools","project-check.js"),"check",cwd,url,projectOut],cwd,runtime.env);
+            if (!this._browserSelfCheck || this._browserSelfCheck.token !== token) return;
+            try {
+                const file=path.join(projectOut,"report.json"), project=JSON.parse(fs.readFileSync(file,"utf8"));
+                if (!Array.isArray(project.layers)||!project.layers.length||!Array.isArray(project.findings))throw new Error("Incomplete project report");
+                const projectErrors=project.findings.some(f=>f.severity!=="warning");
+                const layerFailure=project.layers.some(layer=>layer.status==='failed');
+                if(!sameRevision(project.sourceRevision,checkedRevision)||
+                   (project.ok===true&&(checked.code!==0||projectErrors||layerFailure))||
+                   (project.ok!==true&&!projectErrors))throw new Error('Inconsistent project report');
+                fs.copyFileSync(file,path.join(cwd,".solstice","project-check","latest.json"));
+                normalized=normalizeBrowserReport({...normalized,ok:normalized.ok&&!project.findings.some(f=>f.severity!=="warning"),findings:[...normalized.findings,...project.findings],projectAcceptance:{file,layers:project.layers,ok:project.ok,caveats:project.caveats}});
+            }catch(error){
+                normalized=normalizeBrowserReport({...normalized,ok:false,findings:[...normalized.findings,{severity:"error",check:"report-contract",message:"Project acceptance checker failed; inspect its output before editing app code.",evidence:{exit:checked.code}}]});
+            }
+        }
+        if (!sameRevision(checkedRevision, sourceRevision(cwd))) {
+            normalized=normalizeBrowserReport({...normalized,ok:false,findings:[...normalized.findings,{severity:"error",check:"source-changed",message:"Project changed during verification. Rerun checks on the current files before editing.",evidence:{}}]});
+        }
+        normalized.sourceRevision=checkedRevision;
+        const saved = writeBrowserSelfCheckReport(cwd, state.id, state.round, normalized);
 		normalized = saved.report;
 		this.output.append(`[browser-check] round=${state.round} ok=${normalized.ok} findings=${normalized.findings.length} report=${saved.file}\n`);
+		if (normalized.ok && state.visualReviewId) {
+            try { await this.completeSelectedReview(cwd,state.visualReviewId,saved.file,url); }
+            catch(error) { this.failBrowserSelfCheck(state,'Visual evidence incomplete: '+error.message);return; }
+            if (!this._browserSelfCheck || this._browserSelfCheck.token !== token) return;
+            this.post({type:'systemNote',text:'צילומי לפני ואחרי מוכנים במסך מוכנות הפרויקט. הבדיקות עברו; האישור החזותי ממתין לסקירה.'});
+        }
 		if (normalized.ok) {
 			this._learningSignals.set(state.id, {
 				type: "browser-functional-check",
@@ -4715,7 +4815,7 @@ self.addEventListener("fetch", (e) => {
 			const summary = normalized.summary || {};
 			const replicaNote = normalized.replica ? ` · replica ${normalized.replica.score}/100` : "";
 			this.announceAgentMessage(`✅ בדיקת הדפדפן ירוקה: ${summary.linksChecked || 0} ניווטים, ${summary.buttonsChecked || 0} כפתורים, ${summary.formsChecked || 0} טפסים${replicaNote} · ${saved.file}`);
-			this.post({ type: "systemNote", text: "[FELIX_BROWSER_SELF_CHECK_GREEN] ה-build עבר בדפדפן אמיתי; אין שגיאות 404/console/layout או controls מתים." });
+			this.post({ type: "systemNote", text: "[FELIX_BROWSER_SELF_CHECK_GREEN] בדיקת הדפדפן עברה בהיקף שנמדד. הטפסים נבדקו עם שליחה מדומה; הרשאות API ושמירה ב־DB טרם אומתו. " + (summary.warnings ? `${summary.warnings} אזהרות נשארו בדוח. ` : "") + saved.file });
 			if (this._activeBuild && this._activeBuild.taskId === state.id) this._verifyTaskId = state.id;
 			this.fleetFlow("done");
 			this.maybeCreateWalkthrough();
@@ -4726,7 +4826,13 @@ self.addEventListener("fetch", (e) => {
 			this.failBrowserSelfCheck(state, `Browser self-check stayed red after ${state.maxRounds} rounds. Last report: ${saved.file}`);
 			return;
 		}
-		const fixPrompt = buildBrowserFixPrompt(normalized, state.round, state.maxRounds);
+		const decision = browserRepairDecision(normalized, state.lastRepairFingerprint);
+		if (!decision.repair) {
+			this.failBrowserSelfCheck(state, `${decision.reason} Report: ${saved.file}`);
+			return;
+		}
+		state.lastRepairFingerprint = decision.fingerprint;
+		const fixPrompt = buildBrowserFixPrompt(normalized, state.round, state.maxRounds, saved.file);
 		this._browserSelfCheckRunning = false;
 		this.announceAgentMessage(`🛠 בדיקת הדפדפן מצאה ${normalized.summary && normalized.summary.errors || normalized.findings.length} תקלות; פליקס מתקן ומריץ שוב.`);
 		await this.send(fixPrompt).catch((error) => this.failBrowserSelfCheck(state, `Could not start browser auto-fix turn: ${error && error.message || error}`));
@@ -4857,6 +4963,18 @@ self.addEventListener("fetch", (e) => {
 	// Headless screenshot of the live preview into .solstice/verify-<taskId>.png.
 	// Spawns browse.js via the same ELECTRON_RUN_AS_NODE path the agent itself
 	// uses; group-spawned so a wedged Chrome is reaped on timeout.
+    async captureCompanionPreview(url) {
+        const root=workspaceCwd();if(!root)return null;
+        const dir=path.join(root,'.solstice','companion-preview');fs.mkdirSync(dir,{recursive:true});
+        const spec=path.join(dir,'capture.json'),shot=path.join(dir,'preview.jpg');
+        fs.writeFileSync(spec,JSON.stringify({url,viewport:{width:390,height:844},selectors:[],maxBytes:28*1024,output:shot}));
+        const runtime=this.resolveWalkthroughRuntime();
+        const result=await this.runCli(runtime.bin,[path.join(this.context.extensionPath,'webtools','project-check.js'),'capture',spec],root,runtime.env);
+        if(result.code!==0)throw new Error('Could not capture a preview within the relay budget');
+        const bytes=fs.readFileSync(shot);if(bytes.length>28*1024||bytes.subarray(0,2).toString('hex')!=='ffd8')throw new Error('Invalid relay preview image');
+        return shot;
+    }
+
 	capturePreviewShot(url, taskId, viewport = "1440x2200") {
 		return new Promise((resolve) => {
 			const cwd = workspaceCwd();
@@ -5176,38 +5294,117 @@ self.addEventListener("fetch", (e) => {
 	// The stored credential is "<baseURL>|<store_id>". Parsed into a config the
 	// build uses to wire the storefront to the live Mercury backend.
 	async mercuryConfig() {
-		const raw = await this.connectorToken("mercury");
-		if (!raw) return null;
-		const [base, storeId] = raw.split("|").map((x) => (x || "").trim());
-		if (!base || !storeId) return null;
-		return { base: base.replace(/\/+$/, ""), storeId };
+		return parseMercuryCredential(await this.connectorToken("mercury"));
 	}
 	// On build, drop a typed Mercury client into the project (lib/mercury.ts) so
 	// the storefront talks to the live commerce engine — products, cart, checkout,
 	// analytics — instead of mock data. Customer storefront only; analytics data
 	// is read for the OWNER side (MercuryShell), never rendered to the shopper.
-	async injectMercuryClient() {
+	async injectMercuryClient(options = {}) {
 		const cfg = await this.mercuryConfig();
 		const root = workspaceCwd();
-		if (!cfg || !root) return false;
+		if (!root) return false;
+		if (!cfg) { if (options.sync !== false) await syncMercurySeedFromProject(root, cfg); return false; }
 		const dir = path.join(root, "lib");
 		try { fs.mkdirSync(dir, { recursive: true }); } catch { }
-		const src = [
-			"// Auto-generated by Solstice — Mercury commerce connector (headless).",
-			"export const MERCURY_BASE = " + JSON.stringify(cfg.base) + ";",
-			"export const STORE_ID = " + JSON.stringify(cfg.storeId) + ";",
-			"async function api(path, init) {",
-			"  const r = await fetch(MERCURY_BASE + path, { ...init, headers: { 'Content-Type': 'application/json', ...((init && init.headers) || {}) } });",
-			"  if (!r.ok) throw new Error('Mercury ' + path + ' ' + r.status);",
-			"  return r.json();",
-			"}",
-			"export const getProducts = () => api('/api/stores/' + STORE_ID + '/products');",
-			"export const getProduct = (id) => api('/api/stores/' + STORE_ID + '/products/' + id);",
-			"export const createCheckout = (items) => api('/api/stores/' + STORE_ID + '/checkout', { method: 'POST', body: JSON.stringify({ items }) });",
-			"export const trackEvent = (event, data) => api('/api/stores/' + STORE_ID + '/collect', { method: 'POST', body: JSON.stringify({ event, ...(data || {}) }) }).catch(() => {});",
-			"",
-		].join("\n");
-		try { fs.writeFileSync(path.join(dir, "mercury.ts"), src); return true; } catch { return false; }
+		// lib/mercury.ts for Next/TS projects, lib/mercury.js (plain ESM) for static
+		// sites such as ScrollWorld pages — same routes, same store, no mock data.
+		try {
+			fs.writeFileSync(path.join(dir, "mercury.ts"), mercuryClientSource(cfg));
+			fs.writeFileSync(path.join(dir, "mercury.js"), mercuryClientSourceJs(cfg));
+		} catch (error) { if (options.sync !== false) throw error; return false; }
+		// Felix may have written a product seed for a store that is still empty —
+		// push it once per (store, seed content); the receipt lands next to the seed.
+		if (options.sync !== false) {
+			const receipt = await syncMercurySeedFromProject(root, cfg);
+			if (receipt && !receipt.unchanged) {
+				const msg = `Mercury: ${receipt.created.length} מוצרים נוצרו, ${(receipt.updated || []).length} עודכנו` + (receipt.skipped.length ? ` (${receipt.skipped.length} ללא שינוי)` : "");
+				this.postFleetActivity("_builder", "online", msg);
+			}
+		}
+		return true;
+	}
+
+	// A model may write the catalog during its turn. Await sync before QA/delivery,
+	// even when selfVerify is off; never let a late response complete another turn.
+	maybeFinishMercuryTurn(tid) {
+		const root = workspaceCwd();
+		if (!root || !fs.existsSync(path.join(root, MERCURY_SEED_FILE))) return false;
+		const token = {};
+		const build = this._activeBuild;
+		this._mercuryCompletion = token;
+		const current = () => this._mercuryCompletion === token && this.threadId === tid && workspaceCwd() === root && this._activeBuild === build;
+		this.announceAgentMessage("בודק סנכרון מוצרים מול Mercury לפני סיום…");
+		this._mercuryCompletionPromise = this.injectMercuryClient().then(() => {
+			if (!current()) return;
+			this._mercuryCompletion = null;
+			this.announceAgentMessage("✅ מוצרי הפרויקט סונכרנו ל־Mercury.");
+			const task = this.managerTasks && this.managerTasks.forThread(tid);
+			if (task) { this.managerTasks.setStatus(task.id, "ready_review", { phase: "review" }); this.managerTasks.inspect(task.id).then(() => this.pushManagerTasks()).catch(e => this.output.append("[manager] " + e.message + "\n")); }
+			if (!this.maybeRunBrowserSelfCheck()) {
+				this.fleetFlow("done");
+				this.maybeCreateWalkthrough();
+				this.drainSteerQueue();
+			}
+		}).catch(error => {
+			if (!current()) return;
+			this._mercuryCompletion = null;
+			const message = "סנכרון Mercury נכשל; החנות עדיין אינה מוכנה: " + String(error.message || error).slice(0, 800);
+			this.announceAgentMessage("❌ " + message);
+			this.post({ type: "systemNote", text: "[FELIX_MERCURY_SYNC_FAILED] " + message });
+			this.postFleetActivity("_builder", "error", message);
+			const task = this.managerTasks && this.managerTasks.forThread(tid);
+			if (task) { this.managerTasks.setStatus(task.id, "failed", { phase: "commerce_sync", error: message }); this.pushManagerTasks(); }
+			this._browserSelfCheck = null;
+			this._browserSelfCheckRunning = false;
+			this._walkthroughPending = false;
+			this._walkthroughTaskId = "";
+			this.sendBuildStatus("error", { error: message });
+			this._flowActive = false;
+			this._activeBuild = null;
+			this.drainSteerQueue();
+		});
+		return true;
+	}
+
+	// Open a new store on the Mercury engine from inside the IDE: probe the engine,
+	// ask for a name + currency, create the store, vault the credential, and drop
+	// the client into the project so the very next build is wired to a live catalog.
+	async openMercuryStoreFlow(c, opts) {
+		const root = workspaceCwd();
+		const defaultBase = String(this.cfg().get("mercury.base") || process.env.MERCURY_BASE || MERCURY_DEFAULT_BASE).trim();
+		const base = await vscode.window.showInputBox({
+			title: "Mercury — כתובת המנוע", prompt: "כתובת ה-API של Mercury (מקומי: " + MERCURY_DEFAULT_BASE + ")", value: defaultBase, ignoreFocusOut: true,
+			validateInput: (v) => (/^https?:\/\/[^\s|]+$/i.test(String(v || "").trim()) ? null : "כתובת חייבת להתחיל ב-http(s)://"),
+		});
+		if (!base) { vscode.window.showWarningMessage("פתיחת החנות בוטלה."); return false; }
+		let health;
+		try { health = await mercuryHealth(base); }
+		catch (e) { vscode.window.showErrorMessage("Mercury: " + (e && e.message || e)); return false; }
+		const name = await vscode.window.showInputBox({
+			title: "Mercury — שם החנות", prompt: "השם שיופיע ללקוחות ובאדמין", value: root ? path.basename(root) : "", ignoreFocusOut: true,
+			validateInput: (v) => (String(v || "").trim() ? null : "שם חנות נדרש"),
+		});
+		if (!name) { vscode.window.showWarningMessage("פתיחת החנות בוטלה."); return false; }
+		const cur = await vscode.window.showQuickPick(MERCURY_CURRENCIES.map((x) => ({ label: x, description: x === "ILS" ? "שקל — ברירת מחדל" : "" })), { title: "Mercury — מטבע החנות", placeHolder: "ILS", ignoreFocusOut: true });
+		if (!cur) { vscode.window.showWarningMessage("פתיחת החנות בוטלה."); return false; }
+		let opened;
+		try { opened = await openMercuryStore(health.base, { name: name.trim(), currency: cur.label, vertical: "solstice" }); }
+		catch (e) { vscode.window.showErrorMessage("Mercury: " + (e && e.message || e)); return false; }
+		try { await this.context.secrets.store(this.connectorSecretKey("mercury"), opened.credential); }
+		catch (e) { vscode.window.showErrorMessage(`שמירת ה-credential נכשלה: ${e && e.message || e}`); return false; }
+		try { const req = this.context.globalState.get("solstice.fleet.connectorsRequested") || {}; delete req.mercury; this.context.globalState.update("solstice.fleet.connectorsRequested", req); } catch { }
+		const injected = await this.injectMercuryClient();
+		vscode.window.showInformationMessage(`✅ נפתחה חנות «${opened.store.name}» (${opened.storeId}, ${opened.store.currency}) ב-${opened.base}` + (injected ? " — lib/mercury.ts הוזרק לפרויקט." : "") + " ה-credential נשמר בכספת.");
+		this.refreshConnectorsPanel();
+		if (opts && opts.agentId) this.postFleetActivity(opts.agentId, "online", `חנות Mercury נפתחה: ${opened.storeId} ✓`);
+		return true;
+	}
+	// Connected-store facts for the panel/agent (name, currency, live product count).
+	async mercuryStatus() {
+		const cfg = await this.mercuryConfig();
+		if (!cfg) return null;
+		try { return await mercuryStoreStatus(cfg); } catch (e) { return { id: cfg.storeId, error: String(e && e.message || e) }; }
 	}
 
 	// The on-demand flow: open the provider's auth/token page, let Thomas log in
@@ -5217,6 +5414,16 @@ self.addEventListener("fetch", (e) => {
 		const c = CONNECTOR_CATALOG.find((x) => x.id === id);
 		if (!c) { vscode.window.showErrorMessage("Solstice: ספק לא ידוע — " + id); return false; }
 		if (await this.connectorConnected(id)) { vscode.window.showInformationMessage(`${c.name} כבר מחובר.`); return true; }
+		if (id === "mercury") {
+			// Mercury is ours: besides pasting an existing store credential, the owner can
+			// open a brand-new store on the engine right here (no admin round-trip).
+			const choice = await vscode.window.showQuickPick([
+				{ label: "$(add) פתח חנות חדשה במרקורי", description: "יוצר חנות במנוע ומחבר אותה לפרויקט", id: "open" },
+				{ label: "$(link) חבר חנות קיימת", description: "הדבק <כתובת>|<store_id> מהאדמין של מרקורי", id: "link" },
+			], { title: "Mercury Commerce", placeHolder: "איך לחבר את החנות?", ignoreFocusOut: true });
+			if (!choice) { vscode.window.showWarningMessage("חיבור Mercury בוטל."); return false; }
+			if (choice.id === "open") return this.openMercuryStoreFlow(c, opts);
+		}
 		// 1) emit the auth link — open it so Thomas authenticates in the browser
 		if (c.authUrl) { try { await vscode.env.openExternal(vscode.Uri.parse(c.authUrl)); } catch { } }
 		// 2) Thomas pastes the credential (password field — not echoed, not logged)
@@ -5769,7 +5976,8 @@ class AgentViewProvider {
 					case "setModel": await this.controller.setModel(msg.key); break;
 					case "selectAutonomy": await this.controller.selectAutonomy(); break;
 					case "openImage": this.controller.openImage(msg.path); break;
-					case "transcribe": await this.controller.transcribeVoice(msg.audio, msg.mime); break;
+					case "cancelTranscribe": this.controller._voiceTranscription?.cancel(); break;
+					case "transcribe": await this.controller.transcribeVoice(msg.audio, msg.mime, msg.requestId); break;
 						case "buildMode": this.controller.setBuildMode(msg.mode); break;
 						case "scaffoldApp": await this.controller.scaffoldAppIntoWorkspace(); break;
 				}
@@ -6073,13 +6281,6 @@ function openBrandDna(controller, extensionUri) {
 }
 
 let foundationPanel = null;
-function postFoundationError(error) {
-	const statusCode = error && (error.statusCode || error.status);
-	const status = statusCode ? `HTTP ${statusCode} · ` : "";
-	const message = `${status}${String(error && error.message || error || "Foundation request failed")}`;
-	if (foundationPanel) foundationPanel.webview.postMessage({ type: "error", message });
-	vscode.window.showErrorMessage("Foundation: " + message);
-}
 function openFoundation(controller, extensionUri) {
 	if (foundationPanel) { foundationPanel.reveal(vscode.ViewColumn.One); return; }
 	foundationPanel = vscode.window.createWebviewPanel("solstice.foundation", "Foundation", vscode.ViewColumn.One, {
@@ -6091,80 +6292,29 @@ function openFoundation(controller, extensionUri) {
 		storageDir: path.join(controller.context.globalStorageUri.fsPath, "foundation-board"),
 		businessFile: path.join(controller.context.globalStorageUri.fsPath, "foundation-board.json"),
 	});
-	let activeSlug = null;
-	let activeDetail = null;
-	let detailCursor = new Date(Date.now() - 1000).toISOString();
-	const refresh = async () => {
-		const board = await boardClient.listBusinesses();
-		foundationPanel.webview.postMessage({
-			type: "state",
-			state: {
-				board,
-				endpoint: foundationBusinessesUrl(boardClient.endpoint),
-				connectedAt: new Date().toISOString(),
-			},
-		});
-	};
-	const showBusiness = async (slug, silent = false) => {
-		activeSlug = String(slug || "");
-		if (!silent) foundationPanel.webview.postMessage({ type: "detailBusy", slug: activeSlug });
-		const detail = await boardClient.getBusinessDetail(slug);
-		activeDetail = detail;
-		foundationPanel.webview.postMessage({
-			type: "detail",
-			detail,
-			connectedAt: new Date().toISOString(),
-		});
-	};
-	const detailPoll = setInterval(async () => {
-		if (!foundationPanel || !activeSlug || !activeDetail || !activeDetail.business) return;
-		try {
-			const response = await boardClient.pollEvents(detailCursor);
-			if (response.cursor) detailCursor = String(response.cursor);
-			const changed = Array.isArray(response.events) && response.events.some((event) =>
-				String(event.business_id || "") === String(activeDetail.business.id || "")
-				&& String(event.event_type || "").startsWith("foundation.canvas."),
-			);
-			if (changed) await showBusiness(activeSlug, true);
-		} catch { /* offline poll retries; the last canonical revision stays visible */ }
-	}, 2500);
+	const panel = foundationPanel;
+	const session = new FoundationBoard(boardClient, (message) => panel.webview.postMessage(message));
+	const detailPoll = setInterval(() => session.poll(), 2500);
 	if (detailPoll.unref) detailPoll.unref();
-	foundationPanel.webview.onDidReceiveMessage(async (message) => {
+	panel.webview.onDidReceiveMessage(async (message) => {
 		try {
-			if (message.type === "ready" || message.type === "refresh") await refresh();
-			else if (message.type === "show_business") await showBusiness(message.slug);
-			else if (message.type === "add_canvas_node") {
-				if (!activeDetail || !activeDetail.canvas) throw new Error("Open a Foundation business before adding a canvas node.");
-				const title = String(message.title || "").trim();
-				if (!title || title.length > 600) throw new Error("Canvas node title is invalid.");
-				const current = activeDetail.canvas.snapshot || {
-					version: 4, slug: activeSlug, nodes: [], edges: [], savedAt: new Date().toISOString(),
-				};
-				const id = crypto.randomUUID();
-				const node = {
-					id, type: "Solstice · note", title, meta: "origin:solstice", ftype: "note",
-					note: title, x: 80 + (current.nodes.length % 3) * 380,
-					y: 80 + Math.floor(current.nodes.length / 3) * 340,
-				};
-				const anchor = current.nodes[0];
-				const snapshot = {
-					...current,
-					version: 4,
-					nodes: [...current.nodes, node],
-					edges: anchor ? [...current.edges, { from: anchor.id, to: id }] : current.edges,
-					savedAt: new Date().toISOString(),
-				};
-				await boardClient.saveCanvas(activeSlug, snapshot, activeDetail.canvas.revision);
-				await showBusiness(activeSlug, true);
-			}
+			if (message.type === "ready" || message.type === "refresh") await session.refresh();
+			else if (message.type === "show_board") session.back();
+			else if (message.type === "show_business") await session.show(message.slug);
+			else if (message.type === "add_canvas_node") await session.addNode(message.slug, message.title, crypto.randomUUID());
 			else if (message.type === "open_surface") {
 				const target = new URL(String(message.href || ""), boardClient.endpoint);
 				if (!/^https?:$/.test(target.protocol)) throw new Error("Foundation surface URL must use HTTP(S).");
 				await vscode.env.openExternal(vscode.Uri.parse(target.toString()));
 			}
-		} catch (error) { postFoundationError(error); }
+		} catch (error) { session.fail(error, session.generation); }
 	});
-	foundationPanel.onDidDispose(() => { clearInterval(detailPoll); foundationPanel = null; });
+	panel.onDidDispose(() => {
+		clearInterval(detailPoll);
+		session.dispose();
+		if (!controller.foundationClient) boardClient.dispose();
+		if (foundationPanel === panel) foundationPanel = null;
+	});
 }
 
 let galleryPanel = null;
@@ -6507,7 +6657,7 @@ const CONNECTOR_CATALOG = [
 	{ id: "vercel", name: "Vercel", glyph: "▲", blurb: "פריסת אתרים ואפליקציות בלחיצה", tokenKey: "VERCEL_TOKEN", authUrl: "https://vercel.com/account/tokens", howto: "צור Token חדש (Scope: Full Account) והדבק כאן." },
 	{ id: "github", name: "GitHub", glyph: "❮❯", blurb: "דחיפת קוד הפרויקט לריפו", tokenKey: "GITHUB_TOKEN", authUrl: "https://github.com/settings/tokens/new?scopes=repo&description=Solstice", howto: "צור Personal Access Token עם הרשאת repo והדבק כאן." },
 	{ id: "email", name: "Email (Resend)", glyph: "✉", blurb: "שליחת מיילים מפרויקטים", tokenKey: "EMAIL_API_KEY", authUrl: "https://resend.com/api-keys", howto: "צור API Key ב-Resend והדבק כאן." },
-	{ id: "mercury", name: "Mercury Commerce", glyph: "🛒", blurb: "חיבור החנות למנוע המסחר — מוצרים, עגלה, checkout, אנליטיקס (headless)", tokenKey: "MERCURY_STORE", authUrl: "", howto: "הדבק את כתובת ה-API של Mercury ו-store_id מופרדים ב-| —\nלמשל: https://your-mercury-host|str_2eaf73ebc03b27db" },
+	{ id: "mercury", name: "Mercury Commerce", glyph: "🛒", blurb: "חיבור החנות למנוע המסחר — מוצרים, עגלה, checkout, אנליטיקס (headless)", tokenKey: "MERCURY_STORE", authUrl: "", howto: "בחר: פתיחת חנות חדשה במנוע (שם + מטבע, בלחיצה), או חיבור חנות קיימת — הדבק כתובת ה-API ו-store_id מופרדים ב-| —\nלמשל: https://your-mercury-host|str_2eaf73ebc03b27db" },
 ];
 
 // Async: presence of a credential is checked in the vault first (never logged),
@@ -6677,6 +6827,8 @@ function activate(context) {
 		vscode.commands.registerCommand("solstice.agent.openBrandDna", () => openBrandDna(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.openFoundation", () => openFoundation(controller, context.extensionUri)),
 		vscode.commands.registerCommand("solstice.agent.loadBrandPack", () => controller.loadBrandPackIntoWorkspace()),
+		vscode.commands.registerCommand("solstice.agent.showReadiness", () => showReadiness(controller, vscode, mediaHtml)),
+		vscode.commands.registerCommand("solstice.agent.scaffoldBusiness", () => { const result=scaffoldBusinessApp(workspaceCwd()); vscode.window.showInformationMessage("בסיס עסקי מקומי: " + result.written.length + " קבצים; דורש Node 22.13 ומעלה."); return result; }),
 		vscode.commands.registerCommand("solstice.agent.scaffoldApp", () => controller.scaffoldAppIntoWorkspace()),
 		vscode.commands.registerCommand("solstice.agent.selectModel", () => controller.selectModel()),
 		vscode.commands.registerCommand("solstice.agent.selectAutonomy", () => controller.selectAutonomy()),
@@ -6718,6 +6870,7 @@ function activate(context) {
 	setTimeout(() => controller.ensureCompanionRelay(), 800);
 	context.subscriptions.push({ dispose: () => { if (controller.watchTimer) { clearInterval(controller.watchTimer); controller.watchTimer = null; } } });
 	context.subscriptions.push({ dispose: () => { if (controller.scheduledCheckTimer) { clearInterval(controller.scheduledCheckTimer); controller.scheduledCheckTimer = null; } } });
+	context.subscriptions.push({ dispose: () => controller._voiceTranscription?.cancel() });
 	context.subscriptions.push({ dispose: () => { if (controller._companionRelayTimer) { clearTimeout(controller._companionRelayTimer); controller._companionRelayTimer = null; } } });
 	// relaunch recovery: if a build was interrupted by an IDE restart, report a
 	// terminal frame to the dispatching agent the moment its bridge reconnects.

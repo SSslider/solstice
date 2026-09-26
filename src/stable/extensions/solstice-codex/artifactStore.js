@@ -2,6 +2,8 @@
 
 const fs = require("fs");
 const path = require("path");
+const {sourceRevision,sameRevision}=require("./sourceRevision");
+const {normalizeBrowserReport}=require("./browserSelfCheck");
 
 function safeTaskId(value) {
 	return String(value || "build")
@@ -52,7 +54,8 @@ function registerArtifact(root, record) {
 
 function listArtifacts(root, taskId) {
 	const wanted = taskId ? safeTaskId(taskId) : "";
-	return readIndex(root).filter((item) => !wanted || item.taskId === wanted);
+	const revision=sourceRevision(root);
+    return readIndex(root).filter((item) => !wanted || item.taskId === wanted).map(item=>({...item,verificationStatus:!item.sourceRevision?"unverified":sameRevision(item.sourceRevision,revision)?"current":"stale"}));
 }
 
 function latestGreenSelfCheck(root, taskId) {
@@ -64,13 +67,14 @@ function latestGreenSelfCheck(root, taskId) {
 			.map((entry) => ({ name: entry.name, round: Number(entry.name.slice(6)) }))
 			.sort((a, b) => b.round - a.round);
 	} catch { return null; }
-	for (const item of rounds) {
+	const revision=sourceRevision(root);
+	for (const item of rounds.slice(0,1)) {
 		const dir = path.join(base, item.name);
 		try {
 			const report = JSON.parse(fs.readFileSync(path.join(dir, "report.json"), "utf8"));
 			const desktop = path.join(dir, "desktop.png");
 			const mobile = path.join(dir, "mobile.png");
-			if (report.ok === true && fs.statSync(desktop).size > 0 && fs.statSync(mobile).size > 0) {
+			if (normalizeBrowserReport(report).ok === true && sameRevision(report.sourceRevision,revision) && fs.statSync(desktop).size > 0 && fs.statSync(mobile).size > 0) {
 				return { taskId: safeTaskId(taskId), round: item.round, dir, report, desktop, mobile };
 			}
 		} catch { }
